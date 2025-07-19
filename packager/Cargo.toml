@@ -1,0 +1,20 @@
+[package]
+name = "packager"
+version = "0.1.0"
+edition = "2021"
+description = "SAIC (Secure AI Container) file packager - creates .saic files from AI models"
+authors = ["Benjamin Morin <your-email@example.com>"]
+license = "MIT"
+
+[dependencies]
+# Command-line argument parsing with derive macros for clean, declarative CLI definitions
+clap = { version = "4.5", features = ["derive"] }
+
+# JSON serialization/deserialization for SAIC manifest handling
+serde_json = "1.0"
+
+# Structured logging framework for audit trail and debugging
+tracing = "0.1"
+
+# Console logger implementation for tracing framework
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
