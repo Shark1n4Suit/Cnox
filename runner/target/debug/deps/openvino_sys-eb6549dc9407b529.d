@@ -1,0 +1,14 @@
+/home/shark1n4uit/Saic/runner/target/debug/deps/openvino_sys-eb6549dc9407b529.d: /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/lib.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/mod.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/runtime.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/mod.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/functions.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/types.rs
+
+/home/shark1n4uit/Saic/runner/target/debug/deps/libopenvino_sys-eb6549dc9407b529.rlib: /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/lib.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/mod.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/runtime.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/mod.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/functions.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/types.rs
+
+/home/shark1n4uit/Saic/runner/target/debug/deps/libopenvino_sys-eb6549dc9407b529.rmeta: /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/lib.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/mod.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/runtime.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/mod.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/functions.rs /home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/types.rs
+
+/home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/lib.rs:
+/home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/mod.rs:
+/home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/linking/runtime.rs:
+/home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/mod.rs:
+/home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/functions.rs:
+/home/shark1n4uit/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openvino-sys-0.7.3/src/generated/types.rs:
+
+# env-dep:OPENVINO_LIB_PATH=

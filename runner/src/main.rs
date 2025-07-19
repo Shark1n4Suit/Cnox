@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod backends;
+use backends::{Backend, BackendError, CpuBackend};
+
 /// Custom error types for the runner application
 /// 
 /// This enum provides specific, descriptive error types for different failure modes
-/// during SAIC file processing and validation.
+/// during SAIC file processing, validation, and execution.
 #[derive(Debug)]
 pub enum RunnerError {
     /// I/O operation failed (file reading, etc.)
@@ -23,6 +26,8 @@ pub enum RunnerError {
     ManifestError(serde_json::Error),
     /// File is not a valid SAIC file
     NotSaicFile(String),
+    /// Backend execution error
+    BackendError(BackendError),
 }
 
 impl std::fmt::Display for RunnerError {
@@ -35,6 +40,7 @@ impl std::fmt::Display for RunnerError {
             RunnerError::InvalidVersion(msg) => write!(f, "Invalid version: {}", msg),
             RunnerError::ManifestError(err) => write!(f, "Manifest error: {}", err),
             RunnerError::NotSaicFile(msg) => write!(f, "Not a SAIC file: {}", msg),
+            RunnerError::BackendError(err) => write!(f, "Backend error: {}", err),
         }
     }
 }
@@ -211,12 +217,18 @@ impl std::error::Error for RunnerError {}
 /// Available subcommands for the runner application
 /// 
 /// This enum defines the CLI subcommands that the runner supports,
-/// currently focused on the 'run' operation for processing SAIC files.
+/// including validation and execution operations for SAIC files.
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Run and validate a SAIC file
     Run {
         /// Path to the .saic file to process
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    /// Execute a SAIC file using CPU backend
+    Execute {
+        /// Path to the .saic file to execute
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
@@ -421,6 +433,153 @@ fn process_saic_file(file_path: &Path) -> Result<(), RunnerError> {
     Ok(())
 }
 
+/// Execute a SAIC file using the CPU backend with OpenVINO
+/// 
+/// This function parses the SAIC file to extract the model payload and metadata,
+/// then executes the model using the OpenVINO CPU backend.
+/// 
+/// # Arguments
+/// 
+/// * `file_path` - Path to the SAIC file to execute
+/// 
+/// # Returns
+/// 
+/// * `Result<(), RunnerError>` - Ok(()) if execution successful, RunnerError on failure
+fn execute_saic_file(file_path: &Path) -> Result<(), RunnerError> {
+    use std::fs::File;
+    use std::io::Read;
+
+    info!("Starting SAIC file execution");
+    info!("File: {}", file_path.display());
+
+    // Validate file path and accessibility
+    validate_file_path(file_path)?;
+    info!("File validation passed");
+
+    // Step 1: Open the file for reading
+    info!("Opening SAIC file for execution");
+    let mut file = File::open(file_path)
+        .map_err(RunnerError::Io)?;
+
+    // Step 2: Read and validate the header
+    info!("Reading and validating SAIC header");
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header)
+        .map_err(RunnerError::Io)?;
+
+    // Validate the magic number
+    let magic = &header[0..4];
+    if magic != b"SAIC" {
+        let invalid_magic = String::from_utf8_lossy(magic);
+        return Err(RunnerError::InvalidMagic(
+            format!("Expected 'SAIC', found '{}'", invalid_magic)
+        ));
+    }
+
+    // Validate the version
+    let version = &header[4..8];
+    let expected_version = [0, 1, 0, 0];
+    if version != expected_version {
+        return Err(RunnerError::InvalidVersion(
+            format!("Expected version 0.1.0.0, found {}.{}.{}.{}", 
+                version[0], version[1], version[2], version[3])
+        ));
+    }
+
+    info!("Header validation successful");
+
+    // Step 3: Read the manifest length and manifest
+    info!("Reading manifest");
+    let mut length_bytes = [0u8; 4];
+    file.read_exact(&mut length_bytes)
+        .map_err(RunnerError::Io)?;
+    
+    let manifest_length = u32::from_be_bytes(length_bytes) as usize;
+    info!("Manifest length: {} bytes", manifest_length);
+
+    // Validate manifest length
+    if manifest_length == 0 {
+        return Err(RunnerError::InvalidFormat(
+            "Manifest length cannot be zero".to_string()
+        ));
+    }
+    
+    if manifest_length > 1024 * 1024 {  // 1MB limit
+        return Err(RunnerError::InvalidFormat(
+            format!("Manifest too large: {} bytes (max 1MB)", manifest_length)
+        ));
+    }
+
+    // Read the manifest
+    let mut manifest_buffer = vec![0u8; manifest_length];
+    file.read_exact(&mut manifest_buffer)
+        .map_err(RunnerError::Io)?;
+
+    // Parse the manifest
+    let manifest_str = std::str::from_utf8(&manifest_buffer)
+        .map_err(|e| RunnerError::InvalidFormat(
+            format!("Manifest is not valid UTF-8: {}", e)
+        ))?;
+
+    let manifest: serde_json::Value = serde_json::from_str(manifest_str)
+        .map_err(RunnerError::ManifestError)?;
+
+    // Extract model name
+    let model_name = manifest.get("model_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RunnerError::InvalidFormat(
+            "Manifest missing required 'model_name' field".to_string()
+        ))?;
+
+    info!("Model name: {}", model_name);
+
+    // Step 4: Read the model payload
+    info!("Reading model payload for execution");
+    let mut model_payload = Vec::new();
+    file.read_to_end(&mut model_payload)
+        .map_err(RunnerError::Io)?;
+
+    if model_payload.is_empty() {
+        return Err(RunnerError::InvalidFormat(
+            "Model payload is empty".to_string()
+        ));
+    }
+
+    info!("Model payload read successfully: {} bytes", model_payload.len());
+
+    // Step 5: Initialize CPU backend and execute model
+    info!("Initializing CPU backend for execution");
+    let mut cpu_backend = CpuBackend::new();
+
+    // Check backend availability
+    if !cpu_backend.is_available() {
+        return Err(RunnerError::BackendError(
+            backends::BackendError::DeviceNotAvailable(
+                "CPU backend (OpenVINO) is not available on this system".to_string()
+            )
+        ));
+    }
+
+    info!("CPU backend is available, proceeding with execution");
+
+    // Execute the model
+    info!("Executing model '{}' with CPU backend", model_name);
+    cpu_backend.execute(&model_payload, model_name)
+        .map_err(RunnerError::BackendError)?;
+
+    // Display success information
+    println!("✅ SAIC file execution successful");
+    println!("   File: {}", file_path.display());
+    println!("   Format: SAIC v0.1");
+    println!("   Model: {}", model_name);
+    println!("   Backend: {}", cpu_backend.name());
+    println!("   Payload size: {} bytes", model_payload.len());
+    println!("   Status: Model compiled and ready for inference");
+
+    info!("SAIC file execution completed successfully");
+    Ok(())
+}
+
 /// Main entry point for the runner application
 /// 
 /// Initializes logging, parses command-line arguments, validates inputs,
@@ -453,6 +612,22 @@ fn main() -> Result<(), RunnerError> {
                 }
                 Err(e) => {
                     error!("Runner failed: {}", e);
+                    Err(e)
+                }
+            }
+        }
+        Commands::Execute { file } => {
+            info!("Processing execute command");
+            info!("Target file: {}", file.display());
+
+            // Execute the SAIC file
+            match execute_saic_file(&file) {
+                Ok(()) => {
+                    info!("Execution completed successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Execution failed: {}", e);
                     Err(e)
                 }
             }

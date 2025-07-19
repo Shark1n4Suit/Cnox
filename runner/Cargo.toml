@@ -18,3 +18,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # JSON deserialization for SAIC manifest parsing
 serde_json = "1.0"
+
+# Intel OpenVINO toolkit for AI model inference execution
+# Uses runtime-linking to allow building without OpenVINO installed at compile time
+openvino = { version = "0.7", features = ["runtime-linking"] }
