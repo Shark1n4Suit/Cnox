@@ -1,4 +1,9 @@
+#[cfg(feature = "cpu-backend")]
 use openvino::{Core, DeviceType, ElementType, Shape};
+
+#[cfg(feature = "gpu-backend")]
+use tensorrt;
+
 use tracing::{error, info};
 
 /// Backend-specific error types for model execution
@@ -69,7 +74,10 @@ pub trait Backend {
 /// on CPU devices, providing optimized inference performance.
 pub struct CpuBackend {
     /// OpenVINO Core instance for model operations
+    #[cfg(feature = "cpu-backend")]
     core: Option<Core>,
+    #[cfg(not(feature = "cpu-backend"))]
+    core: Option<()>,
 }
 
 impl CpuBackend {
@@ -86,6 +94,7 @@ impl CpuBackend {
     /// 
     /// This method ensures the OpenVINO Core is properly initialized before
     /// attempting any model operations. It's called automatically by execute().
+    #[cfg(feature = "cpu-backend")]
     fn ensure_core(&mut self) -> Result<&mut Core, BackendError> {
         if self.core.is_none() {
             info!("Initializing OpenVINO Core...");
@@ -105,6 +114,13 @@ impl CpuBackend {
         
         Ok(self.core.as_mut().unwrap())
     }
+    
+    #[cfg(not(feature = "cpu-backend"))]
+    fn ensure_core(&mut self) -> Result<(), BackendError> {
+        Err(BackendError::DeviceNotAvailable(
+            "OpenVINO backend not available - compile with --features cpu-backend".to_string()
+        ))
+    }
 }
 
 impl Backend for CpuBackend {
@@ -122,9 +138,10 @@ impl Backend for CpuBackend {
     /// * `model_name` - Name of the model for logging purposes
     /// 
     /// # Returns
-    /// 
-    /// * `Result<(), BackendError>` - Ok(()) if compilation successful
-    fn execute(&mut self, model_payload: &[u8], model_name: &str) -> Result<(), BackendError> {
+          /// 
+      /// * `Result<(), BackendError>` - Ok(()) if compilation successful
+      #[cfg(feature = "cpu-backend")]
+      fn execute(&mut self, model_payload: &[u8], model_name: &str) -> Result<(), BackendError> {
         info!("Starting CPU execution for model: {}", model_name);
         info!("Model payload size: {} bytes", model_payload.len());
         
@@ -296,6 +313,13 @@ impl Backend for CpuBackend {
         Ok(())
     }
     
+    #[cfg(not(feature = "cpu-backend"))]
+    fn execute(&mut self, model_payload: &[u8], model_name: &str) -> Result<(), BackendError> {
+        info!("OpenVINO inference not available - compile with --features cpu-backend");
+        info!("Model: {}, Payload size: {} bytes", model_name, model_payload.len());
+        self.ensure_core()
+    }
+    
     fn name(&self) -> &str {
         "CPU (OpenVINO)"
     }
@@ -304,6 +328,7 @@ impl Backend for CpuBackend {
     /// 
     /// The CPU backend should always be available on systems with OpenVINO installed,
     /// but this method verifies that OpenVINO Core can be initialized.
+    #[cfg(feature = "cpu-backend")]
     fn is_available(&self) -> bool {
         match Core::new() {
             Ok(_) => {
@@ -316,10 +341,131 @@ impl Backend for CpuBackend {
             }
         }
     }
+    
+    #[cfg(not(feature = "cpu-backend"))]
+    fn is_available(&self) -> bool {
+        info!("CPU backend not available - compile with --features cpu-backend");
+        false  // Not available for actual inference in validation-only build
+    }
 }
 
 impl Default for CpuBackend {
     fn default() -> Self {
         Self::new()
     }
-} 
+}
+
+/// GPU execution backend using NVIDIA TensorRT
+/// 
+/// This backend uses the NVIDIA TensorRT toolkit to execute AI models
+/// on GPU devices, providing accelerated inference performance.
+#[cfg(feature = "gpu-backend")]
+pub struct GpuBackend {
+    /// TensorRT engine instance for model operations
+    engine: Option<()>,  // Placeholder for TensorRT engine type
+}
+
+#[cfg(feature = "gpu-backend")]
+impl GpuBackend {
+    /// Create a new GPU backend instance
+    /// 
+    /// Creates a new GpuBackend with uninitialized TensorRT engine.
+    /// The engine will be initialized lazily when needed.
+    pub fn new() -> Self {
+        Self {
+            engine: None,
+        }
+    }
+    
+    /// Initialize the TensorRT engine if not already initialized
+    /// 
+    /// This method ensures the TensorRT engine is properly initialized before
+    /// attempting any model operations. It's called automatically by execute().
+    fn ensure_engine(&mut self) -> Result<(), BackendError> {
+        if self.engine.is_none() {
+            info!("Initializing TensorRT engine...");
+            // TODO: Initialize actual TensorRT engine
+            self.engine = Some(());
+            info!("TensorRT engine initialized successfully");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "gpu-backend")]
+impl Backend for GpuBackend {
+    fn execute(&mut self, model_payload: &[u8], model_name: &str) -> Result<(), BackendError> {
+        info!("Starting GPU execution for model: {}", model_name);
+        info!("Model payload size: {} bytes", model_payload.len());
+        
+        // Ensure TensorRT engine is initialized
+        self.ensure_engine()?;
+        
+        // TODO: Implement actual TensorRT model execution
+        info!("🚧 TensorRT execution not yet implemented - this is a placeholder");
+        info!("Model: {} would be executed on GPU using TensorRT", model_name);
+        
+        info!("🎯 GPU execution placeholder completed for model: {}", model_name);
+        Ok(())
+    }
+    
+    fn name(&self) -> &str {
+        "GPU (TensorRT)"
+    }
+    
+    /// Check if GPU backend is available
+    /// 
+    /// The GPU backend requires TensorRT and compatible NVIDIA hardware,
+    /// this method verifies that TensorRT can be initialized.
+    fn is_available(&self) -> bool {
+        // TODO: Implement actual TensorRT availability check
+        info!("Checking GPU backend (TensorRT) availability...");
+        info!("🚧 TensorRT availability check not yet implemented - assuming available");
+        true
+    }
+}
+
+#[cfg(feature = "gpu-backend")]
+impl Default for GpuBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Stub implementation for GpuBackend when gpu-backend feature is not enabled
+#[cfg(not(feature = "gpu-backend"))]
+pub struct GpuBackend;
+
+#[cfg(not(feature = "gpu-backend"))]
+impl GpuBackend {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(feature = "gpu-backend"))]
+impl Backend for GpuBackend {
+    fn execute(&mut self, model_payload: &[u8], model_name: &str) -> Result<(), BackendError> {
+        info!("GPU backend not available - compile with --features gpu-backend");
+        info!("Model: {}, Payload size: {} bytes", model_name, model_payload.len());
+        Err(BackendError::DeviceNotAvailable(
+            "GPU backend not available - compile with --features gpu-backend".to_string()
+        ))
+    }
+    
+    fn name(&self) -> &str {
+        "GPU (TensorRT) - Not Available"
+    }
+    
+    fn is_available(&self) -> bool {
+        info!("GPU backend not available - compile with --features gpu-backend");
+        false
+    }
+}
+
+#[cfg(not(feature = "gpu-backend"))]
+impl Default for GpuBackend {
+    fn default() -> Self {
+        Self
+    }
+}

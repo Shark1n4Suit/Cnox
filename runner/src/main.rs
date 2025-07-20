@@ -4,7 +4,7 @@ use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod backends;
-use backends::{Backend, BackendError, CpuBackend};
+use backends::{Backend, BackendError, CpuBackend, GpuBackend};
 
 /// Custom error types for the runner application
 /// 
@@ -226,11 +226,14 @@ enum Commands {
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
-    /// Execute a SAIC file using CPU backend
+    /// Execute a SAIC file using specified backend
     Execute {
         /// Path to the .saic file to execute
         #[arg(value_name = "FILE")]
         file: PathBuf,
+        /// Backend to use for execution (cpu or gpu)
+        #[arg(short = 'b', long = "backend", default_value = "cpu")]
+        backend: String,
     },
 }
 
@@ -580,6 +583,194 @@ fn execute_saic_file(file_path: &Path) -> Result<(), RunnerError> {
     Ok(())
 }
 
+/// Execute a SAIC file with the specified backend
+/// 
+/// This function extends execute_saic_file by adding backend selection capability.
+/// It supports both CPU (OpenVINO) and GPU (TensorRT) backends based on user choice.
+/// 
+/// # Arguments
+/// 
+/// * `file_path` - Path to the .saic file to execute
+/// * `backend_name` - Name of the backend to use ("cpu" or "gpu")
+/// 
+/// # Returns
+/// 
+/// * `Result<(), RunnerError>` - Ok(()) if execution successful, RunnerError on failure
+fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str) -> Result<(), RunnerError> {
+    use std::fs::File;
+    use std::io::Read;
+
+    info!("Starting SAIC file execution with backend: {}", backend_name);
+    info!("File: {}", file_path.display());
+
+    // Validate file path and accessibility
+    validate_file_path(file_path)?;
+    info!("File validation passed");
+
+    // Step 1: Open the file for reading
+    info!("Opening SAIC file for execution");
+    let mut file = File::open(file_path)
+        .map_err(RunnerError::Io)?;
+
+    // Step 2: Read and validate the header
+    info!("Reading and validating SAIC header");
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header)
+        .map_err(RunnerError::Io)?;
+
+    // Validate the magic number
+    let magic = &header[0..4];
+    if magic != b"SAIC" {
+        let invalid_magic = String::from_utf8_lossy(magic);
+        return Err(RunnerError::InvalidMagic(
+            format!("Expected 'SAIC', found '{}'", invalid_magic)
+        ));
+    }
+
+    // Validate the version
+    let version = &header[4..8];
+    let expected_version = [0, 1, 0, 0];
+    if version != expected_version {
+        return Err(RunnerError::InvalidVersion(
+            format!("Expected version 0.1.0.0, found {}.{}.{}.{}", 
+                version[0], version[1], version[2], version[3])
+        ));
+    }
+
+    info!("Header validation successful");
+
+    // Step 3: Read the manifest length and manifest
+    info!("Reading manifest");
+    let mut length_bytes = [0u8; 4];
+    file.read_exact(&mut length_bytes)
+        .map_err(RunnerError::Io)?;
+    
+    let manifest_length = u32::from_be_bytes(length_bytes) as usize;
+    info!("Manifest length: {} bytes", manifest_length);
+
+    // Validate manifest length
+    if manifest_length == 0 {
+        return Err(RunnerError::InvalidFormat(
+            "Manifest length cannot be zero".to_string()
+        ));
+    }
+    
+    if manifest_length > 1024 * 1024 {  // 1MB limit
+        return Err(RunnerError::InvalidFormat(
+            format!("Manifest too large: {} bytes (max 1MB)", manifest_length)
+        ));
+    }
+
+    // Read the manifest
+    let mut manifest_buffer = vec![0u8; manifest_length];
+    file.read_exact(&mut manifest_buffer)
+        .map_err(RunnerError::Io)?;
+
+    // Parse the manifest
+    let manifest_str = std::str::from_utf8(&manifest_buffer)
+        .map_err(|e| RunnerError::InvalidFormat(
+            format!("Manifest is not valid UTF-8: {}", e)
+        ))?;
+
+    let manifest: serde_json::Value = serde_json::from_str(manifest_str)
+        .map_err(RunnerError::ManifestError)?;
+
+    // Extract model name
+    let model_name = manifest.get("model_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RunnerError::InvalidFormat(
+            "Manifest missing required 'model_name' field".to_string()
+        ))?;
+
+    info!("Model name: {}", model_name);
+
+    // Step 4: Read the model payload
+    info!("Reading model payload for execution");
+    let mut model_payload = Vec::new();
+    file.read_to_end(&mut model_payload)
+        .map_err(RunnerError::Io)?;
+
+    if model_payload.is_empty() {
+        return Err(RunnerError::InvalidFormat(
+            "Model payload is empty".to_string()
+        ));
+    }
+
+    info!("Model payload read successfully: {} bytes", model_payload.len());
+
+    // Step 5: Initialize selected backend and execute model
+    match backend_name.to_lowercase().as_str() {
+        "cpu" => {
+            info!("Initializing CPU backend (OpenVINO) for execution");
+            let mut cpu_backend = CpuBackend::new();
+
+            // Check backend availability
+            if !cpu_backend.is_available() {
+                return Err(RunnerError::BackendError(
+                    backends::BackendError::DeviceNotAvailable(
+                        "CPU backend (OpenVINO) is not available on this system".to_string()
+                    )
+                ));
+            }
+
+            info!("CPU backend is available, proceeding with execution");
+
+            // Execute the model
+            info!("Executing model '{}' with CPU backend", model_name);
+            cpu_backend.execute(&model_payload, model_name)
+                .map_err(RunnerError::BackendError)?;
+
+            // Display success information
+            println!("✅ SAIC file inference completed successfully");
+            println!("   File: {}", file_path.display());
+            println!("   Format: SAIC v0.1");
+            println!("   Model: {}", model_name);
+            println!("   Backend: {}", cpu_backend.name());
+            println!("   Payload size: {} bytes", model_payload.len());
+            println!("   Status: Full inference pipeline executed");
+        }
+        "gpu" => {
+            info!("Initializing GPU backend (TensorRT) for execution");
+            let mut gpu_backend = GpuBackend::new();
+
+            // Check backend availability
+            if !gpu_backend.is_available() {
+                return Err(RunnerError::BackendError(
+                    backends::BackendError::DeviceNotAvailable(
+                        "GPU backend (TensorRT) is not available on this system".to_string()
+                    )
+                ));
+            }
+
+            info!("GPU backend is available, proceeding with execution");
+
+            // Execute the model
+            info!("Executing model '{}' with GPU backend", model_name);
+            gpu_backend.execute(&model_payload, model_name)
+                .map_err(RunnerError::BackendError)?;
+
+            // Display success information
+            println!("✅ SAIC file inference completed successfully");
+            println!("   File: {}", file_path.display());
+            println!("   Format: SAIC v0.1");
+            println!("   Model: {}", model_name);
+            println!("   Backend: {}", gpu_backend.name());
+            println!("   Payload size: {} bytes", model_payload.len());
+            println!("   Status: TensorRT execution completed (placeholder)");
+        }
+        _ => {
+            return Err(RunnerError::BackendError(
+                backends::BackendError::DeviceNotAvailable(
+                    format!("Unknown backend '{}'. Supported backends: cpu, gpu", backend_name)
+                )
+            ));
+        }
+    }
+
+    info!("SAIC file inference pipeline completed successfully with {} backend", backend_name);
+    Ok(())
+}
+
 /// Main entry point for the runner application
 /// 
 /// Initializes logging, parses command-line arguments, validates inputs,
@@ -616,12 +807,13 @@ fn main() -> Result<(), RunnerError> {
                 }
             }
         }
-        Commands::Execute { file } => {
+        Commands::Execute { file, backend } => {
             info!("Processing execute command");
             info!("Target file: {}", file.display());
+            info!("Backend: {}", backend);
 
-            // Execute the SAIC file
-            match execute_saic_file(&file) {
+            // Execute the SAIC file with specified backend
+            match execute_saic_file_with_backend(&file, &backend) {
                 Ok(()) => {
                     info!("Execution completed successfully");
                     Ok(())

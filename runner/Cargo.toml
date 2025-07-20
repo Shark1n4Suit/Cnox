@@ -6,19 +6,42 @@ description = "SAIC (Secure AI Container) file runner - reads and validates .sai
 authors = ["Benjamin Morin <your-email@example.com>"]
 license = "MIT"
 
+[features]
+default = ["cpu-backend"]
+validation-only = []
+cpu-backend = ["openvino"]
+gpu-backend = ["tensorrt"]
+full-inference = ["cpu-backend", "gpu-backend"]
+
 [dependencies]
 # Command-line argument parsing with derive macros for clean subcommand handling
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", default-features = false, features = ["derive", "std"] }
 
 # Structured logging framework for audit trail and debugging
 tracing = "0.1"
 
-# Console logger implementation for tracing framework
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Console logger implementation for tracing framework  
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 
 # JSON deserialization for SAIC manifest parsing
 serde_json = "1.0"
 
 # Intel OpenVINO toolkit for AI model inference execution
 # Uses runtime-linking to allow building without OpenVINO installed at compile time
-openvino = { version = "0.7", features = ["runtime-linking"] }
+openvino = { version = "0.7", features = ["runtime-linking"], optional = true }
+
+# NVIDIA TensorRT for GPU-accelerated AI model inference
+# High-performance deep learning inference optimization and deployment library
+tensorrt = { version = "0.1", optional = true }
+
+# Build optimization profiles
+[profile.dev]
+debug = 1              # Reduced debug info for faster builds
+incremental = true     # Ensure incremental compilation
+split-debuginfo = "unpacked"  # Faster debug info on Unix systems
+
+[profile.release]
+opt-level = 3          # Maximum optimization for production
+lto = "thin"           # Link-time optimization
+codegen-units = 1      # Better optimization
+strip = true           # Smaller binaries
