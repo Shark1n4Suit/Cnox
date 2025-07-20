@@ -62,8 +62,7 @@ saic-runner execute mobilenet.saic --backend cpu
 
 ### 🎬 See It In Action
 
-<!-- TODO: Replace this placeholder with actual demo GIF -->
-![SAIC Quick Start Demo](https://via.placeholder.com/800x400/2196F3/FFFFFF?text=SAIC+CLI+Demo+%28Coming+Soon%29)
+![SAIC Quick Start Demo](saic-demo.gif)
 
 > **Creating the Demo GIF**: To record and create the animated demo:
 > 1. Install `asciinema`: `npm install -g asciinema` (or `pip install asciinema`)
