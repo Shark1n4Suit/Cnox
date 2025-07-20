@@ -20,6 +20,28 @@ Traditional AI deployment suffers from bloated containers, security vulnerabilit
 - **🛠️ Developer-Friendly**: Simple CLI tools with comprehensive logging and error handling
 - **🏗️ Production Ready**: Rust-built for memory safety, performance, and reliability
 
+## 🏗️ Architecture Overview
+
+The SAIC ecosystem follows a simple, powerful workflow that transforms any AI model into a secure, optimized container:
+
+```mermaid
+graph TD
+    A[AI Model<br/>".onnx, .safetensors, .pt"] --> B[saic-packager<br/>"Package & Validate"]
+    B --> C[".saic File<br/>"Secure Binary Container"]
+    C --> D[saic-runner<br/>"Load & Execute"]
+    D --> E{Backend Selection}
+    E -->|CPU| F[OpenVINO Backend<br/>"Optimized CPU Inference"]
+    E -->|GPU| G[TensorRT Backend<br/>"Accelerated GPU Inference"]
+    F --> H[Inference Results]
+    G --> H
+    
+    style A fill:#e1f5fe
+    style C fill:#f3e5f5
+    style H fill:#e8f5e8
+    style F fill:#fff3e0
+    style G fill:#ffebee
+```
+
 ## ⚡ Quick Start
 
 Get started with SAIC in 3 simple steps:
@@ -34,6 +56,19 @@ curl -O https://models.coelanox.com/examples/mobilenet.saic
 # 3. Run inference
 saic-runner execute mobilenet.saic --backend cpu
 ```
+
+### 🎬 See It In Action
+
+<!-- TODO: Replace this placeholder with actual demo GIF -->
+![SAIC Quick Start Demo](https://via.placeholder.com/800x400/2196F3/FFFFFF?text=SAIC+CLI+Demo+%28Coming+Soon%29)
+
+> **Creating the Demo GIF**: To record and create the animated demo:
+> 1. Install `asciinema`: `npm install -g asciinema` (or `pip install asciinema`)
+> 2. Record terminal session: `asciinema rec saic-demo.cast`
+> 3. Run the Quick Start commands above during recording
+> 4. Stop recording with `Ctrl+D`
+> 5. Convert to GIF using [asciicast2gif](https://github.com/asciinema/asciicast2gif) or upload to [asciinema.org](https://asciinema.org) and use an online converter
+> 6. Replace the placeholder image above with the generated GIF
 
 ## 📋 Installation
 
