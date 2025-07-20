@@ -35,11 +35,14 @@ graph TD
     F --> H[Inference Results]
     G --> H
     
-    style A fill:#e1f5fe
-    style C fill:#f3e5f5
-    style H fill:#e8f5e8
-    style F fill:#fff3e0
-    style G fill:#ffebee
+    style A fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
+    style B fill:#2196F3,stroke:#1565C0,stroke-width:2px,color:#fff
+    style C fill:#9C27B0,stroke:#6A1B9A,stroke-width:2px,color:#fff
+    style D fill:#FF9800,stroke:#E65100,stroke-width:2px,color:#fff
+    style E fill:#607D8B,stroke:#37474F,stroke-width:2px,color:#fff
+    style F fill:#FF5722,stroke:#D84315,stroke-width:2px,color:#fff
+    style G fill:#E91E63,stroke:#AD1457,stroke-width:2px,color:#fff
+    style H fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
 ```
 
 ## ⚡ Quick Start
