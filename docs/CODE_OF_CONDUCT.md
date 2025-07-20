@@ -54,8 +54,8 @@ This Code of Conduct applies within all project spaces, and also applies when an
 
 If you experience or witness unacceptable behavior, or have any other concerns, please report it to the project team at:
 
-**📧 Email**: conduct@coelanox.com  
-**🔒 Security Issues**: security@coelanox.com (for security-related concerns)
+**📧 GitHub Issues**: [Report via GitHub Issues](https://github.com/Shark1n4Suit/Saic/issues) with "conduct" label  
+**🔒 Security Issues**: [Report security issues](https://github.com/Shark1n4Suit/Saic/issues) with "security" label (or email if sensitive)
 
 All reports will be handled with discretion. In your report please include:
 
@@ -113,4 +113,4 @@ Community Impact Guidelines were inspired by [Mozilla's code of conduct enforcem
 
 **Version**: 1.0  
 **Effective Date**: July 2025  
-**Contact**: conduct@coelanox.com 
+**Contact**: [GitHub Issues](https://github.com/Shark1n4Suit/Saic/issues) 

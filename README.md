@@ -343,21 +343,21 @@ INFO CPU backend (OpenVINO) is not available: library loading error
 
 ## 🔗 Links
 
-- **Documentation**: [docs.coelanox.com/saic](https://docs.coelanox.com/saic)
-- **Examples**: [github.com/coelanox/saic-examples](https://github.com/coelanox/saic-examples)
-- **Discussions**: [GitHub Discussions](https://github.com/coelanox/saic/discussions)
-- **Discord**: [Join our community](https://discord.gg/coelanox)
+- **Repository**: [github.com/Shark1n4Suit/Saic](https://github.com/Shark1n4Suit/Saic)
+- **Issues**: [Report bugs or request features](https://github.com/Shark1n4Suit/Saic/issues)
+- **Documentation**: Available in the [docs/](docs/) folder
+- **Examples**: Coming soon (will be available when organization is created)
 
 ## 🤝 Community
 
 We're building SAIC as an open, inclusive community focused on advancing secure AI deployment. We welcome contributors of all skill levels and backgrounds!
 
 ### **Getting Involved**
-- 🐛 **Report Issues**: Found a bug? [Open an issue](https://github.com/coelanox/saic/issues)
-- 💡 **Feature Requests**: Have an idea? [Start a discussion](https://github.com/coelanox/saic/discussions)
+- 🐛 **Report Issues**: Found a bug? [Open an issue](https://github.com/Shark1n4Suit/Saic/issues)
+- 💡 **Feature Requests**: Have an idea? [Open an issue](https://github.com/Shark1n4Suit/Saic/issues) with the "enhancement" label
 - 🔧 **Contribute Code**: Check our [Contributing Guide](docs/CONTRIBUTING.md)
 - 📖 **Improve Docs**: Help make our documentation even better
-- 💬 **Join Discussions**: Connect with the community on [Discord](https://discord.gg/coelanox)
+- 💬 **Stay Updated**: Watch this repository for the latest developments
 
 ### **Community Standards**
 We are committed to providing a welcoming, professional environment for everyone. Please read our [Code of Conduct](docs/CODE_OF_CONDUCT.md) before participating.
@@ -378,8 +378,8 @@ The BSL allows free use for development, testing, and non-production purposes. C
 
 <div align="center">
 
-**[🌐 Website](https://coelanox.com)** • **[📚 Docs](https://docs.coelanox.com)** • **[💬 Community](https://discord.gg/coelanox)** • **[🐦 Twitter](https://twitter.com/coelanox)**
+**[📁 Repository](https://github.com/Shark1n4Suit/Saic)** • **[🐛 Issues](https://github.com/Shark1n4Suit/Saic/issues)** • **[📚 Documentation](https://github.com/Shark1n4Suit/Saic/tree/main/docs)**
 
-*Built with ❤️ by the Coelanox team*
+*Built with ❤️ for the future of secure AI deployment*
 
 </div> 
