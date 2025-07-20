@@ -355,12 +355,12 @@ We're building SAIC as an open, inclusive community focused on advancing secure 
 ### **Getting Involved**
 - 🐛 **Report Issues**: Found a bug? [Open an issue](https://github.com/coelanox/saic/issues)
 - 💡 **Feature Requests**: Have an idea? [Start a discussion](https://github.com/coelanox/saic/discussions)
-- 🔧 **Contribute Code**: Check our [Contributing Guide](CONTRIBUTING.md)
+- 🔧 **Contribute Code**: Check our [Contributing Guide](docs/CONTRIBUTING.md)
 - 📖 **Improve Docs**: Help make our documentation even better
 - 💬 **Join Discussions**: Connect with the community on [Discord](https://discord.gg/coelanox)
 
 ### **Community Standards**
-We are committed to providing a welcoming, professional environment for everyone. Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+We are committed to providing a welcoming, professional environment for everyone. Please read our [Code of Conduct](docs/CODE_OF_CONDUCT.md) before participating.
 
 **Key Values:**
 - **🔒 Security First**: Responsible disclosure and security-minded development
