@@ -9,10 +9,15 @@
 docs/** linguist-documentation
 README.md linguist-documentation
 
-# Analysis and tooling scripts - not primary codebase
+# Analysis and tooling scripts - not primary codebase  
 reports/**/*.py linguist-generated
 reports/**/*.txt linguist-generated
 reports/**/*.md linguist-documentation
+
+# Force exclude common misclassified files
+runner linguist-generated
+**/runner linguist-generated
+*.lock linguist-generated
 
 # Configuration files
 *.toml linguist-language=TOML
@@ -22,6 +27,30 @@ reports/**/*.md linguist-documentation
 # Build and package files
 Cargo.lock linguist-generated
 target/** linguist-generated
+**/target/** linguist-generated
+
+# Build artifacts and generated files
+**/build/** linguist-generated
+**/debug/** linguist-generated
+**/release/** linguist-generated
+**/.fingerprint/** linguist-generated
+**/deps/** linguist-generated
+**/incremental/** linguist-generated
+
+# Large binary files and build scripts  
+build-script-* linguist-generated
+build_script_* linguist-generated
+
+# Files that might be misclassified as Makefiles
+**/output linguist-generated
+**/stderr linguist-generated  
+**/root-output linguist-generated
+*.timestamp linguist-generated
+
+# Explicitly mark actual build files if they exist
+**/Makefile linguist-generated
+**/makefile linguist-generated
+**/*.mk linguist-generated
 
 # Test data and sample files
 *.saic linguist-generated
