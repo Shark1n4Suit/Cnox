@@ -1,0 +1,33 @@
+# Coelanox SAIC - Git Attributes Configuration
+# Fixes GitHub language detection to properly show this as a Rust project
+
+# Mark Rust files as the primary language
+*.rs linguist-language=Rust
+
+# Documentation files - exclude from language stats
+*.md linguist-documentation
+docs/** linguist-documentation
+README.md linguist-documentation
+
+# Analysis and tooling scripts - not primary codebase
+reports/**/*.py linguist-generated
+reports/**/*.txt linguist-generated
+reports/**/*.md linguist-documentation
+
+# Configuration files
+*.toml linguist-language=TOML
+*.yaml linguist-language=YAML
+*.yml linguist-language=YAML
+
+# Build and package files
+Cargo.lock linguist-generated
+target/** linguist-generated
+
+# Test data and sample files
+*.saic linguist-generated
+*.bin linguist-generated
+test_* linguist-generated
+
+# Git files
+.gitignore linguist-generated
+.gitattributes linguist-generated 
