@@ -564,6 +564,7 @@ name = "runner"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "openvino",
  "serde_json",
  "tensorrt",

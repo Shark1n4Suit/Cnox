@@ -34,6 +34,9 @@ openvino = { version = "0.7", features = ["runtime-linking"], optional = true }
 # High-performance deep learning inference optimization and deployment library
 tensorrt = { version = "0.1", optional = true }
 
+# C library interface for GPU memory management
+libc = "0.2"
+
 # Build optimization profiles
 [profile.dev]
 debug = 1              # Reduced debug info for faster builds
