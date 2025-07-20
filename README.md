@@ -60,18 +60,6 @@ curl -O https://models.coelanox.com/examples/mobilenet.saic
 saic-runner execute mobilenet.saic --backend cpu
 ```
 
-### 🎬 See It In Action
-
-![SAIC Quick Start Demo](saic-demo.gif)
-
-> **Creating the Demo GIF**: To record and create the animated demo:
-> 1. Install `asciinema`: `npm install -g asciinema` (or `pip install asciinema`)
-> 2. Record terminal session: `asciinema rec saic-demo.cast`
-> 3. Run the Quick Start commands above during recording
-> 4. Stop recording with `Ctrl+D`
-> 5. Convert to GIF using [asciicast2gif](https://github.com/asciinema/asciicast2gif) or upload to [asciinema.org](https://asciinema.org) and use an online converter
-> 6. Replace the placeholder image above with the generated GIF
-
 ## 📋 Installation
 
 ### Linux & macOS
