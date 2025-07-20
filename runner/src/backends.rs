@@ -1,4 +1,4 @@
-use openvino::{Core, DeviceType};
+use openvino::{Core, DeviceType, ElementType, Shape};
 use tracing::{error, info};
 
 /// Backend-specific error types for model execution
@@ -154,7 +154,7 @@ impl Backend for CpuBackend {
         
         // Step 3: Compile model for CPU device
         info!("Compiling model for CPU device...");
-        let _compiled_model = match core.compile_model(&model, DeviceType::CPU) {
+        let mut compiled_model = match core.compile_model(&model, DeviceType::CPU) {
             Ok(compiled_model) => {
                 info!("Model compiled successfully for CPU");
                 compiled_model
@@ -166,15 +166,132 @@ impl Backend for CpuBackend {
             }
         };
         
-        // Step 4: Validate compilation success
-        info!("Validating compiled model...");
+        // Step 4: Analyze model structure
+        info!("Analyzing model structure...");
         
-        // The successful compilation is validation enough for now
-        // In a full implementation, we could create an inference request
-        // and check model properties, but for this MVP we'll keep it simple
-        info!("Model validation successful: compilation completed without errors");
+        // Note: OpenVINO Rust bindings v0.7 have limited introspection capabilities
+        // For this demonstration, we'll work with common assumptions about model structure
+        info!("Model compiled successfully - proceeding with inference test");
         
-        info!("CPU backend execution completed successfully for model: {}", model_name);
+        // Step 5: Create inference request
+        info!("Creating inference request...");
+        let mut infer_request = match compiled_model.create_infer_request() {
+            Ok(request) => {
+                info!("Inference request created successfully");
+                request
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create inference request: {}", e);
+                error!("{}", error_msg);
+                return Err(BackendError::ExecutionError(error_msg));
+            }
+        };
+        
+        // Step 6: Create dummy input tensor 
+        info!("Creating dummy input tensor...");
+        
+        // Create a simple test tensor with common dimensions (1x3x224x224 for image models)
+        // Convert to i64 as required by OpenVINO Shape API
+        let dummy_shape: Vec<i64> = vec![1, 3, 224, 224];
+        let total_elements: usize = dummy_shape.iter().map(|&x| x as usize).product();
+        
+        info!("Preparing dummy input tensor:");
+        info!("  Shape: {:?}", dummy_shape);
+        info!("  Elements: {}", total_elements);
+        info!("  Data type: f32");
+        
+        // Create OpenVINO shape
+        let tensor_shape = match Shape::new(&dummy_shape) {
+            Ok(shape) => {
+                info!("OpenVINO shape created successfully");
+                shape
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create tensor shape: {}", e);
+                error!("{}", error_msg);
+                return Err(BackendError::ExecutionError(error_msg));
+            }
+        };
+        
+        // Create OpenVINO tensor
+        let input_tensor = match openvino::Tensor::new(ElementType::F32, &tensor_shape) {
+            Ok(tensor) => {
+                info!("OpenVINO input tensor created successfully");
+                tensor
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create input tensor: {}", e);
+                error!("{}", error_msg);
+                return Err(BackendError::ExecutionError(error_msg));
+            }
+        };
+        
+        info!("Input tensor ready for inference (populated with default values)");
+        
+        // Step 7: Set input tensor and execute inference
+        info!("Setting input tensor for inference...");
+        
+        match infer_request.set_input_tensor(&input_tensor) {
+            Ok(()) => {
+                info!("Input tensor set successfully");
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to set input tensor: {}", e);
+                error!("{}", error_msg);
+                return Err(BackendError::ExecutionError(error_msg));
+            }
+        }
+        
+        // Execute the inference
+        match infer_request.infer() {
+            Ok(()) => {
+                info!("Inference executed successfully");
+            }
+            Err(e) => {
+                let error_msg = format!("Inference execution failed: {}", e);
+                error!("{}", error_msg);
+                return Err(BackendError::ExecutionError(error_msg));
+            }
+        }
+        
+        // Step 8: Get and analyze output tensor
+        info!("Retrieving output tensor...");
+        
+        match infer_request.get_output_tensor() {
+            Ok(output_tensor) => {
+                info!("✅ Output tensor retrieved successfully:");
+                
+                // Get tensor data size
+                match output_tensor.get_byte_size() {
+                    Ok(size) => {
+                        info!("  Tensor data size: {} bytes", size);
+                    }
+                    Err(e) => {
+                        info!("  Tensor data size unavailable: {}", e);
+                    }
+                }
+                
+                info!("  Tensor available for further processing");
+                
+                // Attempt to get tensor data to verify it's valid
+                match output_tensor.get_raw_data() {
+                    Ok(raw_data) => {
+                        info!("  Raw data accessible: {} bytes", raw_data.len());
+                        info!("  First few bytes: {:?}", &raw_data[..std::cmp::min(8, raw_data.len())]);
+                    }
+                    Err(e) => {
+                        info!("  Raw data access failed (this may be normal): {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to retrieve output tensor: {}", e);
+                error!("{}", error_msg);
+                return Err(BackendError::ExecutionError(error_msg));
+            }
+        }
+        
+        info!("🎯 Full inference pipeline completed successfully for model: {}", model_name);
         
         Ok(())
     }

@@ -568,15 +568,15 @@ fn execute_saic_file(file_path: &Path) -> Result<(), RunnerError> {
         .map_err(RunnerError::BackendError)?;
 
     // Display success information
-    println!("✅ SAIC file execution successful");
+    println!("✅ SAIC file inference completed successfully");
     println!("   File: {}", file_path.display());
     println!("   Format: SAIC v0.1");
     println!("   Model: {}", model_name);
     println!("   Backend: {}", cpu_backend.name());
     println!("   Payload size: {} bytes", model_payload.len());
-    println!("   Status: Model compiled and ready for inference");
+    println!("   Status: Full inference pipeline executed with dummy data");
 
-    info!("SAIC file execution completed successfully");
+    info!("SAIC file inference pipeline completed successfully");
     Ok(())
 }
 
