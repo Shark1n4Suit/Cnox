@@ -26,12 +26,12 @@ The SAIC ecosystem follows a simple, powerful workflow that transforms any AI mo
 
 ```mermaid
 graph TD
-    A[AI Model<br/>".onnx, .safetensors, .pt"] --> B[saic-packager<br/>"Package & Validate"]
-    B --> C[".saic File<br/>"Secure Binary Container"]
-    C --> D[saic-runner<br/>"Load & Execute"]
+    A[AI Model<br/>onnx, safetensors, pt] --> B[saic-packager<br/>Package & Validate]
+    B --> C[.saic File<br/>Secure Binary Container]
+    C --> D[saic-runner<br/>Load & Execute]
     D --> E{Backend Selection}
-    E -->|CPU| F[OpenVINO Backend<br/>"Optimized CPU Inference"]
-    E -->|GPU| G[TensorRT Backend<br/>"Accelerated GPU Inference"]
+    E -->|CPU| F[OpenVINO Backend<br/>Optimized CPU Inference]
+    E -->|GPU| G[TensorRT Backend<br/>Accelerated GPU Inference]
     F --> H[Inference Results]
     G --> H
     
