@@ -71,72 +71,219 @@ Version 1.0 will focus on hardening the platform for production enterprise deplo
 
 ---
 
-## The Future: v2.0 (The Universal Container)
+## The Future: v2.0 (The Secure AI Constellation)
 
-**Goal: Replace the Container**
+**Goal: The Secure AI Constellation**
 
-The visionary .saicc concept represents our ambition to expand beyond AI models and become the universal standard for all secure applications, using WebAssembly (Wasm) to replace Docker entirely.
+The SAIC Constellation represents our ultimate vision—not just running single applications, but defining and orchestrating entire distributed systems as a single, declarative unit. This transforms SAIC from a container format into the foundation for a next-generation, secure cloud-native ecosystem.
 
-### The .saicc Vision
+### The SAIC Constellation Vision
 
-#### 🌐 Universal Application Container
-- **WebAssembly Integration**: Native Wasm execution for any application type
-- **Language Agnostic**: Support for Rust, C++, Python, JavaScript, and more
-- **Cross-Platform**: Single binary that runs on any architecture
-- **Zero Dependencies**: Self-contained applications with no external requirements
+#### 🌌 Distributed System as Code
+- **Declarative Definition**: Define entire distributed systems in `saic.constellation.yaml`
+- **Graph-Based Architecture**: Interconnected services as nodes in a distributed graph
+- **Hardware-Aware Scheduling**: Intelligent placement based on data locality and hardware availability
+- **Zero-Trust Mesh**: Automatic secure communication between all nodes
 
-#### 🔒 Security by Design
-- **Cryptographic Validation**: Every .saicc container is cryptographically signed
-- **Sandboxed Execution**: Complete isolation from the host system
-- **Resource Limits**: Enforced CPU, memory, and network constraints
-- **Audit Compliance**: Complete audit trail for regulatory requirements
+#### 🔐 Zero-Trust Security Mesh
+- **Automatic Encryption**: All inter-node communication is automatically encrypted
+- **DNA Key Authentication**: Every node authenticates using its unique cryptographic signature
+- **Mesh Topology**: Secure communication channels established between all nodes
+- **Audit Trail**: Complete audit trail of all distributed system activities
 
-#### ⚡ Performance First
-- **Native Speed**: WebAssembly execution at near-native performance
-- **Minimal Overhead**: Sub-100ms startup times for any application
-- **Efficient Resource Usage**: 90% reduction in memory footprint vs. Docker
-- **Instant Scaling**: Horizontal scaling with zero container startup delay
+#### ⚡ Intelligent Resource Orchestration
+- **Hardware Optimization**: AI models automatically placed on GPU-enabled nodes
+- **Data Locality**: Applications placed near their data sources
+- **Load Distribution**: Intelligent load balancing across the entire constellation
+- **Fault Tolerance**: Automatic failover and recovery across the distributed system
 
 #### 🏗️ Developer Experience
-- **Simple Packaging**: `saic-packager build myapp` for any application
-- **Universal Runner**: `saic-runner execute myapp.saicc` for any container
-- **IDE Integration**: Seamless development experience across all major IDEs
-- **Ecosystem Tools**: Rich ecosystem of tools for debugging, profiling, and monitoring
+- **Single Command Deployment**: `saic-runner deploy constellation.yaml` deploys entire systems
+- **Declarative Configuration**: Define complex distributed systems in simple YAML
+- **Visual Monitoring**: Real-time visualization of constellation topology and health
+- **Ecosystem Tools**: Rich tooling for distributed debugging, profiling, and monitoring
 
 ### Technical Architecture
 
+```mermaid
+graph TD
+    subgraph "SAIC Constellation (Managed by Coelanox Runner)"
+        subgraph "Node 1 (Web Server)"
+            A[Web Application<br/>.saicc Container<br/>Wasm Runtime]
+            B[Load Balancer<br/>API Gateway<br/>Security Layer]
+        end
+        
+        subgraph "Node 2 (Database)"
+            C[Database Service<br/>.saicc Container<br/>Data Layer]
+            D[Cache Service<br/>.saicc Container<br/>Memory Store]
+        end
+        
+        subgraph "Node 3 (GPU Server)"
+            E[AI Model<br/>.saic Container<br/>TensorRT Backend]
+            F[Model Cache<br/>Optimized Weights<br/>Memory Management]
+        end
+        
+        subgraph "Node 4 (Business Logic)"
+            G[Business Logic<br/>.saicc Container<br/>Workflow Engine]
+            H[Event Processor<br/>.saicc Container<br/>Message Queue]
+        end
+        
+        I[Zero-Trust<br/>Encrypted Mesh<br/>DNA Key Auth]
+    end
+    
+    J[External Requests] --> B
+    B --> A
+    A --> I
+    I --> C
+    I --> G
+    G --> I
+    I --> E
+    E --> I
+    I --> H
+    H --> I
+    I --> A
+    A --> B
+    B --> K[Response]
+    
+    style A fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
+    style B fill:#2196F3,stroke:#1565C0,stroke-width:2px,color:#fff
+    style C fill:#FF9800,stroke:#E65100,stroke-width:2px,color:#fff
+    style D fill:#9C27B0,stroke:#6A1B9A,stroke-width:2px,color:#fff
+    style E fill:#FF5722,stroke:#D84315,stroke-width:2px,color:#fff
+    style F fill:#795548,stroke:#5D4037,stroke-width:2px,color:#fff
+    style G fill:#E91E63,stroke:#AD1457,stroke-width:2px,color:#fff
+    style H fill:#607D8B,stroke:#37474F,stroke-width:2px,color:#fff
+    style I fill:#9E9E9E,stroke:#616161,stroke-width:3px,color:#fff
+    style J fill:#795548,stroke:#5D4037,stroke-width:2px,color:#fff
+    style K fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    .saicc Container                        │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   App Code  │  │   Runtime   │  │   Security  │      │
-│  │  (Wasm)     │  │  (Wasm VM)  │  │   Layer     │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘      │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │   Metadata  │  │   DNA Key   │  │   Config    │      │
-│  │   & Schema  │  │   Signature │  │   & Limits  │      │
-│  └─────────────┘  └─────────────┘  └─────────────┘      │
-└─────────────────────────────────────────────────────────────┘
+
+### The Coelanox Runner's Evolved Role
+
+The Coelanox Runner transforms into a sophisticated "cluster-aware orchestrator" that manages entire distributed systems:
+
+#### 🎛️ Constellation Orchestration
+- **Declarative Deployment**: Deploy entire distributed systems from YAML definitions
+- **Intelligent Scheduling**: Place nodes based on hardware requirements and data locality
+- **Health Monitoring**: Real-time monitoring of all nodes across the constellation
+- **Automatic Recovery**: Self-healing capabilities across the distributed system
+
+#### 🔐 Zero-Trust Security Management
+- **Mesh Establishment**: Automatically create secure communication mesh between all nodes
+- **DNA Key Validation**: Verify cryptographic signatures of all containers in the constellation
+- **Encrypted Communication**: All inter-node communication is automatically encrypted
+- **Access Control**: Enforce security policies across the entire distributed system
+
+#### ⚡ Performance Optimization
+- **Hardware-Aware Placement**: AI models automatically placed on GPU-enabled nodes
+- **Data Locality Optimization**: Place applications near their data sources
+- **Load Distribution**: Intelligent load balancing across the entire constellation
+- **Resource Scaling**: Dynamic scaling of individual nodes based on demand
+
+### Example Constellation Definition
+
+```yaml
+# saic.constellation.yaml
+constellation:
+  name: "ai-powered-ecommerce"
+  version: "1.0.0"
+  
+nodes:
+  web-server:
+    type: ".saicc"
+    image: "web-app.saicc"
+    replicas: 3
+    resources:
+      cpu: "2"
+      memory: "4Gi"
+    placement:
+      strategy: "spread"
+      
+  ai-recommendation:
+    type: ".saic"
+    image: "recommendation-model.saic"
+    replicas: 2
+    resources:
+      cpu: "4"
+      memory: "16Gi"
+      gpu: "1"
+    placement:
+      strategy: "gpu-optimized"
+      
+  database:
+    type: ".saicc"
+    image: "postgres.saicc"
+    replicas: 1
+    resources:
+      cpu: "8"
+      memory: "32Gi"
+    placement:
+      strategy: "data-locality"
+      
+  cache:
+    type: ".saicc"
+    image: "redis.saicc"
+    replicas: 2
+    resources:
+      cpu: "1"
+      memory: "2Gi"
+    placement:
+      strategy: "spread"
+
+communication:
+  mesh:
+    enabled: true
+    encryption: "aes-256-gcm"
+    authentication: "dna-key"
+    
+monitoring:
+  metrics: true
+  tracing: true
+  logging: "structured"
 ```
+
+### Benefits of the SAIC Constellation Architecture
+
+#### 🌌 Distributed System Simplicity
+- **Declarative Definition**: Define complex distributed systems in simple YAML
+- **Single Command Deployment**: Deploy entire systems with one command
+- **Visual Management**: Real-time visualization of system topology and health
+- **Automatic Orchestration**: No manual configuration of inter-service communication
+
+#### 🔐 Zero-Trust Security
+- **Automatic Security**: Zero-trust mesh established automatically
+- **Cryptographic Identity**: Every node has a unique DNA key
+- **Encrypted Communication**: All inter-node communication is encrypted
+- **Audit Compliance**: Complete audit trail of all distributed activities
+
+#### ⚡ Intelligent Resource Management
+- **Hardware Optimization**: AI models automatically placed on optimal hardware
+- **Data Locality**: Applications placed near their data sources
+- **Load Distribution**: Intelligent load balancing across the entire system
+- **Fault Tolerance**: Automatic failover and recovery capabilities
+
+#### 🚀 Performance Guaranteed
+- **Optimal Placement**: Each node placed on hardware optimized for its workload
+- **Minimal Latency**: Direct communication between nodes with minimal overhead
+- **Scalable Architecture**: Horizontal scaling of individual nodes
+- **Resource Efficiency**: Each node uses only the resources it needs
 
 ### Migration Path
 
-#### Phase 1: AI Applications (v1.0 → v1.5)
-- Extend SAIC to support general-purpose AI applications
-- Add WebAssembly backend for AI model execution
-- Maintain backward compatibility with existing .saic files
+#### Phase 1: Constellation Foundation (v1.5 → v2.0)
+- Implement the SAIC Constellation architecture with distributed node support
+- Develop the cluster-aware orchestrator capabilities in the Coelanox Runner
+- Create the zero-trust mesh communication protocol
 
-#### Phase 2: Web Applications (v1.5 → v2.0)
-- Support for web applications and microservices
-- HTTP/HTTPS server capabilities within .saicc containers
-- Database and cache integration patterns
+#### Phase 2: Constellation Ecosystem (v2.0 → v2.5)
+- Build rich ecosystem of pre-built .saicc and .saic containers
+- Develop advanced constellation management and monitoring tools
+- Create enterprise deployment patterns for constellation-based systems
 
-#### Phase 3: Universal Applications (v2.0+)
-- Support for any application type (databases, message queues, etc.)
-- Rich ecosystem of pre-built .saicc containers
-- Enterprise deployment patterns and best practices
+#### Phase 3: Universal Constellations (v2.5+)
+- Extend constellation architecture to support any distributed system type
+- Develop constellation marketplace and distribution system
+- Create advanced constellation orchestration and scaling capabilities
 
 ---
 
