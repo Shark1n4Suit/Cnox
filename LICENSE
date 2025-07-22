@@ -16,46 +16,38 @@ Change License: The Apache License, Version 2.0 (https://www.apache.org/licenses
 
 Copyright (c) 2025 Coelanox AB. All rights reserved.
 
-Licensed under the Business Source License 1.1 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+This is a Business Source License 1.1 ("BSL"). The Licensor is making the Licensed Work available to you as a User under this BSL.
 
-https://mariadb.com/bsl11/
+"Licensed Work" means the specified version of the Licensor's software licensed to you under this BSL.
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+"User" means any person or entity that uses the Licensed Work. A User is a "Permitted User" if the User is not a Competing User.
 
----
+"Competing User" means a person or entity that is developing a product that competes with the Licensed Work.
 
-Business Source License 1.1
+"Change Date" means the date on which the Licensed Work automatically becomes available under the Change License.
 
-Terms
+"Change License" means the license that the Licensed Work is relicensed under on the Change Date.
 
-The Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, and make non-production use of the Licensed Work. The Licensor may make an Additional Use Grant, above, permitting limited production use.
+"Additional Use Grant" means any right granted to all Users by the Licensor in addition to the rights granted in this BSL.
 
-Effective on the Change Date, or the fourth anniversary of the first publicly available distribution of a specific version of the Licensed Work under this License, whichever comes first, the Licensor hereby grants you rights to freely distribute the Licensed Work as part of a larger work or alone, in unmodified form as well as in modified form, in both source and object code forms, and to permit persons to whom the Licensed Work is furnished to do the same, subject to the following conditions:
+You may use the Licensed Work free of charge and without a separate license from the Licensor if you are a Permitted User and your use of the Licensed Work does not exceed the scope of the Additional Use Grant. Any other use is not permitted under this BSL and requires a separate commercial license from the Licensor.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Licensed Work.
+You may not use the Licensed Work if you are a Competing User.
 
-THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS IN THE LICENSED WORK.
+You may not redistribute the Licensed Work. You may make the Licensed Work available to others for the purposes of facilitating your use of the Licensed Work as permitted under this BSL (for example, by hosting the Licensed Work on a server). You may not make the Licensed Work available to others in a way that would permit them to use the Licensed Work in a manner that is not permitted under this BSL.
 
----
+You may modify the Licensed Work. You may use your modifications to the Licensed Work solely for the purposes of using the Licensed Work as permitted under this BSL. You may not otherwise redistribute your modifications.
 
-Additional Use Grant
+On the Change Date, the Licensed Work becomes available under the Change License.
 
-You may use a version of the Licensed Work for development, testing, and other non-production purposes.
+For information about the Licensor's commercial license offering, please contact contact@coelanox.com.
 
----
+If you are in doubt as to whether your use of the Licensed Work is permitted under this BSL, please contact the Licensor at contact@coelanox.com.
 
-Change Date
+The Licensor may grant you a commercial license to use the Licensed Work for purposes not permitted under this BSL. A commercial license may be granted only by the Licensor in a written agreement signed by an authorized representative of the Licensor.
 
-Four years after the release date of the version of the Licensed Work.
+This BSL does not grant you any right to use the Licensor's trademarks.
 
----
+The Licensor makes the Licensed Work available on an "as is" basis and without any warranty, express or implied.
 
-Change License
-
-The Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+The Licensor will not be liable to you for any damages arising out of your use of the Licensed Work.
