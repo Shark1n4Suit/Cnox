@@ -2,23 +2,23 @@
 
 ## The Journey to SAIC
 
-My journey with SAIC began at age 9, when I made a pivotal choice that would shape everything that followed. I gave up a dream of being an underwater photographer for something more fundamental: **freedom**.
+My journey with SAIC began at age 9, when I made a choice that would define everything that followed. I gave up a dream of being an underwater photographer for something more fundamental: **freedom**.
 
-I chose technology as my path to that freedom, and I became obsessed with AI because it represented everything I wanted to be: all-knowing, fast, intelligent, and objective. AI wasn't just a technology to me—it was the embodiment of human potential, the closest thing we've created to pure intelligence.
+I chose technology as my path to that freedom, and I became obsessed with AI because it was everything I wanted to be: all-knowing, fast, intelligent, and objective. AI wasn't just a technology to me—it was the ideal I was chasing. Pure intelligence, untainted by human bias, capable of understanding everything.
 
 ## The Problem That Changed Everything
 
-Last year, I tried to build a company called 'aifin' and hit a wall that would ultimately lead to SAIC. I had a valuable AI model, and I wanted to deploy it on my clients' own servers. But there was a fundamental problem: **how could I deploy my valuable AI model on a client's servers without them just stealing my code?**
+Last year, I tried to build a company called 'aifin' and hit a wall that would ultimately lead to SAIC. I had built a powerful AI model—something valuable that could solve real problems. I wanted to deploy it on my clients' own servers, but there was one infuriating problem that blocked everything: **how could I deploy my valuable AI model on a client's servers without them just stealing my code?**
 
-This wasn't just a business problem—it was an existential one. The current infrastructure for AI deployment was broken. There was no standardized format for AI that was both secure and fast enough. The existing solutions were either insecure (allowing code theft) or so slow they made real-world deployment impractical.
+This wasn't just a business problem—it was an existential one. I had the technology, I had the vision, but the infrastructure to support it simply didn't exist. The current state of AI deployment was broken: there was no standardized format that was both secure and fast enough. Every solution was either insecure (allowing code theft) or so slow it made real-world deployment impossible.
 
-I was stuck. My vision for 'aifin' was clear, but the infrastructure to support it simply didn't exist.
+I was completely stuck. My vision for 'aifin' was clear, but I couldn't get past this single, fundamental problem.
 
 ## The Breakthrough
 
 After a different, rushed AI project failed, I took a step back. Sometimes the best ideas come when you stop trying to force them. In that moment of clarity, I finally had the breakthrough: **a standardized file format for AI that would solve both the security and performance problems.**
 
-This is where the Secure Artificial Intelligence Container (SAIC) was born.
+This wasn't just a random idea—it was the direct, targeted solution I had been searching for. The answer to the 'aifin' problem that had been blocking me. This is where the Secure Artificial Intelligence Container (SAIC) was born.
 
 ## The Vision
 
