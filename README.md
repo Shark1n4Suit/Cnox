@@ -398,6 +398,8 @@ SAIC validation:
 - **Repository**: [github.com/Shark1n4Suit/Saic](https://github.com/Shark1n4Suit/Saic)
 - **Issues**: [Report bugs or request features](https://github.com/Shark1n4Suit/Saic/issues)
 - **Documentation**: Available in the [docs/](docs/) folder
+- **Roadmap**: [Project Roadmap](ROADMAP.md) - Our strategic vision and future plans
+- **Contributing**: [Contributing Guide](docs/CONTRIBUTING.md) - How to get involved
 - **Examples**: Coming soon (will be available when organization is created)
 
 ## 🤝 Community
@@ -409,6 +411,7 @@ We're building SAIC as an open, inclusive community focused on advancing secure 
 - 💡 **Feature Requests**: Have an idea? [Open an issue](https://github.com/Shark1n4Suit/Saic/issues) with the "enhancement" label
 - 🔧 **Contribute Code**: Check our [Contributing Guide](docs/CONTRIBUTING.md)
 - 📖 **Improve Docs**: Help make our documentation even better
+- 🗺️ **View Roadmap**: See our [Project Roadmap](ROADMAP.md) for future plans
 - 💬 **Stay Updated**: Watch this repository for the latest developments
 
 ### **Community Standards**
