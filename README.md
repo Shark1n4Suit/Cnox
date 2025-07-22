@@ -400,6 +400,7 @@ SAIC validation:
 - **Documentation**: Available in the [docs/](docs/) folder
 - **Roadmap**: [Project Roadmap](ROADMAP.md) - Our strategic vision and future plans
 - **Contributing**: [Contributing Guide](docs/CONTRIBUTING.md) - How to get involved
+- **Founder's Note**: [A Note from Our Founder](FOUNDER_NOTE.md) - The story behind SAIC
 - **Examples**: Coming soon (will be available when organization is created)
 
 ## 🤝 Community
