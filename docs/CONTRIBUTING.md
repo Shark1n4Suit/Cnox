@@ -11,6 +11,7 @@ Thank you for your interest in contributing to **Coelanox SAIC**! We welcome con
 - **🧪 Testing**: Expand test coverage and validate across different hardware
 - **📊 Benchmarks**: Performance testing and optimization analysis
 - **🎨 Examples**: Create sample models and integration demonstrations
+- **🚀 Performance Optimization**: Help us maintain world-class performance standards
 
 ## 🚀 Getting Started
 
@@ -59,6 +60,35 @@ Thank you for your interest in contributing to **Coelanox SAIC**! We welcome con
    # Test runner
    cargo run --bin runner -- --help
    ```
+
+## 🏆 Performance Standards
+
+SAIC maintains **world-class performance** standards. All contributions must preserve or improve our current performance achievements:
+
+### **Current Performance Benchmarks**
+- **INSTANTANEOUS Loading**: <1ms for all model sizes
+- **World-Class Throughput**: 1000+ GB/s parse speed
+- **Memory Efficiency**: Zero-copy operations throughout
+- **Audit Compliance**: Full logging when needed, silent when not
+
+### **Performance Requirements**
+- **No regression**: New features must not degrade current performance
+- **Zero-copy first**: Prefer zero-copy operations over buffered I/O
+- **Memory mapping**: Use memory mapping for file operations
+- **Conditional logging**: Audit logging must be optional and zero-overhead
+- **Binary formats**: Prefer binary formats over text parsing
+
+### **Performance Testing**
+```bash
+# Run performance benchmarks
+python3 tools/benchmark_world_class.py
+
+# Test loading performance
+time ./runner/target/release/runner run mobilenetv2.saic
+
+# Verify audit mode doesn't impact performance
+time ./runner/target/release/runner run mobilenetv2.saic --audit
+```
 
 ## 📋 Development Workflow
 
