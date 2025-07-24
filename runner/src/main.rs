@@ -4,6 +4,9 @@ use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use memmap2::Mmap;
 
+mod config;
+use config::SaicConfig;
+
 /// Binary manifest structure for zero-copy parsing
 /// 
 /// This replaces JSON parsing with a fixed-size binary format for instant loading
@@ -260,16 +263,30 @@ enum Commands {
         /// Path to the .saic file to process
         #[arg(value_name = "FILE")]
         file: PathBuf,
+        /// Enable audit mode for detailed logging
+        #[arg(short = 'a', long = "audit")]
+        audit: bool,
     },
     /// Execute a SAIC file using specified backend
     Execute {
         /// Path to the .saic file to execute
         #[arg(value_name = "FILE")]
         file: PathBuf,
-        /// Backend to use for execution (cpu or gpu)
-        #[arg(short = 'b', long = "backend", default_value = "cpu")]
+        /// Backend to use for execution (cpu, gpu, or auto)
+        #[arg(short = 'b', long = "backend", default_value = "auto")]
         backend: String,
+        /// Enable audit mode for detailed logging
+        #[arg(short = 'a', long = "audit")]
+        audit: bool,
     },
+    /// Create a sample configuration file
+    Config {
+        /// Path to save the configuration file
+        #[arg(value_name = "FILE", default_value = "saic.yaml")]
+        file: PathBuf,
+    },
+    /// List available backends and their status
+    Backends,
 }
 
 /// Command-line interface definition for the SAIC runner
@@ -355,12 +372,13 @@ fn validate_file_path(file_path: &Path) -> Result<(), RunnerError> {
 /// use std::path::Path;
 /// let result = process_saic_file(Path::new("model.saic"));
 /// ```
-fn process_saic_file(file_path: &Path) -> Result<(), RunnerError> {
+fn process_saic_file(file_path: &Path, audit_override: Option<bool>) -> Result<(), RunnerError> {
     use std::fs::File;
     use std::io::Read;
 
-    // SMART LOGGING: Log only for audit mode or errors
-    let audit_mode = std::env::var("SAIC_AUDIT_MODE").is_ok();
+    // Load configuration
+    let config = SaicConfig::load();
+    let audit_mode = audit_override.unwrap_or(config.audit_mode);
     
     if audit_mode {
         info!("Starting SAIC file processing");
@@ -633,7 +651,7 @@ fn execute_saic_file(file_path: &Path) -> Result<(), RunnerError> {
 /// # Returns
 /// 
 /// * `Result<(), RunnerError>` - Ok(()) if execution successful, RunnerError on failure
-fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str) -> Result<(), RunnerError> {
+fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_override: Option<bool>) -> Result<(), RunnerError> {
     use std::fs::File;
     use std::io::Read;
 
@@ -736,7 +754,29 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str) -> Resul
     info!("Model payload read successfully: {} bytes", model_payload.len());
 
     // Step 5: Initialize selected backend and execute model
-    match backend_name.to_lowercase().as_str() {
+    let actual_backend = if backend_name.to_lowercase() == "auto" {
+        // Auto-select best available backend
+        let cpu_backend = CpuBackend::new();
+        let gpu_backend = GpuBackend::new();
+        
+        if gpu_backend.is_available() {
+            info!("Auto-selecting GPU backend (TensorRT) - best performance");
+            "gpu"
+        } else if cpu_backend.is_available() {
+            info!("Auto-selecting CPU backend (OpenVINO) - GPU not available");
+            "cpu"
+        } else {
+            return Err(RunnerError::BackendError(
+                backends::BackendError::DeviceNotAvailable(
+                    "No backends available. Please install OpenVINO or TensorRT".to_string()
+                )
+            ));
+        }
+    } else {
+        backend_name.to_lowercase().as_str()
+    };
+    
+    match actual_backend {
         "cpu" => {
             info!("Initializing CPU backend (OpenVINO) for execution");
             let mut cpu_backend = CpuBackend::new();
@@ -798,13 +838,13 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str) -> Resul
         _ => {
             return Err(RunnerError::BackendError(
                 backends::BackendError::DeviceNotAvailable(
-                    format!("Unknown backend '{}'. Supported backends: cpu, gpu", backend_name)
+                    format!("Unknown backend '{}'. Supported backends: cpu, gpu, auto", backend_name)
                 )
             ));
         }
     }
 
-    info!("SAIC file inference pipeline completed successfully with {} backend", backend_name);
+    info!("SAIC file inference pipeline completed successfully with {} backend", actual_backend);
     Ok(())
 }
 
@@ -828,12 +868,13 @@ fn main() -> Result<(), RunnerError> {
 
     // Handle the command
     match cli.command {
-        Commands::Run { file } => {
+        Commands::Run { file, audit } => {
             info!("Processing run command");
             info!("Target file: {}", file.display());
+            info!("Audit mode: {}", audit);
 
             // Process the SAIC file
-            match process_saic_file(&file) {
+            match process_saic_file(&file, Some(audit)) {
                 Ok(()) => {
                     info!("Runner completed successfully");
                     Ok(())
@@ -844,13 +885,14 @@ fn main() -> Result<(), RunnerError> {
                 }
             }
         }
-        Commands::Execute { file, backend } => {
+        Commands::Execute { file, backend, audit } => {
             info!("Processing execute command");
             info!("Target file: {}", file.display());
             info!("Backend: {}", backend);
+            info!("Audit mode: {}", audit);
 
             // Execute the SAIC file with specified backend
-            match execute_saic_file_with_backend(&file, &backend) {
+            match execute_saic_file_with_backend(&file, &backend, Some(audit)) {
                 Ok(()) => {
                     info!("Execution completed successfully");
                     Ok(())
@@ -860,6 +902,71 @@ fn main() -> Result<(), RunnerError> {
                     Err(e)
                 }
             }
+        }
+        Commands::Config { file } => {
+            info!("Creating sample configuration file");
+            info!("Target file: {}", file.display());
+
+            // Create sample configuration
+            match SaicConfig::create_sample_config(&file) {
+                Ok(()) => {
+                    println!("✅ Sample configuration created successfully");
+                    println!("   File: {}", file.display());
+                    println!("   Edit this file to customize SAIC settings");
+                    info!("Configuration file created successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to create configuration file: {}", e);
+                    Err(RunnerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Configuration creation failed: {}", e)
+                    )))
+                }
+            }
+        }
+        Commands::Backends => {
+            info!("Listing available backends");
+            
+            // Check CPU backend
+            let cpu_backend = CpuBackend::new();
+            let cpu_available = cpu_backend.is_available();
+            
+            // Check GPU backend
+            let gpu_backend = GpuBackend::new();
+            let gpu_available = gpu_backend.is_available();
+            
+            // Load configuration for default backend
+            let config = SaicConfig::load();
+            
+            println!("🚀 SAIC Available Backends:");
+            println!();
+            println!("CPU Backend (OpenVINO):");
+            println!("   Status: {}", if cpu_available { "✅ Available" } else { "❌ Not Available" });
+            println!("   Description: Intel OpenVINO CPU inference");
+            println!("   Usage: --backend cpu");
+            println!();
+            println!("GPU Backend (TensorRT):");
+            println!("   Status: {}", if gpu_available { "✅ Available" } else { "❌ Not Available" });
+            println!("   Description: NVIDIA TensorRT GPU inference");
+            println!("   Usage: --backend gpu");
+            println!();
+            println!("Auto Selection:");
+            println!("   Status: ✅ Always Available");
+            println!("   Description: Automatically select best available backend");
+            println!("   Usage: --backend auto (default)");
+            println!();
+            println!("Configuration:");
+            println!("   Default Backend: {}", config.default_backend);
+            println!("   Config File: {}", if std::path::Path::new("saic.yaml").exists() { "saic.yaml" } else { "Not found" });
+            println!();
+            println!("Examples:");
+            println!("   ./runner execute model.saic --backend cpu");
+            println!("   ./runner execute model.saic --backend gpu");
+            println!("   ./runner execute model.saic --backend auto");
+            
+            info!("Backend listing completed");
+            Ok(())
         }
     }
 }
