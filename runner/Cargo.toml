@@ -37,6 +37,9 @@ tensorrt = { version = "0.1", optional = true }
 # C library interface for GPU memory management
 libc = "0.2"
 
+# Memory mapping for high-performance file I/O
+memmap2 = "0.9"
+
 # Build optimization profiles
 [profile.dev]
 debug = 1              # Reduced debug info for faster builds

@@ -257,7 +257,7 @@ fn parse_args() -> Result<PackagerArgs, PackagerError> {
 /// creating a properly structured container file with header, manifest, and payload.
 fn create_saic_file(args: &PackagerArgs) -> Result<(), PackagerError> {
     use std::fs::File;
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     info!("Starting SAIC file creation process");
     info!("Model: {}", args.model_path.display());
@@ -306,33 +306,23 @@ fn create_saic_file(args: &PackagerArgs) -> Result<(), PackagerError> {
     output_file.write_all(manifest_bytes)
         .map_err(PackagerError::Io)?;
     
-    // Step 7: Copy the input model file contents
+    // Step 7: Copy the input model file contents with optimized I/O
     info!("Copying model payload");
-    let mut input_file = File::open(&args.model_path)
+    let input_file = File::open(&args.model_path)
         .map_err(PackagerError::Io)?;
     
-    // Read and write the model file in chunks for memory efficiency
-    let mut buffer = [0u8; 8192]; // 8KB buffer for efficient copying
-    let mut total_bytes_copied = 0u64;
+    // Use Rust's optimized copy with large buffers for maximum performance
+    use std::io::{BufReader, BufWriter, copy};
     
-    loop {
-        let bytes_read = input_file.read(&mut buffer)
-            .map_err(PackagerError::Io)?;
-        
-        if bytes_read == 0 {
-            break; // End of file reached
-        }
-        
-        output_file.write_all(&buffer[..bytes_read])
-            .map_err(PackagerError::Io)?;
-        
-        total_bytes_copied += bytes_read as u64;
-    }
+    let mut reader = BufReader::with_capacity(64 * 1024, input_file); // 64KB buffer
+    let mut writer = BufWriter::with_capacity(64 * 1024, output_file);
+    let bytes_copied = copy(&mut reader, &mut writer)
+        .map_err(PackagerError::Io)?;
     
     // Ensure all data is written to disk
-    output_file.flush().map_err(PackagerError::Io)?;
+    writer.flush().map_err(PackagerError::Io)?;
     
-    info!("Model payload copied: {} bytes", total_bytes_copied);
+    info!("Model payload copied: {} bytes", bytes_copied);
     info!("SAIC file creation completed successfully");
     
     // Log final file structure summary
@@ -340,8 +330,8 @@ fn create_saic_file(args: &PackagerArgs) -> Result<(), PackagerError> {
     info!("  Header: 8 bytes (magic + version)");
     info!("  Manifest length: 4 bytes");
     info!("  Manifest: {} bytes", manifest_bytes.len());
-    info!("  Model payload: {} bytes", total_bytes_copied);
-    info!("  Total file size: {} bytes", 8 + 4 + manifest_bytes.len() as u64 + total_bytes_copied);
+    info!("  Model payload: {} bytes", bytes_copied);
+    info!("  Total file size: {} bytes", 8 + 4 + manifest_bytes.len() as u64 + bytes_copied);
     
     Ok(())
 }
