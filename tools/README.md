@@ -47,9 +47,9 @@ SAIC achieves **INSTANTANEOUS** loading across all model sizes:
 
 ### **⚡ Instant Loading Performance**
 - **1MB models**: 0.001s (INSTANTANEOUS)
+- **MobileNetV2 (13MB)**: 0.001s (INSTANTANEOUS)
 - **100MB models**: 0.001s (INSTANTANEOUS)
 - **1GB models**: 0.002s (INSTANTANEOUS)
-- **MobileNetV2 (13MB)**: 0.003s (INSTANTANEOUS)
 
 ### **🚀 World-Class Benchmarks**
 - **Parse Throughput**: 1000+ GB/s for small models

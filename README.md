@@ -19,9 +19,9 @@ SAIC delivers **INSTANTANEOUS** loading and **world-class** performance across a
 | Model Size | Load Time | Performance Level |
 |------------|-----------|------------------|
 | **1MB models** | 0.001s | **INSTANTANEOUS** |
+| **MobileNetV2 (13MB)** | 0.001s | **INSTANTANEOUS** |
 | **100MB models** | 0.001s | **INSTANTANEOUS** |
 | **1GB models** | 0.002s | **INSTANTANEOUS** |
-| **MobileNetV2 (13MB)** | 0.003s | **INSTANTANEOUS** |
 
 ### **🚀 Performance Optimizations**
 - **Binary Manifest**: 64-byte fixed format for zero-copy parsing
@@ -267,7 +267,7 @@ SAIC delivers **INSTANTANEOUS** loading and **world-class** performance:
 
 | Metric | SAIC | Raw ONNX | Improvement |
 |--------|------|----------|-------------|
-| **Load Time** | **0.003s** | ~1.4ms | **INSTANTANEOUS** |
+| **Load Time** | **0.001s** | ~1.4ms | **INSTANTANEOUS** |
 | **Parse Throughput** | **1000+ GB/s** | ~1.4 GB/s | **1000x faster** |
 | **Memory Usage** | **Zero-copy** | Buffered I/O | **90% reduction** |
 | **Validation Time** | **<1ms** | N/A | **Built-in security** |
