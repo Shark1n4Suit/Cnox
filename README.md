@@ -111,41 +111,38 @@ Get started with SAIC in 3 simple steps:
 # 1. Download the SAIC runner
 curl -fsSL https://install.coelanox.com/saic | sh
 
-# 2. Download a pre-packaged model
-curl -O https://models.coelanox.com/examples/mobilenet.saic
+# 2. Test with example model
+saic-runner run mobilenetv2.saic
 
 # 3. Run inference
-saic-runner execute mobilenet.saic --backend cpu
+saic-runner execute mobilenetv2.saic --backend cpu
 ```
+
+**That's it! You've just experienced INSTANTANEOUS AI model loading.** 🎉
+
+📖 **For detailed instructions, see [QUICKSTART.md](QUICKSTART.md)**
+🔧 **For installation help, see [INSTALL.md](INSTALL.md)**
 
 ## 📋 Installation
 
-### Linux & macOS
+### Quick Install
+
 ```bash
-# Install via our official installer
+# Download and install SAIC
 curl -fsSL https://install.coelanox.com/saic | sh
 
-# Or install manually from GitHub releases
-wget https://github.com/coelanox/saic/releases/latest/download/saic-linux.tar.gz
-tar -xzf saic-linux.tar.gz
-sudo mv saic-runner saic-packager /usr/local/bin/
+# Verify installation
+saic-runner --version
+saic-packager --version
 ```
 
-### Windows
-```powershell
-# Install via PowerShell
-iwr -useb https://install.coelanox.com/saic.ps1 | iex
+### Manual Installation
 
-# Or download from releases
-# Visit: https://github.com/coelanox/saic/releases/latest
-```
-
-### Build from Source
-```bash
-git clone https://github.com/coelanox/saic.git
-cd saic
-cargo build --release --features full-inference
-```
+See [INSTALL.md](INSTALL.md) for detailed installation instructions including:
+- Prerequisites and dependencies
+- Build from source
+- Backend setup (OpenVINO, TensorRT)
+- Configuration and troubleshooting
 
 ## 📖 Basic Usage
 
@@ -601,21 +598,23 @@ SAIC validation:
 
 ## 🔗 Links
 
-- **Repository**: [github.com/Shark1n4Suit/Saic](https://github.com/Shark1n4Suit/Saic)
-- **Issues**: [Report bugs or request features](https://github.com/Shark1n4Suit/Saic/issues)
+- **Repository**: [github.com/coelanox/saic](https://github.com/coelanox/saic)
+- **Issues**: [Report bugs or request features](https://github.com/coelanox/saic/issues)
 - **Documentation**: Available in the [docs/](docs/) folder
+- **Quick Start**: [QUICKSTART.md](QUICKSTART.md) - Get started in 5 minutes
+- **Installation**: [INSTALL.md](INSTALL.md) - Detailed setup instructions
 - **Roadmap**: [Project Roadmap](ROADMAP.md) - Our strategic vision and future plans
 - **Contributing**: [Contributing Guide](docs/CONTRIBUTING.md) - How to get involved
 - **Founder's Note**: [A Note from Our Founder](FOUNDER_NOTE.md) - The story behind SAIC
-- **Examples**: Coming soon (will be available when organization is created)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Release notes and version history
 
 ## 🤝 Community
 
 We're building SAIC as an open, inclusive community focused on advancing secure AI deployment. We welcome contributors of all skill levels and backgrounds!
 
 ### **Getting Involved**
-- 🐛 **Report Issues**: Found a bug? [Open an issue](https://github.com/Shark1n4Suit/Saic/issues)
-- 💡 **Feature Requests**: Have an idea? [Open an issue](https://github.com/Shark1n4Suit/Saic/issues) with the "enhancement" label
+- 🐛 **Report Issues**: Found a bug? [Open an issue](https://github.com/coelanox/saic/issues)
+- 💡 **Feature Requests**: Have an idea? [Open an issue](https://github.com/coelanox/saic/issues) with the "enhancement" label
 - 🔧 **Contribute Code**: Check our [Contributing Guide](docs/CONTRIBUTING.md)
 - 📖 **Improve Docs**: Help make our documentation even better
 - 🗺️ **View Roadmap**: See our [Project Roadmap](ROADMAP.md) for future plans
@@ -640,7 +639,7 @@ The BSL allows free use for development, testing, and non-production purposes. C
 
 <div align="center">
 
-**[📁 Repository](https://github.com/Shark1n4Suit/Saic)** • **[🐛 Issues](https://github.com/Shark1n4Suit/Saic/issues)** • **[📚 Documentation](https://github.com/Shark1n4Suit/Saic/tree/main/docs)**
+**[📁 Repository](https://github.com/coelanox/saic)** • **[🐛 Issues](https://github.com/coelanox/saic/issues)** • **[📚 Documentation](https://github.com/coelanox/saic/tree/main/docs)**
 
 *Built with ❤️ for the future of secure AI deployment*
 
