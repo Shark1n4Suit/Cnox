@@ -38,6 +38,7 @@ SAIC delivers **INSTANTANEOUS** loading and **world-class** performance across a
 
 ## 🚀 Key Features
 
+- **🌍 Universal Binary Container**: Packages any AI format (ONNX, PyTorch, TensorFlow, Safetensors, etc.) without conversion
 - **⚡ INSTANTANEOUS Loading**: <1ms load times for all model sizes with binary manifests and memory mapping
 - **🚀 World-Class Performance**: 1000+ GB/s parse throughput with zero-copy operations
 - **📦 Minimal Overhead**: Binary format with ~50 bytes overhead vs. gigabytes in traditional containers  
@@ -53,13 +54,13 @@ The SAIC ecosystem follows a simple, powerful workflow that transforms any AI mo
 
 ```mermaid
 graph TD
-    A[AI Model<br/>onnx, safetensors, pt] --> B[saic-packager<br/>Package & Validate]
-    B --> C[.saic File<br/>Secure Binary Container]
-    C --> D[saic-runner<br/>Load & Execute]
+    A[Any AI Model<br/>ONNX, PyTorch, TensorFlow,<br/>Safetensors, Custom Formats] --> B[saic-packager<br/>Universal Binary Packaging]
+    B --> C[.saic File<br/>Universal Binary Container]
+    C --> D[saic-runner<br/>Universal Execution]
     D --> E{Backend Selection}
     E -->|CPU| F[OpenVINO Backend<br/>Optimized CPU Inference]
     E -->|GPU| G[TensorRT Backend<br/>Accelerated GPU Inference]
-    F --> H[Inference Results]
+    F --> H[Universal Inference Results]
     G --> H
     
     style A fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
@@ -79,14 +80,14 @@ SAIC represents the future of AI deployment - a complete, mature ecosystem that 
 ```mermaid
 graph TD
     A[Developer in IDE<br/>VS Code] --> B[saic.config.yaml<br/>Define & Configure]
-    B --> C[saic-packager<br/>Optimize & Secure]
-    C --> D[.saic File<br/>Secure Binary with DNA Key]
-    D --> E[saic-runner<br/>Load & Execute]
+    B --> C[saic-packager<br/>Universal Binary Packaging]
+    C --> D[.saic File<br/>Universal Binary Container]
+    D --> E[saic-runner<br/>Universal Execution]
     E --> F{Backend Selection}
     F -->|CPU| G[CPU Backend<br/>OpenVINO]
     F -->|GPU| H[GPU Backend<br/>TensorRT]
     F -->|AMD| I[AMD Backend<br/>ROCm]
-    G --> J[Inference Results]
+    G --> J[Universal Inference Results]
     H --> J
     I --> J
     
