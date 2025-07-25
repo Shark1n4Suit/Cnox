@@ -1,5 +1,9 @@
-# Coelanox SAIC
-**Fast, Secure, Small** - The next-generation AI deployment standard
+<div align="center">
+  <img src="assets/coelanox-saic_logo.png" alt="SAIC Logo" width="200">
+  
+  # Coelanox SAIC
+  **Fast, Secure, Small** - The next-generation AI deployment standard
+</div>
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/coelanox/saic/actions)
