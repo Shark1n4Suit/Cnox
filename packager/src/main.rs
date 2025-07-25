@@ -317,7 +317,7 @@ fn create_saic_file(args: &PackagerArgs) -> Result<(), PackagerError> {
     let mut reader = BufReader::with_capacity(64 * 1024, input_file); // 64KB buffer
     let mut writer = BufWriter::with_capacity(64 * 1024, output_file);
     let bytes_copied = copy(&mut reader, &mut writer)
-        .map_err(PackagerError::Io)?;
+            .map_err(PackagerError::Io)?;
     
     // Ensure all data is written to disk
     writer.flush().map_err(PackagerError::Io)?;

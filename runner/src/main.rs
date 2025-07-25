@@ -381,15 +381,15 @@ fn process_saic_file(file_path: &Path, audit_override: Option<bool>) -> Result<(
     let audit_mode = audit_override.unwrap_or(config.audit_mode);
     
     if audit_mode {
-        info!("Starting SAIC file processing");
-        info!("File: {}", file_path.display());
+    info!("Starting SAIC file processing");
+    info!("File: {}", file_path.display());
     }
 
     // Validate file path and accessibility
     validate_file_path(file_path)?;
 
     if audit_mode {
-        info!("File validation passed");
+    info!("File validation passed");
     }
 
     // Step 1: Open the file and memory map it for instant loading
@@ -399,10 +399,10 @@ fn process_saic_file(file_path: &Path, audit_override: Option<bool>) -> Result<(
     
     let file = File::open(file_path)
         .map_err(RunnerError::Io)?;
-    
+
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(RunnerError::Io)?;
-    
+
     if audit_mode {
         info!("Memory mapping successful - {} bytes mapped", mmap.len());
     }
@@ -422,7 +422,7 @@ fn process_saic_file(file_path: &Path, audit_override: Option<bool>) -> Result<(
     
     // Step 3: Zero-copy magic validation (instant)
     if audit_mode {
-        info!("Validating magic number");
+    info!("Validating magic number");
     }
     
     let magic = &header[0..4];
@@ -456,7 +456,7 @@ fn process_saic_file(file_path: &Path, audit_override: Option<bool>) -> Result<(
             "File too small to contain binary manifest".to_string()
         ));
     }
-    
+
     // Read binary manifest directly (64 bytes)
     let manifest_data = &mmap[12..76];
     let manifest = unsafe { 
@@ -466,26 +466,26 @@ fn process_saic_file(file_path: &Path, audit_override: Option<bool>) -> Result<(
     let model_name = manifest.model_name();
     
     if audit_mode {
-        info!("SAIC file processing completed successfully");
-        info!("Model name: {}", model_name);
+    info!("SAIC file processing completed successfully");
+    info!("Model name: {}", model_name);
     }
 
     // Step 9: Conditional success output
     if audit_mode {
-        println!("✅ SAIC file validation successful");
-        println!("   File: {}", file_path.display());
-        println!("   Format: SAIC v0.1");
-        println!("   Model: {}", model_name);
-        
-        // Optional: Display additional file information
-        let file_size = std::fs::metadata(file_path)
-            .map_err(RunnerError::Io)?
-            .len();
+    println!("✅ SAIC file validation successful");
+    println!("   File: {}", file_path.display());
+    println!("   Format: SAIC v0.1");
+    println!("   Model: {}", model_name);
+    
+    // Optional: Display additional file information
+    let file_size = std::fs::metadata(file_path)
+        .map_err(RunnerError::Io)?
+        .len();
         let payload_size = file_size - 12 - 64; // Total - header - length - binary_manifest
-        println!("   File size: {} bytes", file_size);
-        println!("   Header: 8 bytes + 4 bytes length field");
+    println!("   File size: {} bytes", file_size);
+    println!("   Header: 8 bytes + 4 bytes length field");
         println!("   Manifest: 64 bytes (binary)");
-        println!("   Model payload: {} bytes", payload_size);
+    println!("   Model payload: {} bytes", payload_size);
     }
 
     Ok(())
