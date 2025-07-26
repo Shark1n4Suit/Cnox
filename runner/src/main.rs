@@ -761,10 +761,10 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_ov
         
         if gpu_backend.is_available() {
             info!("Auto-selecting GPU backend (TensorRT) - best performance");
-            "gpu"
+            "gpu".to_string()
         } else if cpu_backend.is_available() {
             info!("Auto-selecting CPU backend (OpenVINO) - GPU not available");
-            "cpu"
+            "cpu".to_string()
         } else {
             return Err(RunnerError::BackendError(
                 backends::BackendError::DeviceNotAvailable(
@@ -773,10 +773,10 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_ov
             ));
         }
     } else {
-        backend_name.to_lowercase().as_str()
+        backend_name.to_lowercase()
     };
     
-    match actual_backend {
+    match actual_backend.as_str() {
         "cpu" => {
             info!("Initializing CPU backend (OpenVINO) for execution");
             let mut cpu_backend = CpuBackend::new();

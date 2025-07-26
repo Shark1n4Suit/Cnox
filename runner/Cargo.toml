@@ -1,13 +1,13 @@
 [package]
 name = "saic-runner"
 version = "0.5.0-beta"
-edition = "2025"
+edition = "2021"
 description = "SAIC (Secure AI Container) file runner - reads and validates .saic files"
 authors = ["Benjamin Morin <benjamin@coelanox.com>"]
 license = "BSL-1.1"
 
 [features]
-default = ["cpu-backend"]
+default = ["validation-only"]
 validation-only = []
 cpu-backend = ["openvino"]
 gpu-backend = ["tensorrt"]
