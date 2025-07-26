@@ -1,0 +1,54 @@
+# SAIC Configuration File
+# 
+# This file configures the SAIC runner behavior, including audit logging,
+# performance settings, and backend preferences.
+
+# Enable detailed audit logging for compliance and debugging
+# Set to true for full audit trail, false for maximum performance
+audit_mode: true
+
+# Log level for tracing (trace, debug, info, warn, error)
+# Use 'trace' for maximum detail, 'error' for minimal output
+log_level: "info"
+
+# Default backend preference (cpu, gpu, auto)
+# 'cpu' = OpenVINO CPU backend
+# 'gpu' = TensorRT GPU backend  
+# 'auto' = Automatically select best available backend
+default_backend: "cpu"
+
+# Enable performance optimizations
+# Set to true for maximum speed, false for compatibility
+performance_mode: true
+
+# Maximum model size in bytes (0 = unlimited)
+# Set to 0 for unlimited, or specify size like 1073741824 for 1GB
+max_model_size: 0
+
+# Enable model caching for repeated executions
+# Set to true to cache compiled models for faster subsequent runs
+enable_caching: true
+
+# Cache directory for compiled models
+# Path where compiled models will be stored
+cache_dir: "/tmp/saic-cache"
+
+# Example configurations for different use cases:
+#
+# Production (maximum performance):
+# audit_mode: false
+# log_level: "error"
+# performance_mode: true
+# enable_caching: true
+#
+# Development (full debugging):
+# audit_mode: true
+# log_level: "debug"
+# performance_mode: false
+# enable_caching: false
+#
+# Compliance (audit trail):
+# audit_mode: true
+# log_level: "info"
+# performance_mode: true
+# enable_caching: true 

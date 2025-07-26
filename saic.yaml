@@ -5,11 +5,11 @@
 
 # Enable detailed audit logging for compliance and debugging
 # Set to true for full audit trail, false for maximum performance
-audit_mode: true
+audit_mode: false
 
 # Log level for tracing (trace, debug, info, warn, error)
 # Use 'trace' for maximum detail, 'error' for minimal output
-log_level: "info"
+log_level: "error"
 
 # Default backend preference (cpu, gpu, auto)
 # 'cpu' = OpenVINO CPU backend
@@ -42,13 +42,13 @@ cache_dir: "/tmp/saic-cache"
 # enable_caching: true
 #
 # Development (full debugging):
-# audit_mode: true
+# audit_mode: false
 # log_level: "debug"
 # performance_mode: false
 # enable_caching: false
 #
 # Compliance (audit trail):
-# audit_mode: true
-# log_level: "info"
+# audit_mode: false
+# log_level: "error"
 # performance_mode: true
 # enable_caching: true 
