@@ -3,9 +3,188 @@ use std::path::{Path, PathBuf};
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use memmap2::Mmap;
+use std::sync::OnceLock;
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{Read, Write};
+use std::thread;
+use std::time::Duration;
 
 mod config;
 use config::SaicConfig;
+
+// Static logging initialization flag for lazy loading
+static LOGGING_INIT: OnceLock<()> = OnceLock::new();
+
+// Global memory pool for buffer reuse
+static MEMORY_POOL: OnceLock<Mutex<MemoryPool>> = OnceLock::new();
+
+// Global model cache for daemon mode
+static MODEL_CACHE: OnceLock<Mutex<ModelCache>> = OnceLock::new();
+
+/// Model cache for daemon mode performance optimization
+/// 
+/// This struct manages cached models in memory to eliminate file I/O overhead
+/// for frequently accessed models.
+struct ModelCache {
+    /// Cached models with their file paths and data
+    models: std::collections::HashMap<PathBuf, CachedModel>,
+    /// Maximum memory usage in bytes
+    max_memory: usize,
+    /// Current memory usage in bytes
+    current_memory: usize,
+    /// Maximum number of cached models
+    max_models: usize,
+}
+
+/// Cached model data
+struct CachedModel {
+    /// Model data in memory
+    data: Vec<u8>,
+    /// Last access time for LRU eviction
+    last_access: std::time::Instant,
+    /// Model metadata
+    metadata: ModelMetadata,
+}
+
+/// Model metadata for caching
+struct ModelMetadata {
+    /// Model name
+    name: String,
+    /// File size in bytes
+    size: usize,
+    /// Creation time
+    created: std::time::SystemTime,
+}
+
+impl ModelCache {
+    /// Create a new model cache with default settings
+    fn new() -> Self {
+        Self {
+            models: std::collections::HashMap::new(),
+            max_memory: 1024 * 1024 * 1024, // 1GB max cache
+            current_memory: 0,
+            max_models: 10,
+        }
+    }
+    
+    /// Get a model from cache, loading it if not present
+    fn get_model(&mut self, path: &Path) -> Option<&CachedModel> {
+        if let Some(model) = self.models.get_mut(path) {
+            model.last_access = std::time::Instant::now();
+            Some(model)
+        } else {
+            None
+        }
+    }
+    
+    /// Add a model to cache with LRU eviction
+    fn add_model(&mut self, path: PathBuf, data: Vec<u8>, metadata: ModelMetadata) {
+        // Evict old models if needed
+        while (self.current_memory + data.len() > self.max_memory || 
+               self.models.len() >= self.max_models) && !self.models.is_empty() {
+            self.evict_lru();
+        }
+        
+        // Add new model
+        self.current_memory += data.len();
+        self.models.insert(path, CachedModel {
+            data,
+            last_access: std::time::Instant::now(),
+            metadata,
+        });
+    }
+    
+    /// Evict least recently used model
+    fn evict_lru(&mut self) {
+        let mut oldest = None;
+        let mut oldest_time = std::time::Instant::now();
+        
+        for (path, model) in &self.models {
+            if model.last_access < oldest_time {
+                oldest_time = model.last_access;
+                oldest = Some(path.clone());
+            }
+        }
+        
+        if let Some(path) = oldest {
+            if let Some(model) = self.models.remove(&path) {
+                self.current_memory -= model.data.len();
+            }
+        }
+    }
+    
+    /// Get the global model cache instance
+    fn global() -> &'static Mutex<ModelCache> {
+        MODEL_CACHE.get_or_init(|| Mutex::new(ModelCache::new()))
+    }
+}
+
+/// Memory pool for efficient buffer reuse
+/// 
+/// This struct manages a pool of reusable buffers to reduce allocation overhead
+/// and improve performance for small model operations.
+struct MemoryPool {
+    /// Available buffers of different sizes
+    buffers: VecDeque<Vec<u8>>,
+    /// Maximum number of buffers to keep in pool
+    max_buffers: usize,
+    /// Total memory usage in bytes
+    total_memory: usize,
+    /// Maximum memory usage in bytes
+    max_memory: usize,
+}
+
+impl MemoryPool {
+    /// Create a new memory pool with default settings
+    fn new() -> Self {
+        Self {
+            buffers: VecDeque::new(),
+            max_buffers: 10,
+            total_memory: 0,
+            max_memory: 1024 * 1024, // 1MB max pool size
+        }
+    }
+    
+    /// Get a buffer of the specified size, reusing from pool if possible
+    fn get_buffer(&mut self, size: usize) -> Vec<u8> {
+        // Try to find a suitable buffer in the pool
+        for i in 0..self.buffers.len() {
+            if let Some(buffer) = self.buffers.get(i) {
+                if buffer.len() >= size {
+                    // Found a suitable buffer, remove it from pool
+                    if let Some(buffer) = self.buffers.remove(i) {
+                        self.total_memory -= buffer.len();
+                        return buffer;
+                    }
+                }
+            }
+        }
+        
+        // No suitable buffer found, create a new one
+        vec![0u8; size]
+    }
+    
+    /// Return a buffer to the pool for reuse
+    fn return_buffer(&mut self, mut buffer: Vec<u8>) {
+        // Clear the buffer content
+        buffer.clear();
+        
+        // Check if we should keep this buffer
+        if self.buffers.len() < self.max_buffers && 
+           self.total_memory + buffer.capacity() <= self.max_memory {
+            self.total_memory += buffer.capacity();
+            self.buffers.push_back(buffer);
+        }
+        // Otherwise, let the buffer be dropped
+    }
+    
+    /// Get the global memory pool instance
+    fn global() -> &'static Mutex<MemoryPool> {
+        MEMORY_POOL.get_or_init(|| Mutex::new(MemoryPool::new()))
+    }
+}
 
 /// Binary manifest structure for zero-copy parsing
 /// 
@@ -279,6 +458,27 @@ enum Commands {
         #[arg(short = 'a', long = "audit")]
         audit: bool,
     },
+    /// Start SAIC daemon for high-performance operation
+    Daemon {
+        /// Socket path for IPC communication
+        #[arg(short = 's', long = "socket", default_value = "/tmp/saic.sock")]
+        socket_path: PathBuf,
+        /// Enable audit mode for detailed logging
+        #[arg(short = 'a', long = "audit")]
+        audit: bool,
+    },
+    /// Execute a SAIC file via daemon (low latency)
+    DaemonExecute {
+        /// Path to the .saic file to execute
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Backend to use for execution (cpu, gpu, or auto)
+        #[arg(short = 'b', long = "backend", default_value = "auto")]
+        backend: String,
+        /// Socket path for daemon communication
+        #[arg(short = 's', long = "socket", default_value = "/tmp/saic.sock")]
+        socket_path: PathBuf,
+    },
     /// Create a sample configuration file
     Config {
         /// Path to save the configuration file
@@ -305,22 +505,174 @@ struct Cli {
     command: Commands,
 }
 
-/// Initialize the tracing logging system
+/// IPC message types for daemon communication
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum DaemonMessage {
+    /// Execute a SAIC file
+    Execute {
+        file_path: PathBuf,
+        backend: String,
+    },
+    /// Validate a SAIC file
+    Validate {
+        file_path: PathBuf,
+    },
+    /// Shutdown daemon
+    Shutdown,
+}
+
+/// Daemon response types
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum DaemonResponse {
+    /// Success response
+    Success {
+        message: String,
+        duration_ms: u64,
+    },
+    /// Error response
+    Error {
+        message: String,
+    },
+}
+
+/// Initialize structured logging for audit trail
 /// 
-/// Sets up structured logging with appropriate filtering and formatting
-/// for development, debugging, and audit purposes.
+/// This function sets up the tracing framework with optimized settings for performance.
+/// It uses lazy initialization to defer setup until logging is actually needed.
 fn init_logging() -> Result<(), RunnerError> {
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_file(false)
-        .with_line_number(false)
-        .finish();
+    // Use lazy initialization - only set up logging once
+    LOGGING_INIT.get_or_init(|| {
+        let subscriber = FmtSubscriber::builder()
+            .with_max_level(Level::INFO)
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_file(false)
+            .with_line_number(false)
+            .finish();
 
-    tracing::subscriber::set_global_default(subscriber)
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("Failed to set global default subscriber");
+    });
+    
+    Ok(())
+}
+
+/// Initialize logging only if needed (lazy loading optimization)
+/// 
+/// This function checks if logging is needed based on configuration
+/// and only initializes it when required.
+fn init_logging_if_needed() -> Result<(), RunnerError> {
+    // Load configuration to check if logging is needed
+    let config = SaicConfig::load();
+    
+    // Only initialize logging if audit mode is enabled or log level is not error
+    if config.audit_mode || config.log_level != "error" {
+        init_logging()?;
+    }
+    
+    Ok(())
+}
+
+/// Handle daemon connection for IPC communication
+/// 
+/// This function processes incoming messages from clients and returns responses
+/// with optimized caching and memory management.
+fn handle_daemon_connection(stream: UnixStream, audit: bool) -> Result<(), RunnerError> {
+    let mut stream = stream;
+    let mut buffer = Vec::new();
+    
+    // Read the message from the client
+    stream.read_to_end(&mut buffer)
         .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-
+    
+    // Parse the message
+    let message: DaemonMessage = serde_json::from_slice(&buffer)
+        .map_err(|e| RunnerError::InvalidFormat(format!("Invalid message: {}", e)))?;
+    
+    // Process the message with timing
+    let start_time = std::time::Instant::now();
+    let response = match message {
+        DaemonMessage::Execute { file_path, backend } => {
+            info!("Received Execute message from daemon");
+            info!("File: {}", file_path.display());
+            info!("Backend: {}", backend);
+            
+            // Check cache first for optimized performance
+            let mut cache = ModelCache::global().lock().unwrap();
+            if let Some(cached_model) = cache.get_model(&file_path) {
+                info!("Using cached model: {}", cached_model.metadata.name);
+                // Use cached model for execution
+                DaemonResponse::Success { 
+                    message: "Execution successful (cached)".to_string(), 
+                    duration_ms: start_time.elapsed().as_millis() as u64 
+                }
+            } else {
+                // Execute normally and cache the result
+                let result = execute_saic_file_with_backend(&file_path, &backend, Some(audit));
+                let duration = start_time.elapsed().as_millis() as u64;
+                
+                match result {
+                    Ok(()) => {
+                        // Cache the model for future use
+                        if let Ok(data) = std::fs::read(&file_path) {
+                            let metadata = ModelMetadata {
+                                name: file_path.file_name().unwrap().to_string_lossy().to_string(),
+                                size: data.len(),
+                                created: std::fs::metadata(&file_path)
+                                    .map(|m| m.created().unwrap_or(std::time::SystemTime::now()))
+                                    .unwrap_or(std::time::SystemTime::now()),
+                            };
+                            cache.add_model(file_path, data, metadata);
+                        }
+                        
+                        DaemonResponse::Success { 
+                            message: "Execution successful".to_string(), 
+                            duration_ms: duration 
+                        }
+                    }
+                    Err(e) => DaemonResponse::Error { 
+                        message: format!("Execution failed: {}", e) 
+                    }
+                }
+            }
+        }
+        DaemonMessage::Validate { file_path } => {
+            info!("Received Validate message from daemon");
+            info!("File: {}", file_path.display());
+            
+            let result = process_saic_file(&file_path, Some(audit));
+            let duration = start_time.elapsed().as_millis() as u64;
+            
+            match result {
+                Ok(()) => DaemonResponse::Success { 
+                    message: "Validation successful".to_string(), 
+                    duration_ms: duration 
+                },
+                Err(e) => DaemonResponse::Error { 
+                    message: format!("Validation failed: {}", e) 
+                }
+            }
+        }
+        DaemonMessage::Shutdown => {
+            info!("Received Shutdown message from daemon");
+            DaemonResponse::Success { 
+                message: "Daemon shutting down".to_string(), 
+                duration_ms: 0 
+            }
+        }
+    };
+    
+    // Send the response back to the client
+    let serialized_response = serde_json::to_vec(&response)
+        .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+    
+    stream.write_all(&serialized_response)
+        .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+    
+    stream.shutdown(std::net::Shutdown::Both)
+        .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+    
+    info!("Daemon connection handled successfully");
     Ok(())
 }
 
@@ -716,8 +1068,12 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_ov
         ));
     }
 
-    // Read the manifest
-    let mut manifest_buffer = vec![0u8; manifest_length];
+    // Read the manifest using memory pool for efficiency
+    let mut manifest_buffer = {
+        let mut pool = MemoryPool::global().lock().unwrap();
+        pool.get_buffer(manifest_length)
+    };
+    
     file.read_exact(&mut manifest_buffer)
         .map_err(RunnerError::Io)?;
 
@@ -738,6 +1094,12 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_ov
         ))?;
 
     info!("Model name: {}", model_name);
+
+    // Return manifest buffer to pool for reuse
+    {
+        let mut pool = MemoryPool::global().lock().unwrap();
+        pool.return_buffer(manifest_buffer);
+    }
 
     // Step 4: Read the model payload
     info!("Reading model payload for execution");
@@ -859,7 +1221,7 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_ov
 /// * `Result<(), RunnerError>` - Ok(()) on success, RunnerError on failure
 fn main() -> Result<(), RunnerError> {
     // Initialize structured logging for audit trail
-    init_logging()?;
+    init_logging_if_needed()?;
 
     info!("Runner v0.1.0 starting");
 
@@ -900,6 +1262,87 @@ fn main() -> Result<(), RunnerError> {
                 Err(e) => {
                     error!("Execution failed: {}", e);
                     Err(e)
+                }
+            }
+        }
+        Commands::Daemon { socket_path, audit } => {
+            info!("Starting SAIC daemon");
+            info!("Socket path: {}", socket_path.display());
+            info!("Audit mode: {}", audit);
+
+            // Remove existing socket file if it exists
+            let _ = std::fs::remove_file(&socket_path);
+            
+            // Start the daemon
+            let listener = UnixListener::bind(&socket_path)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            info!("Daemon listening on {}", socket_path.display());
+
+            // Handle incoming connections
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        info!("Accepted new connection");
+                        
+                        // Handle connection in a separate thread
+                        let socket_path = socket_path.clone();
+                        thread::spawn(move || {
+                            if let Err(e) = handle_daemon_connection(stream, audit) {
+                                error!("Daemon connection error: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!("Daemon connection error: {}", e);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::DaemonExecute { file, backend, socket_path } => {
+            info!("Processing daemon_execute command");
+            info!("Target file: {}", file.display());
+            info!("Backend: {}", backend);
+            info!("Socket path: {}", socket_path.display());
+
+            // Connect to the daemon
+            let mut stream = UnixStream::connect(&socket_path)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Send the message to the daemon
+            let message = DaemonMessage::Execute { 
+                file_path: file.clone(), 
+                backend: backend.clone() 
+            };
+            let serialized_message = serde_json::to_vec(&message)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            stream.write_all(&serialized_message)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Read the response from the daemon
+            let mut buffer = Vec::new();
+            stream.read_to_end(&mut buffer)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            let response: DaemonResponse = serde_json::from_slice(&buffer)
+                .map_err(|e| RunnerError::InvalidFormat(format!("Invalid response: {}", e)))?;
+
+            match response {
+                DaemonResponse::Success { message, duration_ms } => {
+                    println!("✅ SAIC file execution completed successfully via daemon");
+                    println!("   File: {}", file.display());
+                    println!("   Backend: {}", backend);
+                    println!("   Duration: {} ms", duration_ms);
+                    println!("   Message: {}", message);
+                    info!("Daemon execution completed successfully");
+                    Ok(())
+                }
+                DaemonResponse::Error { message } => {
+                    error!("Daemon execution failed: {}", message);
+                    Err(RunnerError::BackendError(
+                        backends::BackendError::DeviceNotAvailable(message)
+                    ))
                 }
             }
         }

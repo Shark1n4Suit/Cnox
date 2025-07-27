@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::fs;
+use std::sync::OnceLock;
 
 /// SAIC Configuration Settings
 /// 
@@ -36,6 +37,9 @@ pub struct SaicConfig {
     #[serde(default = "default_cache_dir")]
     pub cache_dir: PathBuf,
 }
+
+// Static configuration cache for performance optimization
+static CONFIG_CACHE: OnceLock<SaicConfig> = OnceLock::new();
 
 impl Default for SaicConfig {
     fn default() -> Self {
@@ -80,7 +84,26 @@ impl SaicConfig {
     }
     
     /// Load configuration with fallback to environment variables
+    /// 
+    /// This function is optimized with caching to avoid repeated file system calls.
+    /// The configuration is loaded once and cached for subsequent calls.
     pub fn load() -> Self {
+        // Use cached configuration if available
+        if let Some(cached_config) = CONFIG_CACHE.get() {
+            return cached_config.clone();
+        }
+        
+        // Load configuration and cache it
+        let config = Self::load_uncached();
+        
+        // Cache the configuration (ignore if already cached by another thread)
+        let _ = CONFIG_CACHE.set(config.clone());
+        
+        config
+    }
+    
+    /// Load configuration without caching (internal use)
+    fn load_uncached() -> Self {
         // Try to load from config file first
         let config_paths = vec![
             PathBuf::from("saic.yaml"),
@@ -98,38 +121,40 @@ impl SaicConfig {
         }
         
         // Fallback to environment variables
-        let mut config = Self::default();
+        Self::from_env()
+    }
+    
+    /// Load configuration from environment variables
+    fn from_env() -> Self {
+        use std::env;
         
-        // Check for SAIC_AUDIT_MODE environment variable
-        if std::env::var("SAIC_AUDIT_MODE").is_ok() {
-            config.audit_mode = true;
+        Self {
+            audit_mode: env::var("SAIC_AUDIT_MODE")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or_else(|_| default_audit_mode()),
+            log_level: env::var("SAIC_LOG_LEVEL")
+                .unwrap_or_else(|_| default_log_level()),
+            default_backend: env::var("SAIC_DEFAULT_BACKEND")
+                .unwrap_or_else(|_| default_backend()),
+            performance_mode: env::var("SAIC_PERFORMANCE_MODE")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or_else(|_| default_performance_mode()),
+            max_model_size: env::var("SAIC_MAX_MODEL_SIZE")
+                .map(|v| v.parse().unwrap_or(0))
+                .unwrap_or_else(|_| default_max_model_size()),
+            enable_caching: env::var("SAIC_ENABLE_CACHING")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or_else(|_| default_enable_caching()),
+            cache_dir: env::var("SAIC_CACHE_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| default_cache_dir()),
         }
-        
-        // Check for SAIC_LOG_LEVEL environment variable
-        if let Ok(log_level) = std::env::var("SAIC_LOG_LEVEL") {
-            config.log_level = log_level;
-        }
-        
-        // Check for SAIC_BACKEND environment variable
-        if let Ok(backend) = std::env::var("SAIC_BACKEND") {
-            config.default_backend = backend;
-        }
-        
-        config
     }
     
     /// Create a sample configuration file
     pub fn create_sample_config(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-        let sample_config = SaicConfig {
-            audit_mode: true,
-            log_level: "info".to_string(),
-            default_backend: "cpu".to_string(),
-            performance_mode: true,
-            max_model_size: 1024 * 1024 * 1024, // 1GB
-            enable_caching: true,
-            cache_dir: PathBuf::from("/tmp/saic-cache"),
-        };
-        
-        sample_config.save_to_file(path)
+        let sample_config = SaicConfig::default();
+        sample_config.save_to_file(path)?;
+        Ok(())
     }
 } 
