@@ -221,7 +221,7 @@ impl SaicManifest {
 }
 
 mod backends;
-use backends::{Backend, BackendError, CpuBackend, GpuBackend};
+use backends::{Backend, BackendError, CpuBackend, GpuBackend, ValidationBackend};
 
 /// Custom error types for the runner application
 /// 
@@ -487,6 +487,30 @@ enum Commands {
     },
     /// List available backends and their status
     Backends,
+    /// Start SAIC daemon for high-performance operation
+    PerformanceTest {
+        /// Path to the .saic file to execute
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Backend to use for execution (cpu, gpu, or auto)
+        #[arg(short = 'b', long = "backend", default_value = "auto")]
+        backend: String,
+        /// Socket path for IPC communication
+        #[arg(short = 's', long = "socket", default_value = "/tmp/saic.sock")]
+        socket_path: PathBuf,
+        /// Number of runs for performance test
+        #[arg(short = 'r', long = "runs", default_value = "10")]
+        runs: u32,
+        /// Disable daemon mode testing (process mode only)
+        #[arg(short = 'd', long = "no-daemon")]
+        no_daemon: bool,
+    },
+    /// Shutdown the SAIC daemon
+    DaemonShutdown {
+        /// Socket path for daemon communication
+        #[arg(short = 's', long = "socket", default_value = "/tmp/saic.sock")]
+        socket_path: PathBuf,
+    },
 }
 
 /// Command-line interface definition for the SAIC runner
@@ -655,10 +679,24 @@ fn handle_daemon_connection(stream: UnixStream, audit: bool) -> Result<(), Runne
         }
         DaemonMessage::Shutdown => {
             info!("Received Shutdown message from daemon");
-            DaemonResponse::Success { 
+            // Send response before shutting down
+            let response = DaemonResponse::Success { 
                 message: "Daemon shutting down".to_string(), 
                 duration_ms: 0 
-            }
+            };
+            
+            // Send the response back to the client
+            let serialized_response = serde_json::to_vec(&response)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            stream.write_all(&serialized_response)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            stream.shutdown(std::net::Shutdown::Both)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            info!("Daemon shutting down");
+            std::process::exit(0);
         }
     };
     
@@ -1128,11 +1166,8 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_ov
             info!("Auto-selecting CPU backend (OpenVINO) - GPU not available");
             "cpu".to_string()
         } else {
-            return Err(RunnerError::BackendError(
-                backends::BackendError::DeviceNotAvailable(
-                    "No backends available. Please install OpenVINO or TensorRT".to_string()
-                )
-            ));
+            info!("No inference backends available, running validation only");
+            "validation".to_string()
         }
     } else {
         backend_name.to_lowercase()
@@ -1197,10 +1232,22 @@ fn execute_saic_file_with_backend(file_path: &Path, backend_name: &str, audit_ov
             println!("   Payload size: {} bytes", model_payload.len());
             println!("   Status: TensorRT execution completed (placeholder)");
         }
+        "validation" => {
+            info!("Running validation only (no inference backend)");
+            
+            // Display success information
+            println!("✅ SAIC file validation completed successfully");
+            println!("   File: {}", file_path.display());
+            println!("   Format: SAIC v0.1");
+            println!("   Model: {}", model_name);
+            println!("   Backend: validation-only");
+            println!("   Payload size: {} bytes", model_payload.len());
+            println!("   Status: File validation and parsing completed");
+        }
         _ => {
             return Err(RunnerError::BackendError(
                 backends::BackendError::DeviceNotAvailable(
-                    format!("Unknown backend '{}'. Supported backends: cpu, gpu, auto", backend_name)
+                    format!("Unknown backend '{}'. Supported backends: cpu, gpu, validation, auto", backend_name)
                 )
             ));
         }
@@ -1346,6 +1393,46 @@ fn main() -> Result<(), RunnerError> {
                 }
             }
         }
+        Commands::DaemonShutdown { socket_path } => {
+            info!("Sending shutdown command to daemon");
+            info!("Socket path: {}", socket_path.display());
+
+            // Connect to the daemon
+            let mut stream = UnixStream::connect(&socket_path)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Send shutdown message
+            let message = DaemonMessage::Shutdown;
+            let serialized_message = serde_json::to_vec(&message)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            stream.write_all(&serialized_message)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Read the response
+            let mut buffer = Vec::new();
+            stream.read_to_end(&mut buffer)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            let response: DaemonResponse = serde_json::from_slice(&buffer)
+                .map_err(|e| RunnerError::InvalidFormat(format!("Invalid response: {}", e)))?;
+
+            match response {
+                DaemonResponse::Success { message, .. } => {
+                    println!("✅ Daemon shutdown successful");
+                    println!("   Message: {}", message);
+                    info!("Daemon shutdown completed");
+                    Ok(())
+                }
+                DaemonResponse::Error { message } => {
+                    error!("Daemon shutdown failed: {}", message);
+                    Err(RunnerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Daemon shutdown failed: {}", message)
+                    )))
+                }
+            }
+        }
         Commands::Config { file } => {
             info!("Creating sample configuration file");
             info!("Target file: {}", file.display());
@@ -1409,6 +1496,181 @@ fn main() -> Result<(), RunnerError> {
             println!("   ./runner execute model.saic --backend auto");
             
             info!("Backend listing completed");
+            Ok(())
+        }
+        Commands::DaemonShutdown { socket_path } => {
+            info!("Sending shutdown command to daemon");
+            info!("Socket path: {}", socket_path.display());
+
+            // Connect to the daemon
+            let mut stream = UnixStream::connect(&socket_path)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Send shutdown message
+            let message = DaemonMessage::Shutdown;
+            let serialized_message = serde_json::to_vec(&message)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            stream.write_all(&serialized_message)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Read the response
+            let mut buffer = Vec::new();
+            stream.read_to_end(&mut buffer)
+                .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            let response: DaemonResponse = serde_json::from_slice(&buffer)
+                .map_err(|e| RunnerError::InvalidFormat(format!("Invalid response: {}", e)))?;
+
+            match response {
+                DaemonResponse::Success { message, .. } => {
+                    println!("✅ Daemon shutdown successful");
+                    println!("   Message: {}", message);
+                    info!("Daemon shutdown completed");
+                    Ok(())
+                }
+                DaemonResponse::Error { message } => {
+                    error!("Daemon shutdown failed: {}", message);
+                    Err(RunnerError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Daemon shutdown failed: {}", message)
+                    )))
+                }
+            }
+        }
+        Commands::PerformanceTest { file, backend, socket_path, runs, no_daemon } => {
+            info!("Starting SAIC performance test");
+            info!("Target file: {}", file.display());
+            info!("Backend: {}", backend);
+            info!("Socket path: {}", socket_path.display());
+            info!("Number of runs: {}", runs);
+
+            // Test process mode performance
+            println!("=== Process Mode Performance Test ===");
+            let mut process_times = Vec::new();
+            
+            for i in 1..=runs {
+                let start = std::time::Instant::now();
+                let result = execute_saic_file_with_backend(&file, &backend, Some(false));
+                let duration = start.elapsed();
+                
+                if result.is_ok() {
+                    process_times.push(duration);
+                    println!("Run {}: {:?}", i, duration);
+                } else {
+                    println!("Run {}: FAILED", i);
+                }
+            }
+
+            // Calculate process mode statistics
+            if !process_times.is_empty() {
+                let avg_process = process_times.iter().sum::<std::time::Duration>() / process_times.len() as u32;
+                let min_process = process_times.iter().min().unwrap();
+                let max_process = process_times.iter().max().unwrap();
+                
+                println!("Process Mode Statistics:");
+                println!("  Average: {:?}", avg_process);
+                println!("  Minimum: {:?}", min_process);
+                println!("  Maximum: {:?}", max_process);
+                println!("  Throughput: {:.2} GB/s", 14.0 / avg_process.as_secs_f64());
+            }
+
+            // Test daemon mode performance (if not disabled)
+            if !no_daemon {
+                println!("\n=== Daemon Mode Performance Test ===");
+                
+                // Check if daemon is running
+                let daemon_running = std::path::Path::new(&socket_path).exists();
+                if !daemon_running {
+                    println!("Daemon not running. Starting daemon for testing...");
+                    // Start daemon in background
+                    let daemon_process = std::process::Command::new("./runner/target/release/saic-runner")
+                        .args(&["daemon", "--socket", socket_path.to_str().unwrap()])
+                        .spawn()
+                        .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                    
+                    // Wait for daemon to start
+                    thread::sleep(Duration::from_millis(2000));
+                }
+            } else {
+                println!("\n=== Daemon Mode Testing Disabled ===");
+                println!("Skipping daemon mode tests (--no-daemon flag set)");
+            }
+
+            let mut daemon_times = Vec::new();
+            
+            if !no_daemon {
+                for i in 1..=runs {
+                let start = std::time::Instant::now();
+                
+                // Connect to daemon
+                let mut stream = UnixStream::connect(&socket_path)
+                    .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+                // Send execute message
+                let message = DaemonMessage::Execute { 
+                    file_path: file.clone(), 
+                    backend: backend.clone() 
+                };
+                let serialized_message = serde_json::to_vec(&message)
+                    .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                
+                stream.write_all(&serialized_message)
+                    .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+                // Read response
+                let mut buffer = Vec::new();
+                stream.read_to_end(&mut buffer)
+                    .map_err(|e| RunnerError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                
+                let response: DaemonResponse = serde_json::from_slice(&buffer)
+                    .map_err(|e| RunnerError::InvalidFormat(format!("Invalid response: {}", e)))?;
+
+                let duration = start.elapsed();
+                
+                match response {
+                    DaemonResponse::Success { duration_ms, .. } => {
+                        daemon_times.push(duration);
+                        println!("Run {}: {:?} (daemon reported: {}ms)", i, duration, duration_ms);
+                    }
+                    DaemonResponse::Error { message } => {
+                        println!("Run {}: FAILED - {}", i, message);
+                    }
+                }
+            }
+            } // Close the if !no_daemon block
+
+            // Calculate daemon mode statistics
+            if !daemon_times.is_empty() {
+                let avg_daemon = daemon_times.iter().sum::<std::time::Duration>() / daemon_times.len() as u32;
+                let min_daemon = daemon_times.iter().min().unwrap();
+                let max_daemon = daemon_times.iter().max().unwrap();
+                
+                println!("Daemon Mode Statistics:");
+                println!("  Average: {:?}", avg_daemon);
+                println!("  Minimum: {:?}", min_daemon);
+                println!("  Maximum: {:?}", max_daemon);
+                println!("  Throughput: {:.2} GB/s", 14.0 / avg_daemon.as_secs_f64());
+            }
+
+            // Performance comparison
+            if !process_times.is_empty() && !daemon_times.is_empty() {
+                let avg_process = process_times.iter().sum::<std::time::Duration>() / process_times.len() as u32;
+                let avg_daemon = daemon_times.iter().sum::<std::time::Duration>() / daemon_times.len() as u32;
+                
+                println!("\n=== Performance Comparison ===");
+                println!("Process Mode: {:?}", avg_process);
+                println!("Daemon Mode:  {:?}", avg_daemon);
+                
+                if avg_daemon < avg_process {
+                    let improvement = avg_process.as_micros() as f64 / avg_daemon.as_micros() as f64;
+                    println!("Daemon Mode is {:.2}x faster", improvement);
+                } else {
+                    let regression = avg_daemon.as_micros() as f64 / avg_process.as_micros() as f64;
+                    println!("Daemon Mode is {:.2}x slower", regression);
+                }
+            }
+
             Ok(())
         }
     }

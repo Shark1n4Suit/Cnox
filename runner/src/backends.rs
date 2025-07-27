@@ -765,3 +765,49 @@ impl Default for GpuBackend {
         Self
     }
 }
+
+/// Validation-only backend for testing without inference engines
+/// 
+/// This backend performs file validation and parsing without requiring
+/// OpenVINO or TensorRT, making it suitable for testing and development.
+pub struct ValidationBackend;
+
+impl ValidationBackend {
+    /// Create a new validation-only backend instance
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Backend for ValidationBackend {
+    fn execute(&mut self, model_payload: &[u8], model_name: &str) -> Result<(), BackendError> {
+        // Validate that we have a reasonable amount of data
+        if model_payload.len() < 100 {
+            return Err(BackendError::InvalidModelFormat(
+                "Model payload too small to be valid".to_string()
+            ));
+        }
+        
+        // Simulate validation processing time
+        std::thread::sleep(std::time::Duration::from_micros(100));
+        
+        info!("Validation backend: Successfully validated model '{}' ({} bytes)", 
+              model_name, model_payload.len());
+        
+        Ok(())
+    }
+    
+    fn name(&self) -> &str {
+        "validation"
+    }
+    
+    fn is_available(&self) -> bool {
+        true // Always available
+    }
+}
+
+impl Default for ValidationBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
