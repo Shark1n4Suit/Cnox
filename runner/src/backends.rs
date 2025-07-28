@@ -556,6 +556,13 @@ pub fn create_backend(backend_name: &str) -> Result<Box<dyn Backend>, BackendErr
 /// for validation-only operations where no inference is needed.
 pub struct ValidationBackend;
 
+impl ValidationBackend {
+    /// Create a new validation-only backend instance
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl Backend for ValidationBackend {
     fn execute(&mut self, _model_payload: &[u8], audit_mode: bool) -> Result<(), BackendError> {
         if audit_mode {
@@ -576,6 +583,6 @@ impl Backend for ValidationBackend {
 
 impl Default for ValidationBackend {
     fn default() -> Self {
-        Self
+        Self::new()
     }
 }
