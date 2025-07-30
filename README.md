@@ -1,6 +1,12 @@
-# SAIC (Secure AI Container) - v0.5.0-beta
+# SAIC (Secure AI Container)
 
-**The world's fastest AI container format with sub-50μs validation and enterprise-grade security.**
+<div align="center">
+  <img src="assets/coelanox-saic_logo.png" alt="SAIC Logo" width="300"/>
+  <br/>
+  <em>World's fastest AI container format with sub-50μs validation and enterprise-grade security</em>
+</div>
+
+**SAIC v0.5.0-beta** - The universal "Docker for AI" that delivers **100,000x faster** validation than traditional containers with **25,000,000x smaller** overhead.
 
 [![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](https://github.com/coelanox/saic/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://rustup.rs/)
@@ -496,11 +502,19 @@ if file_size <= 1024 * 1024 {
 
 ## 📚 **Documentation**
 
-- **[Quick Start Guide](QUICKSTART.md)** - Get started in 5 minutes
+### **Getting Started**
+- **[Quick Start Guide](QUICKSTART.md)** - Get started in under 5 minutes
 - **[Installation Guide](INSTALL.md)** - Detailed setup instructions
-- **[Performance Guide](docs/performance/README.md)** - Optimization details
-- **[Security Guide](docs/architecture/security.md)** - Security features
-- **[Contributing Guide](docs/CONTRIBUTING.md)** - Development guidelines
+
+### **Core Documentation**
+- **[Architecture Guide](docs/ARCHITECTURE.md)** - System design and components
+- **[Performance Guide](docs/PERFORMANCE.md)** - Optimization and benchmarking
+- **[Security Guide](docs/SECURITY.md)** - Security features and compliance
+- **[Enterprise Guide](docs/ENTERPRISE.md)** - Enterprise deployment and compliance
+
+### **Development**
+- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to SAIC
+- **[Roadmap](ROADMAP.md)** - Development roadmap and future plans
 
 ## 🤝 **Community**
 

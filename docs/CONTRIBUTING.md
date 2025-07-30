@@ -24,42 +24,104 @@ Thank you for your interest in contributing to **Coelanox SAIC**! We welcome con
 
 ### Development Setup
 
-1. **Fork and Clone**
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/saic.git
-   cd saic
-   git remote add upstream https://github.com/coelanox/saic.git
-   ```
+#### **Prerequisites**
+- **Operating System**: Linux (Ubuntu 20.04+ recommended), macOS, or Windows with WSL2
+- **Memory**: Minimum 8GB RAM (16GB+ recommended for GPU development)
+- **Storage**: At least 10GB free space for dependencies and models
+- **Network**: Stable internet connection for downloading dependencies
 
-2. **Install Dependencies**
-   ```bash
-   # Install Rust (if not already installed)
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   
-   # Build the project
-   cargo build --features full-inference
-   ```
+#### **1. Install Core Development Tools**
 
-3. **Run Tests**
-   ```bash
-   # Unit tests
-   cargo test
-   
-   # Integration tests
-   cargo test --test integration
-   
-   # Backend-specific tests
-   cargo test --features cpu-backend
-   ```
+**Rust Installation:**
+```bash
+# Install Rust using rustup
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-4. **Verify Installation**
-   ```bash
-   # Test packager
-   cargo run --bin packager -- --help
-   
-   # Test runner
-   cargo run --bin runner -- --help
-   ```
+# Add Rust to your PATH (or restart your terminal)
+source ~/.cargo/env
+
+# Verify installation
+rustc --version
+cargo --version
+```
+
+**Recommended Rust Version**: 1.75.0 or later
+
+**Git Installation:**
+```bash
+# Ubuntu/Debian
+sudo apt update && sudo apt install git
+
+# macOS (with Homebrew)
+brew install git
+
+# Verify installation
+git --version
+```
+
+#### **2. Install Build Dependencies**
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install build-essential cmake pkg-config libssl-dev \
+    libclang-dev libudev-dev libgcc-s1 libc6-dev
+```
+
+**macOS:**
+```bash
+# Install Xcode Command Line Tools
+xcode-select --install
+
+# Install Homebrew if not already installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+**Windows (WSL2):**
+```bash
+# Update package list
+sudo apt update
+
+# Install build tools
+sudo apt install build-essential cmake pkg-config libssl-dev
+```
+
+#### **3. Fork and Clone**
+```bash
+git clone https://github.com/YOUR_USERNAME/saic.git
+cd saic
+git remote add upstream https://github.com/coelanox/saic.git
+```
+
+#### **4. Build the Project**
+```bash
+# Build with optimizations
+cargo build --release
+
+# For development with all features
+cargo build --features full-inference
+```
+
+#### **5. Run Tests**
+```bash
+# Unit tests
+cargo test
+
+# Integration tests
+cargo test --test integration
+
+# Backend-specific tests
+cargo test --features cpu-backend
+```
+
+#### **6. Verify Installation**
+```bash
+# Test packager
+cargo run --bin packager -- --help
+
+# Test runner
+cargo run --bin runner -- --help
+```
 
 ## 🏆 Performance Standards
 
