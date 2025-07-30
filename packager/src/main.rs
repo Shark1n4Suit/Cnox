@@ -17,6 +17,8 @@ pub enum PackagerError {
     InvalidModelName(String),
     /// JSON serialization/deserialization error
     JsonError(serde_json::Error),
+    /// Invalid manifest size
+    InvalidManifest(String),
 }
 
 impl std::fmt::Display for PackagerError {
@@ -26,6 +28,7 @@ impl std::fmt::Display for PackagerError {
             PackagerError::InvalidPath(path) => write!(f, "Invalid file path: {}", path),
             PackagerError::InvalidModelName(name) => write!(f, "Invalid model name: {}", name),
             PackagerError::JsonError(err) => write!(f, "JSON error: {}", err),
+            PackagerError::InvalidManifest(msg) => write!(f, "Invalid manifest: {}", msg),
         }
     }
 }
@@ -278,6 +281,13 @@ fn create_saic_file(args: &PackagerArgs) -> Result<(), PackagerError> {
     let manifest_string = serde_json::to_string(&manifest)
         .map_err(PackagerError::JsonError)?;
     let manifest_bytes = manifest_string.as_bytes();
+    
+    // SECURITY: Prevent DoS attacks through large manifests
+    if manifest_bytes.len() > 1024 * 1024 { // 1MB limit
+        return Err(PackagerError::InvalidManifest(
+            "Manifest too large (maximum 1MB allowed)".to_string()
+        ));
+    }
     
     info!("Manifest size: {} bytes", manifest_bytes.len());
     
