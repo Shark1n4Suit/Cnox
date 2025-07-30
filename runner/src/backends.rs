@@ -287,8 +287,8 @@ impl GpuBackend {
         // Use CUDA runtime API to allocate device memory
         let mut device_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         
-        // This is a simplified approach - in reality you'd use proper CUDA bindings
-        // For now, we'll simulate with a placeholder that would use cudaMalloc
+        // SAFETY: Simulated CUDA memory allocation - using libc::malloc as placeholder
+        // In real implementation, this would use cudaMalloc with proper error handling
         unsafe {
             // Simulated CUDA memory allocation
             // In real implementation: cudaError_t result = cudaMalloc(&device_ptr, size);
@@ -320,6 +320,9 @@ impl GpuBackend {
             return Err("Host data size exceeds GPU buffer size".to_string());
         }
         
+        // SAFETY: Simulated GPU memory copy - using std::ptr::copy_nonoverlapping
+        // In real implementation, this would use cudaMemcpy with proper error handling
+        // Bounds checking ensures byte_size <= gpu_buffer.size
         unsafe {
             // In real implementation: cudaMemcpy(gpu_buffer.ptr, host_data.as_ptr(), byte_size, cudaMemcpyHostToDevice);
             std::ptr::copy_nonoverlapping(
@@ -347,6 +350,9 @@ impl GpuBackend {
             return Err("Host buffer size exceeds GPU buffer size".to_string());
         }
         
+        // SAFETY: Simulated GPU memory copy - using std::ptr::copy_nonoverlapping
+        // In real implementation, this would use cudaMemcpy with proper error handling
+        // Bounds checking ensures byte_size <= gpu_buffer.size
         unsafe {
             // In real implementation: cudaMemcpy(host_data.as_mut_ptr(), gpu_buffer.ptr, byte_size, cudaMemcpyDeviceToHost);
             std::ptr::copy_nonoverlapping(
@@ -367,6 +373,8 @@ impl GpuBackend {
     /// 
     /// * `gpu_buffer` - GPU buffer to free
     fn free_gpu_buffer(&self, gpu_buffer: &GpuBuffer) -> Result<(), String> {
+        // SAFETY: Simulated GPU memory deallocation - using libc::free as placeholder
+        // In real implementation, this would use cudaFree with proper error handling
         unsafe {
             // In real implementation: cudaFree(gpu_buffer.ptr);
             libc::free(gpu_buffer.ptr);

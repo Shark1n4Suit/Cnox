@@ -360,9 +360,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         init_logging()?;
         info!("SAIC Runner starting in audit mode");
         info!("Processing file: {}", cli.file.display());
-        
-        // Validate file path in audit mode
-        validate_file_path(&cli.file)?;
     }
 
     // Process the SAIC file with ultra-high throughput validation
@@ -442,7 +439,8 @@ mod tests {
         test_content.extend_from_slice(b"test model payload"); // Payload
         
         let test_file = std::env::temp_dir().join("test_valid.saic");
-        fs::write(&test_file, &test_content).unwrap();
+        fs::write(&test_file, &test_content)
+            .expect("Failed to write test file");
 
         // Test valid file
         let result = process_saic_file(&test_file, Some(false));
@@ -452,7 +450,8 @@ mod tests {
         let mut invalid_content = test_content.clone();
         invalid_content[0..4].copy_from_slice(b"INVA"); // Use 4 bytes instead of 7
         let invalid_file = std::env::temp_dir().join("test_invalid.saic");
-        fs::write(&invalid_file, &invalid_content).unwrap();
+        fs::write(&invalid_file, &invalid_content)
+            .expect("Failed to write invalid test file");
 
         let result = process_saic_file(&invalid_file, Some(false));
         assert!(result.is_err());
@@ -460,7 +459,8 @@ mod tests {
 
         // Test file too small
         let small_file = std::env::temp_dir().join("test_small.saic");
-        fs::write(&small_file, b"SAI").unwrap();
+        fs::write(&small_file, b"SAI")
+            .expect("Failed to write small test file");
 
         let result = process_saic_file(&small_file, Some(false));
         assert!(result.is_err());
@@ -488,7 +488,8 @@ mod tests {
         test_content.extend_from_slice(b"test model payload"); // Payload
         
         let test_file = std::env::temp_dir().join("perf_test.saic");
-        fs::write(&test_file, &test_content).unwrap();
+        fs::write(&test_file, &test_content)
+            .expect("Failed to write performance test file");
 
         // Measure validation time
         let start = std::time::Instant::now();
@@ -509,7 +510,8 @@ mod tests {
     fn test_error_handling() {
         // Test with empty file
         let empty_file = std::env::temp_dir().join("empty.saic");
-        fs::write(&empty_file, b"").unwrap();
+        fs::write(&empty_file, b"")
+            .expect("Failed to write empty test file");
 
         let result = process_saic_file(&empty_file, Some(false));
         assert!(result.is_err());
@@ -518,7 +520,8 @@ mod tests {
         // Test with malformed manifest length
         let malformed_content = b"SAIC\x00\x01\x00\x00\xFF\xFF\xFF\xFF";
         let malformed_file = std::env::temp_dir().join("malformed.saic");
-        fs::write(&malformed_file, malformed_content).unwrap();
+        fs::write(&malformed_file, malformed_content)
+            .expect("Failed to write malformed test file");
 
         let result = process_saic_file(&malformed_file, Some(false));
         assert!(result.is_err());
