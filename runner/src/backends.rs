@@ -115,7 +115,8 @@ impl CpuBackend {
             }
         }
         
-        Ok(self.core.as_mut().unwrap())
+        Ok(self.core.as_mut()
+            .ok_or_else(|| BackendError::OpenVinoInitFailed("OpenVINO core not initialized".to_string()))?)
     }
     
     #[cfg(not(feature = "cpu-backend"))]
@@ -258,7 +259,9 @@ impl GpuBackend {
         
         if self.runtime.is_none() {
             info!("Initializing TensorRT runtime...");
-            let runtime = self.logger.as_ref().unwrap().create_infer_runtime()
+            let runtime = self.logger.as_ref()
+                .ok_or_else(|| BackendError::OpenVinoInitFailed("TensorRT logger not initialized".to_string()))?
+                .create_infer_runtime()
                 .map_err(|e| BackendError::OpenVinoInitFailed(format!("TensorRT runtime init failed: {}", e)))?;
             self.runtime = Some(runtime);
             info!("TensorRT runtime initialized successfully");

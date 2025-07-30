@@ -197,7 +197,8 @@ fn parse_args() -> Result<PackagerArgs, PackagerError> {
         .get_matches();
 
     // Extract and validate model path
-    let model_path_str = matches.get_one::<String>("model").unwrap();
+    let model_path_str = matches.get_one::<String>("model")
+        .ok_or_else(|| PackagerError::InvalidPath("Model path not provided".to_string()))?;
     let model_path = PathBuf::from(model_path_str);
     
     // Validate model file exists and is readable
@@ -214,7 +215,9 @@ fn parse_args() -> Result<PackagerArgs, PackagerError> {
     }
 
     // Extract and validate model name
-    let model_name = matches.get_one::<String>("name").unwrap().clone();
+    let model_name = matches.get_one::<String>("name")
+        .ok_or_else(|| PackagerError::InvalidModelName("Model name not provided".to_string()))?
+        .clone();
     
     // Validate model name is not empty and contains only safe characters
     if model_name.is_empty() {
@@ -231,7 +234,8 @@ fn parse_args() -> Result<PackagerArgs, PackagerError> {
     }
 
     // Extract and validate output path
-    let output_path_str = matches.get_one::<String>("output").unwrap();
+    let output_path_str = matches.get_one::<String>("output")
+        .ok_or_else(|| PackagerError::InvalidPath("Output path not provided".to_string()))?;
     let output_path = PathBuf::from(output_path_str);
     
     // Validate output directory exists or can be created
