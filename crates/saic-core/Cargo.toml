@@ -1,0 +1,19 @@
+[package]
+name = "saic-core"
+version = "0.5.0"
+edition = "2021"
+description = "Core library for SAIC (Secure AI Container)"
+license = "BSL-1.1"
+repository = "https://github.com/coelanox/saic"
+keywords = ["ai", "container", "inference", "optimization"]
+categories = ["science", "system-programming"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+memmap2 = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.0" 
