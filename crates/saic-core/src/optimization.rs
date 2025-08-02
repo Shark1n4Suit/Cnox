@@ -1,7 +1,5 @@
 //! Performance optimization utilities for SAIC
 
-use crate::{SaicError, SaicResult};
-
 /// CPU feature detection for optimization
 #[derive(Debug, Clone)]
 pub struct CpuFeatures {

@@ -1,12 +1,8 @@
 //! Memory management utilities for SAIC
 
-use std::alloc::{alloc, dealloc, Layout};
 use crate::{SaicError, SaicResult};
 
 /// Aligned memory pool for high-performance operations
-/// 
-/// Provides pre-allocated, aligned memory pools for zero-copy operations
-/// and SIMD-optimized memory access patterns.
 pub struct AlignedPool<T> {
     /// Pre-allocated memory buffer
     buffer: Vec<T>,
@@ -18,39 +14,20 @@ pub struct AlignedPool<T> {
     alignment: usize,
 }
 
-impl<T> AlignedPool<T> {
+impl<T: Default> AlignedPool<T> {
     /// Create a new aligned memory pool
     /// 
     /// # Arguments
     /// 
-    /// * `capacity` - Maximum number of elements
+    /// * `capacity` - Total capacity in elements
     /// * `alignment` - Memory alignment in bytes
+    /// 
+    /// # Returns
+    /// 
+    /// * `Self` - New aligned memory pool
     pub fn new(capacity: usize, alignment: usize) -> Self {
         let mut buffer = Vec::with_capacity(capacity);
-        
-        // Ensure proper alignment
-        if alignment > 1 {
-            let ptr = buffer.as_mut_ptr();
-            let addr = ptr as usize;
-            if addr % alignment != 0 {
-                // Reallocate with proper alignment
-                let layout = Layout::from_size_align(
-                    std::mem::size_of::<T>() * capacity,
-                    alignment
-                ).unwrap();
-                
-                unsafe {
-                    let new_ptr = alloc(layout);
-                    if !new_ptr.is_null() {
-                        buffer = Vec::from_raw_parts(
-                            new_ptr as *mut T,
-                            0,
-                            capacity
-                        );
-                    }
-                }
-            }
-        }
+        buffer.resize_with(capacity, Default::default);
         
         Self {
             buffer,
@@ -67,15 +44,16 @@ impl<T> AlignedPool<T> {
     /// 
     /// # Returns
     /// 
-    /// * `Option<&mut [T]>` - Allocated memory slice, or None if insufficient space
+    /// * `Option<&mut [T]>` - Allocated slice or None if insufficient space
     pub fn allocate(&mut self, size: usize) -> Option<&mut [T]> {
-        if self.offset + size <= self.buffer.capacity() {
-            let slice = &mut self.buffer[self.offset..self.offset + size];
-            self.offset += size;
-            Some(slice)
-        } else {
-            None
+        if self.offset + size > self.buffer.len() {
+            return None;
         }
+        
+        let slice = &mut self.buffer[self.offset..self.offset + size];
+        self.offset += size;
+        
+        Some(slice)
     }
     
     /// Reset the pool for reuse
@@ -83,12 +61,12 @@ impl<T> AlignedPool<T> {
         self.offset = 0;
     }
     
-    /// Get current usage statistics
+    /// Get usage statistics
     pub fn usage_stats(&self) -> PoolStats {
         PoolStats {
-            capacity: self.buffer.capacity(),
+            capacity: self.buffer.len(),
             used: self.offset,
-            available: self.buffer.capacity() - self.offset,
+            available: self.buffer.len() - self.offset,
             alignment: self.alignment,
         }
     }
@@ -166,9 +144,25 @@ impl MemoryMapper {
     /// 
     /// * `memmap2::Mmap` - Memory-mapped data
     pub fn map_slice(data: &[u8]) -> memmap2::Mmap {
-        // For now, return an empty mmap
-        // TODO: Implement proper slice mapping
-        unsafe { memmap2::Mmap::map(&std::fs::File::open("/dev/null").unwrap()).unwrap() }
+        // Create a temporary file to memory map the slice
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+        
+        // Create temporary file
+        let mut temp_file = NamedTempFile::new()
+            .expect("Failed to create temporary file");
+        
+        // Write data to temporary file
+        temp_file.write_all(data)
+            .expect("Failed to write data to temporary file");
+        temp_file.flush()
+            .expect("Failed to flush temporary file");
+        
+        // Memory map the temporary file
+        unsafe {
+            memmap2::Mmap::map(&*temp_file.as_file())
+                .expect("Failed to memory map temporary file")
+        }
     }
 }
 
@@ -209,5 +203,15 @@ mod tests {
         };
         
         assert_eq!(stats.usage_percentage(), 30.0);
+    }
+
+    #[test]
+    fn test_memory_mapper() {
+        // Test slice mapping
+        let test_data = b"Hello, World!";
+        let mmap = MemoryMapper::map_slice(test_data);
+        
+        assert_eq!(mmap.len(), test_data.len());
+        assert_eq!(&mmap[..], test_data);
     }
 } 

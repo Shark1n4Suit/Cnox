@@ -131,7 +131,6 @@ pub fn sanitize_error_message(message: &str) -> String {
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_validate_file_path() {

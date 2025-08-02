@@ -3,7 +3,7 @@
 //! Validates and executes SAIC containers
 
 use clap::Parser;
-use saic_core::{SaicError, SaicResult, validation, security, memory::MemoryMapper};
+use saic_core::{SaicResult, validation, security, memory::MemoryMapper};
 use std::time::Instant;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -29,7 +29,7 @@ struct Cli {
 }
 
 fn init_logging() -> SaicResult<()> {
-    let subscriber = FmtSubscriber::builder()
+    let _subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
         .with_thread_ids(false)

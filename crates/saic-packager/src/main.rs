@@ -19,22 +19,22 @@ struct Cli {
     /// Path to the input model file
     #[arg(long)]
     model: std::path::PathBuf,
-    
+
     /// Name for the model (stored in manifest)
     #[arg(long)]
     name: String,
-    
+
     /// Output path for the .saic file
     #[arg(long)]
     output: std::path::PathBuf,
-    
+
     /// Enable verbose logging
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
 }
 
 fn init_logging() -> SaicResult<()> {
-    let subscriber = FmtSubscriber::builder()
+    let _subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
         .with_thread_ids(false)
@@ -47,11 +47,17 @@ fn init_logging() -> SaicResult<()> {
 
 fn create_saic_file(args: &Cli) -> SaicResult<()> {
     info!("Starting SAIC file creation process");
-    info!("Model: {}", args.model.display());
-    info!("Output: {}", args.output.display());
     
-    // Step 1: Create the JSON manifest using shared format
-    info!("Creating JSON manifest");
+    // Read the input model file
+    let model_file = File::open(&args.model)
+        .map_err(|e| SaicError::Io(e))?;
+    
+    let model_metadata = model_file.metadata()
+        .map_err(|e| SaicError::Io(e))?;
+    
+    info!("Model file size: {} bytes", model_metadata.len());
+    
+    // Create manifest
     let manifest = SaicManifest {
         model_name: args.name.clone(),
         model_version: None,
@@ -61,73 +67,59 @@ fn create_saic_file(args: &Cli) -> SaicResult<()> {
         optimization_hints: None,
     };
     
-    // Step 2: Serialize manifest to UTF-8 string
-    info!("Serializing manifest to JSON");
-    let manifest_string = serde_json::to_string(&manifest)
-        .map_err(SaicError::ManifestError)?;
-    let manifest_bytes = manifest_string.as_bytes();
+    let manifest_json = serde_json::to_string(&manifest)
+        .map_err(|e| SaicError::ManifestError(e))?;
     
-    // SECURITY: Prevent DoS attacks through large manifests
-    if manifest_bytes.len() > 1024 * 1024 { // 1MB limit
-        return Err(SaicError::InvalidFormat(
-            "Manifest too large (maximum 1MB allowed)".to_string()
-        ));
-    }
-    
-    info!("Manifest size: {} bytes", manifest_bytes.len());
-    
-    // Step 3: Open output file for writing
-    info!("Opening output file for writing");
-    let mut output_file = File::create(&args.output)
-        .map_err(SaicError::Io)?;
-    
-    // Step 4: Write the 8-byte SAIC header using shared constants
-    info!("Writing SAIC header");
-    
-    // Write magic number "SAIC" (4 bytes)
-    output_file.write_all(saic_core::MAGIC_NUMBER)
-        .map_err(SaicError::Io)?;
-    
-    // Write version 0.1.0.0 (4 bytes: major.minor.patch.build)
-    output_file.write_all(&saic_core::FORMAT_VERSION)
-        .map_err(SaicError::Io)?;
-    
-    // Step 5: Write manifest length as 32-bit big-endian unsigned integer
-    info!("Writing manifest length");
+    let manifest_bytes = manifest_json.as_bytes();
     let manifest_length = manifest_bytes.len() as u32;
-    let length_bytes = manifest_length.to_be_bytes(); // big-endian format
-    output_file.write_all(&length_bytes)
-        .map_err(SaicError::Io)?;
     
-    // Step 6: Write the JSON manifest string
-    info!("Writing JSON manifest");
-    output_file.write_all(manifest_bytes)
-        .map_err(SaicError::Io)?;
+    info!("Manifest size: {} bytes", manifest_length);
     
-    // Step 7: Copy the input model file contents with optimized I/O
+    // Create output file
+    let output_file = File::create(&args.output)
+        .map_err(|e| SaicError::Io(e))?;
+    let mut writer = BufWriter::new(output_file);
+    
+    // Write SAIC header
+    writer.write_all(saic_core::MAGIC_NUMBER)
+        .map_err(|e| SaicError::Io(e))?;
+    writer.write_all(&saic_core::FORMAT_VERSION)
+        .map_err(|e| SaicError::Io(e))?;
+    
+    // Write manifest length
+    writer.write_all(&manifest_length.to_be_bytes())
+        .map_err(|e| SaicError::Io(e))?;
+    
+    // Write manifest
+    writer.write_all(manifest_bytes)
+        .map_err(|e| SaicError::Io(e))?;
+    
+    // Copy model payload
     info!("Copying model payload");
-    let input_file = File::open(&args.model)
-        .map_err(SaicError::Io)?;
+    let mut model_reader = BufReader::new(File::open(&args.model)
+        .map_err(|e| SaicError::Io(e))?);
     
-    // Use Rust's optimized copy with large buffers for maximum performance
-    let mut reader = BufReader::with_capacity(64 * 1024, input_file); // 64KB buffer
-    let mut writer = BufWriter::with_capacity(64 * 1024, output_file);
-    let bytes_copied = copy(&mut reader, &mut writer)
-            .map_err(SaicError::Io)?;
-    
-    // Ensure all data is written to disk
-    writer.flush().map_err(SaicError::Io)?;
+    let bytes_copied = copy(&mut model_reader, &mut writer)
+        .map_err(|e| SaicError::Io(e))?;
     
     info!("Model payload copied: {} bytes", bytes_copied);
+    
+    // Flush writer to ensure all data is written
+    writer.flush()
+        .map_err(|e| SaicError::Io(e))?;
+    
     info!("SAIC file creation completed successfully");
     
-    // Log final file structure summary
+    // Log final file structure
+    let output_metadata = std::fs::metadata(&args.output)
+        .map_err(|e| SaicError::Io(e))?;
+    
     info!("Final SAIC file structure:");
-    info!("  Header: 8 bytes (magic + version)");
-    info!("  Manifest length: 4 bytes");
-    info!("  Manifest: {} bytes", manifest_bytes.len());
+    info!("  Header: {} bytes (magic + version)", saic_core::SaicFormat::HEADER_SIZE);
+    info!("  Manifest length: {} bytes", saic_core::SaicFormat::MANIFEST_LENGTH_SIZE);
+    info!("  Manifest: {} bytes", manifest_length);
     info!("  Model payload: {} bytes", bytes_copied);
-    info!("  Total file size: {} bytes", 8 + 4 + manifest_bytes.len() as u64 + bytes_copied);
+    info!("  Total file size: {} bytes", output_metadata.len());
     
     Ok(())
 }
@@ -135,7 +127,6 @@ fn create_saic_file(args: &Cli) -> SaicResult<()> {
 fn main() -> SaicResult<()> {
     let cli = Cli::parse();
     
-    // Initialize logging if verbose mode
     if cli.verbose {
         init_logging()?;
     }
@@ -145,7 +136,6 @@ fn main() -> SaicResult<()> {
     info!("Name: {}", cli.name);
     info!("Output: {}", cli.output.display());
     
-    // Create the SAIC file
     create_saic_file(&cli)?;
     
     println!("✅ SAIC file created successfully!");

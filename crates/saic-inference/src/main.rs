@@ -3,7 +3,7 @@
 //! Executes AI models from SAIC containers
 
 use clap::Parser;
-use saic_core::{SaicError, SaicResult};
+use saic_core::SaicResult;
 
 #[derive(Parser, Debug)]
 #[command(

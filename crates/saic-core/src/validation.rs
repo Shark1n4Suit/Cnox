@@ -1,6 +1,5 @@
 //! Validation logic for SAIC files
 
-use std::path::Path;
 use memmap2::Mmap;
 use crate::{SaicError, SaicResult, MAGIC_NUMBER, MIN_FILE_SIZE, MAX_MANIFEST_SIZE};
 
@@ -134,8 +133,8 @@ pub fn extract_model_payload(mmap: &Mmap) -> SaicResult<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::NamedTempFile;
+    use std::io::Write;
 
     #[test]
     fn test_validate_magic_optimized() {
@@ -174,14 +173,26 @@ mod tests {
         test_content.extend_from_slice(manifest_bytes); // Manifest
         test_content.extend_from_slice(b"test model payload"); // Payload
         
+        // Create temporary file for testing
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&test_content).unwrap();
+        temp_file.flush().unwrap();
+        
         // Test valid structure
-        let result = validate_saic_structure(&Mmap::map(&test_content).unwrap());
+        let mmap = unsafe { Mmap::map(&*temp_file.as_file()).unwrap() };
+        let result = validate_saic_structure(&mmap);
         assert!(result.is_ok());
         
         // Test invalid magic number
         let mut invalid_content = test_content.clone();
         invalid_content[0..4].copy_from_slice(b"INVA");
-        let result = validate_saic_structure(&Mmap::map(&invalid_content).unwrap());
+        
+        let mut invalid_temp_file = NamedTempFile::new().unwrap();
+        invalid_temp_file.write_all(&invalid_content).unwrap();
+        invalid_temp_file.flush().unwrap();
+        
+        let invalid_mmap = unsafe { Mmap::map(&*invalid_temp_file.as_file()).unwrap() };
+        let result = validate_saic_structure(&invalid_mmap);
         assert!(result.is_err());
     }
 } 
