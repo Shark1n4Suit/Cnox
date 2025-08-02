@@ -322,6 +322,7 @@ dependencies = [
  "clap",
  "memmap2",
  "saic-core",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]

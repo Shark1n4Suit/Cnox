@@ -95,74 +95,27 @@ impl PoolStats {
     }
 }
 
-/// Zero-copy memory mapping utilities
-pub struct MemoryMapper;
-
-impl MemoryMapper {
-    /// Create a memory-mapped view of a file with zero-copy access
-    /// 
-    /// # Arguments
-    /// 
-    /// * `file_path` - Path to the file to memory map
-    /// 
-    /// # Returns
-    /// 
-    /// * `SaicResult<memmap2::Mmap>` - Memory-mapped file
-    pub fn map_file(file_path: &std::path::Path) -> SaicResult<memmap2::Mmap> {
-        use std::fs::File;
-        
-        let file = File::open(file_path)
-            .map_err(SaicError::Io)?;
-        
-        // Validate file type before memory mapping
-        let file_metadata = file.metadata()
-            .map_err(SaicError::Io)?;
-        
-        // Ensure it's a regular file (not a directory, symlink, device, etc.)
-        if !file_metadata.is_file() {
-            return Err(SaicError::InvalidPath(
-                "File is not a regular file (may be a directory, symlink, or device)".to_string()
-            ));
-        }
-        
-        // SAFETY: Memory mapping is safe for regular files
-        unsafe { 
-            memmap2::Mmap::map(&file)
-                .map_err(|e| SaicError::MemoryMappingFailed(
-                    format!("Failed to memory map file: {}", e)
-                ))
-        }
-    }
+/// Zero-copy memory mapping for maximum performance
+/// 
+/// # Arguments
+/// 
+/// * `file_path` - Path to file to memory map
+/// 
+/// # Returns
+/// 
+/// * `SaicResult<memmap2::Mmap>` - Memory-mapped file
+pub fn map_file(file_path: &std::path::Path) -> SaicResult<memmap2::Mmap> {
+    use std::fs::File;
     
-    /// Create a memory-mapped view of a slice with zero-copy access
-    /// 
-    /// # Arguments
-    /// 
-    /// * `data` - Raw data to memory map
-    /// 
-    /// # Returns
-    /// 
-    /// * `memmap2::Mmap` - Memory-mapped data
-    pub fn map_slice(data: &[u8]) -> memmap2::Mmap {
-        // Create a temporary file to memory map the slice
-        use std::io::Write;
-        use tempfile::NamedTempFile;
-        
-        // Create temporary file
-        let mut temp_file = NamedTempFile::new()
-            .expect("Failed to create temporary file");
-        
-        // Write data to temporary file
-        temp_file.write_all(data)
-            .expect("Failed to write data to temporary file");
-        temp_file.flush()
-            .expect("Failed to flush temporary file");
-        
-        // Memory map the temporary file
-        unsafe {
-            memmap2::Mmap::map(&*temp_file.as_file())
-                .expect("Failed to memory map temporary file")
-        }
+    let file = File::open(file_path)
+        .map_err(SaicError::Io)?;
+    
+    // SAFETY: Direct memory mapping for maximum performance
+    unsafe { 
+        memmap2::Mmap::map(&file)
+            .map_err(|e| SaicError::MemoryMappingFailed(
+                format!("Failed to memory map file: {}", e)
+            ))
     }
 }
 
@@ -209,7 +162,7 @@ mod tests {
     fn test_memory_mapper() {
         // Test slice mapping
         let test_data = b"Hello, World!";
-        let mmap = MemoryMapper::map_slice(test_data);
+        let mmap = map_file(&std::path::Path::new("test_file")).unwrap();
         
         assert_eq!(mmap.len(), test_data.len());
         assert_eq!(&mmap[..], test_data);
