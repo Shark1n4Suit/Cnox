@@ -6,9 +6,21 @@ description = "SAIC inference engine for executing AI models"
 license = "BSL-1.1"
 repository = "https://github.com/coelanox/saic"
 
+[features]
+default = []
+openvino = ["libloading"]
+tensorrt = ["libloading"]
+full = ["openvino", "tensorrt"]
+
 [dependencies]
 saic-core = { path = "../saic-core" }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow = { workspace = true } 
+anyhow = { workspace = true }
+thiserror = "1.0"
+libloading = { version = "0.8", optional = true }
+
+[build-dependencies]
+bindgen = "0.69"
+cc = "1.0" 
