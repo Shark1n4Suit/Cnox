@@ -99,7 +99,7 @@ mod tests {
         let manifest = SaicManifest {
             model_name: "TestModel".to_string(),
             model_version: Some("1.0.0".to_string()),
-            framework: Some("ONNX".to_string()),
+            framework: Some("Universal".to_string()),
             input_shape: Some(vec![1, 3, 224, 224]),
             output_shape: Some(vec![1, 1000]),
             optimization_hints: Some(OptimizationHints::default()),
@@ -107,7 +107,7 @@ mod tests {
         
         assert_eq!(manifest.model_name, "TestModel");
         assert_eq!(manifest.model_version, Some("1.0.0".to_string()));
-        assert_eq!(manifest.framework, Some("ONNX".to_string()));
+        assert_eq!(manifest.framework, Some("Universal".to_string()));
     }
 
     #[test]

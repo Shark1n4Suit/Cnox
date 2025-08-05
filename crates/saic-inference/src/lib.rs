@@ -128,29 +128,15 @@ impl BackendRegistry {
     }
     
     /// Select optimal backend for model format and hardware
-    pub fn select_backend(&self, model_format: &str, hardware: &HardwareInfo) -> &dyn InferenceBackend {
-        // 1. Try optimal backend for model format
-        let optimal_backend = match model_format {
-            "ONNX" => self.backends.get("tensorrt").or_else(|| self.backends.get("openvino")),
-            "TensorFlow" => self.backends.get("openvino"),
-            _ => None,
-        };
-        
-        // 2. Check hardware compatibility
-        if let Some(backend) = optimal_backend {
-            if backend.hardware_requirements().is_satisfied_by(hardware) {
-                return backend.as_ref();
-            }
-        }
-        
-        // 3. Try any compatible backend
+    pub fn select_backend(&self, _model_format: &str, hardware: &HardwareInfo) -> &dyn InferenceBackend {
+        // 1. Try any compatible backend (format-agnostic)
         for backend in self.backends.values() {
             if backend.hardware_requirements().is_satisfied_by(hardware) {
                 return backend.as_ref();
             }
         }
         
-        // 4. Final fallback
+        // 2. Final fallback
         self.backends.get("fallback").unwrap().as_ref()
     }
 }

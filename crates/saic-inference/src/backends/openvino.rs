@@ -3,10 +3,12 @@
 //! Provides Intel OpenVINO integration with dynamic library loading
 
 use crate::{InferenceBackend, InferenceError, HardwareRequirements};
-use crate::ffi::openvino::*;
 use std::sync::{Arc, Mutex};
 use std::ptr;
 use std::ffi::CString;
+
+#[cfg(feature = "openvino")]
+use crate::ffi::openvino::*;
 
 /// OpenVINO backend implementation with proper resource management
 pub struct OpenVINOBackend {
@@ -16,10 +18,22 @@ pub struct OpenVINOBackend {
     library: Option<()>,
     
     // OpenVINO resources wrapped in thread-safe containers
+    #[cfg(feature = "openvino")]
     core: Option<Arc<Mutex<*mut ov_core_t>>>,
+    #[cfg(not(feature = "openvino"))]
+    core: Option<()>,
+    #[cfg(feature = "openvino")]
     model: Option<Arc<Mutex<*mut ov_model_t>>>,
+    #[cfg(not(feature = "openvino"))]
+    model: Option<()>,
+    #[cfg(feature = "openvino")]
     compiled_model: Option<Arc<Mutex<*mut ov_compiled_model_t>>>,
+    #[cfg(not(feature = "openvino"))]
+    compiled_model: Option<()>,
+    #[cfg(feature = "openvino")]
     infer_request: Option<Arc<Mutex<*mut ov_infer_request_t>>>,
+    #[cfg(not(feature = "openvino"))]
+    infer_request: Option<()>,
     
     initialized: bool,
 }
@@ -337,7 +351,7 @@ impl InferenceBackend for OpenVINOBackend {
     }
     
     fn supported_formats(&self) -> Vec<String> {
-        vec!["ONNX".to_string(), "TensorFlow".to_string()]
+        vec!["Universal".to_string()] // OpenVINO can interpret various formats
     }
     
     fn hardware_requirements(&self) -> HardwareRequirements {

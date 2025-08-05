@@ -50,7 +50,7 @@ impl InferenceBackend for FallbackBackend {
     }
     
     fn supported_formats(&self) -> Vec<String> {
-        vec!["ONNX".to_string(), "TensorFlow".to_string(), "PyTorch".to_string()]
+        vec!["Universal".to_string()] // Supports any format as raw bytes
     }
     
     fn hardware_requirements(&self) -> HardwareRequirements {

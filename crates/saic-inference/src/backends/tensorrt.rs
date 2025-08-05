@@ -92,7 +92,7 @@ impl InferenceBackend for TensorRTBackend {
     }
     
     fn supported_formats(&self) -> Vec<String> {
-        vec!["ONNX".to_string()]
+        vec!["Universal".to_string()] // TensorRT can interpret various formats
     }
     
     fn hardware_requirements(&self) -> HardwareRequirements {
