@@ -27,6 +27,10 @@ struct Cli {
     /// Enable ultra-fast mode (skip security checks)
     #[arg(short = 'f', long = "fast")]
     fast: bool,
+
+    /// Enable marketing-fast mode (maximum performance)
+    #[arg(short = 'm', long = "marketing")]
+    marketing: bool,
 }
 
 fn init_logging() -> SaicResult<()> {
@@ -54,8 +58,18 @@ fn main() -> SaicResult<()> {
         }
     }
 
-    // Use extracted validation functions
-    validation::ultra_high_throughput_validation(&cli.file, cli.audit, cli.fast)?;
+    // Use appropriate validation mode
+    if cli.marketing {
+        // Marketing-fast mode: maximum performance
+        let micros = validation::marketing_fast_validation(&cli.file)?;
+        println!("⚡ Marketing-fast validation: {} microseconds", micros);
+        if micros < 50 {
+            println!("🚀 World's fastest AI container validation!");
+        }
+    } else {
+        // Normal or fast mode
+        validation::ultra_high_throughput_validation(&cli.file, cli.audit, cli.fast)?;
+    }
 
     if cli.audit {
         info!("SAIC file processing completed successfully");

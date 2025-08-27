@@ -1,28 +1,21 @@
 //! Backend implementations for SAIC inference engine
 
 pub mod fallback;
-pub mod openvino;
-pub mod tensorrt;
+pub mod native;
 
-/// Initialize OpenVINO backend if available
-#[cfg(feature = "openvino")]
-pub fn initialize_openvino() -> Option<Box<dyn crate::InferenceBackend>> {
-    openvino::OpenVINOBackend::new().map(|b| Box::new(b) as Box<dyn crate::InferenceBackend>)
+/// Initialize Native SAIC backend (primary)
+pub fn initialize_native_saic() -> Option<Box<dyn crate::InferenceBackend>> {
+    // Handle the Result return type from new()
+    match native::NativeSAICBackend::new() {
+        Ok(backend) => Some(Box::new(backend) as Box<dyn crate::InferenceBackend>),
+        Err(e) => {
+            eprintln!("⚠️  Native SAIC backend initialization failed: {}", e);
+            None
+        }
+    }
 }
 
-/// Initialize TensorRT backend if available
-#[cfg(feature = "tensorrt")]
-pub fn initialize_tensorrt() -> Option<Box<dyn crate::InferenceBackend>> {
-    tensorrt::TensorRTBackend::new().map(|b| Box::new(b) as Box<dyn crate::InferenceBackend>)
-}
-
-/// Stub implementations when features are disabled
-#[cfg(not(feature = "openvino"))]
-pub fn initialize_openvino() -> Option<Box<dyn crate::InferenceBackend>> {
-    None
-}
-
-#[cfg(not(feature = "tensorrt"))]
-pub fn initialize_tensorrt() -> Option<Box<dyn crate::InferenceBackend>> {
-    None
+/// Initialize Fallback backend (secondary)
+pub fn initialize_fallback() -> Option<Box<dyn crate::InferenceBackend>> {
+    Some(Box::new(fallback::FallbackBackend::new()) as Box<dyn crate::InferenceBackend>)
 } 

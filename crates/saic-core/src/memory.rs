@@ -119,6 +119,40 @@ pub fn map_file(file_path: &std::path::Path) -> SaicResult<memmap2::Mmap> {
     }
 }
 
+/// Ultra-fast memory mapping for validation performance
+/// 
+/// This function is optimized for maximum speed during validation:
+/// - Minimal error checking
+/// - Direct memory mapping
+/// - Designed for trusted deployment environments
+/// 
+/// # Arguments
+/// 
+/// * `file_path` - Path to file to memory map
+/// 
+/// # Returns
+/// 
+/// * `SaicResult<memmap2::Mmap>` - Memory-mapped file
+#[inline(always)]
+pub fn map_file_ultra_fast(file_path: &std::path::Path) -> SaicResult<memmap2::Mmap> {
+    use std::fs::File;
+    
+    // OPTIMIZATION: Minimal error checking for speed
+    let file = File::open(file_path)
+        .map_err(|_| SaicError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound, 
+            "File not found"
+        )))?;
+    
+    // SAFETY: Direct memory mapping for maximum performance
+    unsafe { 
+        memmap2::Mmap::map(&file)
+            .map_err(|_| SaicError::MemoryMappingFailed(
+                "Memory mapping failed".to_string()
+            ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

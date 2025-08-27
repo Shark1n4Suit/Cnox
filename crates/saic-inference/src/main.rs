@@ -7,6 +7,7 @@ use saic_core::SaicResult;
 use saic_inference::BackendRegistry;
 use saic_core::{validation, memory};
 use std::path::Path;
+use image::{ImageBuffer, Rgb, DynamicImage};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -23,6 +24,10 @@ struct Cli {
     #[arg(short = 'i', long = "input")]
     input: Option<String>,
     
+    /// Image file for inference (PNG, JPEG, etc.)
+    #[arg(short = 'm', long = "image")]
+    image: Option<std::path::PathBuf>,
+    
     /// Backend to use (auto, fallback, openvino, tensorrt)
     #[arg(short = 'b', long = "backend", default_value = "auto")]
     backend: String,
@@ -37,6 +42,36 @@ fn parse_input_data(input_str: &str) -> Vec<f32> {
         .split(',')
         .filter_map(|s| s.trim().parse::<f32>().ok())
         .collect()
+}
+
+fn load_and_process_image(image_path: &Path) -> SaicResult<Vec<f32>> {
+    // Load image using the image crate
+    let img = image::open(image_path)
+        .map_err(|e| saic_core::SaicError::InvalidFormat(format!("Failed to open image: {}", e)))?;
+    
+    // Resize to 224x224 (MobileNet-v2 standard input size)
+    let resized = img.resize_exact(224, 224, image::imageops::FilterType::Lanczos3);
+    
+    // Convert to RGB and normalize to [0, 1]
+    let rgb_img = resized.to_rgb8();
+    let mut float_data = Vec::with_capacity(3 * 224 * 224);
+    
+    // MobileNet-v2 expects ImageNet normalization
+    // Mean: [0.485, 0.456, 0.406], Std: [0.229, 0.224, 0.225]
+    let mean = [0.485, 0.456, 0.406];
+    let std = [0.229, 0.224, 0.225];
+    
+    for y in 0..224 {
+        for x in 0..224 {
+            let pixel = rgb_img.get_pixel(x, y);
+            for c in 0..3 {
+                let normalized = (pixel[c] as f32 / 255.0 - mean[c]) / std[c];
+                float_data.push(normalized);
+            }
+        }
+    }
+    
+    Ok(float_data)
 }
 
 fn execute_inference(saic_file: &Path, input_data: &[f32], backend_name: &str, verbose: bool) -> SaicResult<Vec<f32>> {
@@ -60,11 +95,21 @@ fn execute_inference(saic_file: &Path, input_data: &[f32], backend_name: &str, v
     // Create backend registry
     let registry = BackendRegistry::new();
     
+    if verbose {
+        println!("Available backends: {:?}", registry.available_backends());
+        println!("Registry healthy: {}", registry.is_healthy());
+    }
+    
     // Select backend
     let backend = if backend_name == "auto" {
         // Auto-select based on model format and hardware
         let hardware = saic_inference::hardware::HardwareInfo::detect();
-        registry.select_backend(framework, &hardware)
+        
+        if verbose {
+            println!("Detected hardware: {:?}", hardware);
+        }
+        
+        registry.get_recommended_backend(&hardware)
     } else {
         // Use specified backend
         registry.get_backend(backend_name)
@@ -73,7 +118,7 @@ fn execute_inference(saic_file: &Path, input_data: &[f32], backend_name: &str, v
     
     if verbose {
         println!("Selected backend: {}", backend.name());
-        println!("Available backends: {:?}", registry.available_backends());
+        println!("Backend hardware requirements: {:?}", backend.hardware_requirements());
     }
     
     // Execute inference (backends handle their own initialization)
@@ -94,6 +139,8 @@ fn main() -> SaicResult<()> {
     // Parse input data or use default
     let input_data = if let Some(input_str) = &cli.input {
         parse_input_data(input_str)
+    } else if let Some(image_path) = &cli.image {
+        load_and_process_image(image_path)?
     } else {
         // Default input data for testing
         vec![1.0, 2.0, 3.0, 4.0, 5.0]

@@ -9,12 +9,14 @@ keywords = ["ai", "container", "inference", "optimization"]
 categories = ["science", "system-programming"]
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-memmap2 = { workspace = true }
-thiserror = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+memmap2 = "0.9"
+thiserror = "1.0"
+num_cpus = "1.16"
 anyhow = { workspace = true }
 tempfile = "3.0"
+md5 = "0.7"
 
 [dev-dependencies]
 tempfile = "3.0" 

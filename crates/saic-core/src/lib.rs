@@ -5,11 +5,14 @@
 //! performance optimization utilities.
 
 pub mod format;
-pub mod validation; 
+pub mod validation;
 pub mod security;
 pub mod error;
 pub mod memory;
 pub mod optimization;
+pub mod model;
+pub mod parser;
+pub mod execution;
 
 // Re-export main types for easy access
 pub use format::*;
