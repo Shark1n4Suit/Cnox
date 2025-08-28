@@ -128,6 +128,14 @@ fn execute_inference(saic_file: &Path, input_data: &[f32], backend_name: &str, v
         println!("Selected backend: {}", backend.name());
     }
     
+    // Load model in backend if needed (especially for fallback)
+    if let Err(e) = backend.load_model(saic_file.to_str().unwrap()) {
+        if verbose {
+            println!("⚠️  Model loading failed, trying direct execution: {}", e);
+        }
+        // Continue with direct execution for backends that don't need explicit loading
+    }
+    
     // Execute inference (backends handle their own initialization)
     let mut inputs = HashMap::new();
     inputs.insert("input".to_string(), input_data.to_vec());

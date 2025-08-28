@@ -59,6 +59,10 @@ pub enum SaicError {
     /// Inference operation failed
     #[error("Inference error: {0}")]
     InferenceError(String),
+    
+    /// Execution timeout exceeded
+    #[error("Execution timeout: {0}")]
+    ExecutionTimeout(String),
 }
 
 /// Result type for SAIC operations
