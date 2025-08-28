@@ -1,28 +1,26 @@
-# SAIC Configuration File
+# SAIC Configuration File - Optimized for Sub-10ms Inference
 # 
 # This file configures the SAIC runner behavior, including audit logging,
 # performance settings, and backend preferences.
 
 # Enable detailed audit logging for compliance and debugging
-# Set to true for full audit trail, false for maximum performance
+# Set to false for maximum performance
 audit_mode: false
 
 # Log level for tracing (trace, debug, info, warn, error)
-# Use 'trace' for maximum detail, 'error' for minimal output
+# Use 'error' for maximum performance
 log_level: "error"
 
 # Default backend preference (cpu, gpu, auto)
-# 'cpu' = OpenVINO CPU backend
-# 'gpu' = TensorRT GPU backend  
 # 'auto' = Automatically select best available backend
-default_backend: "cpu"
+default_backend: "auto"
 
 # Enable performance optimizations
-# Set to true for maximum speed, false for compatibility
+# Set to true for maximum speed
 performance_mode: true
 
 # Maximum model size in bytes (0 = unlimited)
-# Set to 0 for unlimited, or specify size like 1073741824 for 1GB
+# Set to 0 for unlimited
 max_model_size: 0
 
 # Enable model caching for repeated executions
@@ -33,6 +31,54 @@ enable_caching: true
 # Path where compiled models will be stored
 cache_dir: "/tmp/saic-cache"
 
+# Performance optimization settings
+optimization:
+  # Enable SIMD optimizations
+  simd_enabled: true
+  
+  # Enable parallel execution
+  parallel_execution: true
+  
+  # Number of threads for parallel execution
+  num_threads: 8
+  
+  # Enable memory pooling
+  memory_pooling: true
+  
+  # Enable JIT compilation
+  jit_compilation: true
+  
+  # Enable hardware-specific optimizations
+  hardware_optimization: true
+
+# Memory management settings
+memory:
+  # Enable zero-copy operations
+  zero_copy: true
+  
+  # Memory alignment in bytes
+  alignment: 64
+  
+  # Cache line size optimization
+  cache_line_size: 64
+  
+  # Enable memory mapping
+  memory_mapping: true
+
+# Execution settings
+execution:
+  # Enable early return optimization
+  early_return: true
+  
+  # Enable lazy validation
+  lazy_validation: true
+  
+  # Enable graph optimization
+  graph_optimization: true
+  
+  # Enable kernel fusion
+  kernel_fusion: true
+
 # Example configurations for different use cases:
 #
 # Production (maximum performance):
@@ -40,15 +86,17 @@ cache_dir: "/tmp/saic-cache"
 # log_level: "error"
 # performance_mode: true
 # enable_caching: true
+# optimization.simd_enabled: true
+# optimization.parallel_execution: true
 #
 # Development (full debugging):
-# audit_mode: false
+# audit_mode: true
 # log_level: "debug"
 # performance_mode: false
 # enable_caching: false
 #
 # Compliance (audit trail):
-# audit_mode: false
-# log_level: "error"
+# audit_mode: true
+# log_level: "info"
 # performance_mode: true
 # enable_caching: true 

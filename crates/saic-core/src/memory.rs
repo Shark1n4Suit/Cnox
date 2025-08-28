@@ -1,116 +1,140 @@
-//! Memory management utilities for SAIC
+//! SAIC Memory Management
+//! 
+//! Efficient memory allocation and management for SAIC execution
 
 use crate::{SaicError, SaicResult};
+use std::collections::HashMap;
+use std::sync::Arc;
+use parking_lot::RwLock;
+use once_cell::sync::Lazy;
 
-/// Aligned memory pool for high-performance operations
-pub struct AlignedPool<T> {
-    /// Pre-allocated memory buffer
-    buffer: Vec<T>,
-    
-    /// Current allocation offset
-    offset: usize,
-    
-    /// Memory alignment in bytes
-    alignment: usize,
+/// Memory pool for efficient tensor allocation
+pub struct TensorPool {
+    /// Available tensors by size
+    available_tensors: HashMap<usize, Vec<Tensor>>,
+    /// Maximum pool size per tensor size
+    max_pool_size: usize,
+    /// Total memory usage
+    total_memory_usage: usize,
 }
 
-impl<T: Default> AlignedPool<T> {
-    /// Create a new aligned memory pool
-    /// 
-    /// # Arguments
-    /// 
-    /// * `capacity` - Total capacity in elements
-    /// * `alignment` - Memory alignment in bytes
-    /// 
-    /// # Returns
-    /// 
-    /// * `Self` - New aligned memory pool
-    pub fn new(capacity: usize, alignment: usize) -> Self {
-        let mut buffer = Vec::with_capacity(capacity);
-        buffer.resize_with(capacity, Default::default);
-        
-        Self {
-            buffer,
-            offset: 0,
-            alignment,
-        }
-    }
-    
-    /// Allocate memory from the pool
-    /// 
-    /// # Arguments
-    /// 
-    /// * `size` - Number of elements to allocate
-    /// 
-    /// # Returns
-    /// 
-    /// * `Option<&mut [T]>` - Allocated slice or None if insufficient space
-    pub fn allocate(&mut self, size: usize) -> Option<&mut [T]> {
-        if self.offset + size > self.buffer.len() {
-            return None;
-        }
-        
-        let slice = &mut self.buffer[self.offset..self.offset + size];
-        self.offset += size;
-        
-        Some(slice)
-    }
-    
-    /// Reset the pool for reuse
-    pub fn reset(&mut self) {
-        self.offset = 0;
-    }
-    
-    /// Get usage statistics
-    pub fn usage_stats(&self) -> PoolStats {
-        PoolStats {
-            capacity: self.buffer.len(),
-            used: self.offset,
-            available: self.buffer.len() - self.offset,
-            alignment: self.alignment,
-        }
-    }
-}
-
-/// Memory pool usage statistics
+/// Tensor for memory pooling
 #[derive(Debug, Clone)]
-pub struct PoolStats {
-    /// Total capacity in elements
-    pub capacity: usize,
-    
-    /// Currently used elements
-    pub used: usize,
-    
-    /// Available elements
-    pub available: usize,
-    
-    /// Memory alignment in bytes
-    pub alignment: usize,
+pub struct Tensor {
+    /// Tensor data
+    pub data: Vec<f32>,
+    /// Tensor shape
+    pub shape: Vec<usize>,
+    /// Data type
+    pub data_type: String,
+    /// Whether tensor is currently in use
+    pub in_use: bool,
 }
 
-impl PoolStats {
-    /// Get usage percentage
-    pub fn usage_percentage(&self) -> f64 {
-        (self.used as f64 / self.capacity as f64) * 100.0
+impl TensorPool {
+    /// Create a new tensor pool
+    pub fn new(max_pool_size: usize) -> Self {
+        Self {
+            available_tensors: HashMap::new(),
+            max_pool_size,
+            total_memory_usage: 0,
+        }
     }
+
+    /// Get a tensor from the pool (reuse existing or create new)
+    pub fn get_tensor(&mut self, shape: &[usize], data_type: &str) -> Tensor {
+        let size = shape.iter().product::<usize>();
+        
+        // Try to reuse existing tensor
+        if let Some(tensors) = self.available_tensors.get_mut(&size) {
+            if let Some(tensor) = tensors.pop() {
+                let mut reused_tensor = tensor;
+                reused_tensor.shape = shape.to_vec();
+                reused_tensor.data_type = data_type.to_string();
+                reused_tensor.in_use = true;
+                return reused_tensor;
+            }
+        }
+        
+        // Create new tensor if none available
+        let new_tensor = Tensor {
+            data: vec![0.0; size],
+            shape: shape.to_vec(),
+            data_type: data_type.to_string(),
+            in_use: true,
+        };
+        
+        self.total_memory_usage += size * std::mem::size_of::<f32>();
+        new_tensor
+    }
+
+    /// Return a tensor to the pool for reuse
+    pub fn return_tensor(&mut self, mut tensor: Tensor) {
+        let size = tensor.data.len();
+        tensor.in_use = false;
+        
+        // Clear data for security
+        tensor.data.fill(0.0);
+        
+        // Add to available pool if not at capacity
+        let pool = self.available_tensors.entry(size).or_insert_with(Vec::new);
+        if pool.len() < self.max_pool_size {
+            pool.push(tensor);
+        }
+    }
+
+    /// Get pool statistics
+    pub fn stats(&self) -> PoolStats {
+        let mut total_available = 0;
+        let total_in_use = 0;
+        
+        for tensors in self.available_tensors.values() {
+            total_available += tensors.len();
+        }
+        
+        PoolStats {
+            total_available,
+            total_in_use,
+            total_memory_usage: self.total_memory_usage,
+        }
+    }
+}
+
+/// Pool statistics
+#[derive(Debug)]
+pub struct PoolStats {
+    pub total_available: usize,
+    pub total_in_use: usize,
+    pub total_memory_usage: usize,
+}
+
+/// Global memory pool
+pub static GLOBAL_TENSOR_POOL: Lazy<Arc<RwLock<TensorPool>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(TensorPool::new(100))) // Max 100 tensors per size
+});
+
+/// Get tensor from global pool
+pub fn get_tensor_from_pool(shape: &[usize], data_type: &str) -> Tensor {
+    GLOBAL_TENSOR_POOL.write().get_tensor(shape, data_type)
+}
+
+/// Return tensor to global pool
+pub fn return_tensor_to_pool(tensor: Tensor) {
+    GLOBAL_TENSOR_POOL.write().return_tensor(tensor);
+}
+
+/// Get global pool statistics
+pub fn get_pool_stats() -> PoolStats {
+    GLOBAL_TENSOR_POOL.read().stats()
 }
 
 /// Zero-copy memory mapping for maximum performance
-/// 
-/// # Arguments
-/// 
-/// * `file_path` - Path to file to memory map
-/// 
-/// # Returns
-/// 
-/// * `SaicResult<memmap2::Mmap>` - Memory-mapped file
 pub fn map_file(file_path: &std::path::Path) -> SaicResult<memmap2::Mmap> {
     use std::fs::File;
     
     let file = File::open(file_path)
         .map_err(SaicError::Io)?;
     
-    // SAFETY: Direct memory mapping for maximum performance
     unsafe { 
         memmap2::Mmap::map(&file)
             .map_err(|e| SaicError::MemoryMappingFailed(
@@ -120,31 +144,16 @@ pub fn map_file(file_path: &std::path::Path) -> SaicResult<memmap2::Mmap> {
 }
 
 /// Ultra-fast memory mapping for validation performance
-/// 
-/// This function is optimized for maximum speed during validation:
-/// - Minimal error checking
-/// - Direct memory mapping
-/// - Designed for trusted deployment environments
-/// 
-/// # Arguments
-/// 
-/// * `file_path` - Path to file to memory map
-/// 
-/// # Returns
-/// 
-/// * `SaicResult<memmap2::Mmap>` - Memory-mapped file
 #[inline(always)]
 pub fn map_file_ultra_fast(file_path: &std::path::Path) -> SaicResult<memmap2::Mmap> {
     use std::fs::File;
     
-    // OPTIMIZATION: Minimal error checking for speed
     let file = File::open(file_path)
         .map_err(|_| SaicError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound, 
             "File not found"
         )))?;
     
-    // SAFETY: Direct memory mapping for maximum performance
     unsafe { 
         memmap2::Mmap::map(&file)
             .map_err(|_| SaicError::MemoryMappingFailed(
@@ -158,38 +167,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_aligned_pool() {
-        let mut pool = AlignedPool::<f32>::new(1000, 32);
+    fn test_tensor_pool() {
+        let mut pool = TensorPool::new(5);
         
-        // Allocate some memory
-        let slice1 = pool.allocate(100).unwrap();
-        assert_eq!(slice1.len(), 100);
+        // Get a tensor
+        let tensor1 = pool.get_tensor(&[10, 10], "f32");
+        assert_eq!(tensor1.shape, vec![10, 10]);
+        assert_eq!(tensor1.data_type, "f32");
+        assert!(tensor1.in_use);
         
-        let slice2 = pool.allocate(200).unwrap();
-        assert_eq!(slice2.len(), 200);
+        // Get another tensor
+        let tensor2 = pool.get_tensor(&[5, 5], "f32");
+        assert_eq!(tensor2.shape, vec![5, 5]);
+        assert_eq!(tensor2.data_type, "f32");
+        assert!(tensor2.in_use);
         
-        // Check usage stats
-        let stats = pool.usage_stats();
-        assert_eq!(stats.used, 300);
-        assert_eq!(stats.available, 700);
+        // Return one tensor
+        pool.return_tensor(tensor1);
+        assert!(!tensor1.in_use);
         
-        // Reset pool
-        pool.reset();
-        let stats = pool.usage_stats();
-        assert_eq!(stats.used, 0);
-        assert_eq!(stats.available, 1000);
+        // Get the same tensor again
+        let reused_tensor = pool.get_tensor(&[10, 10], "f32");
+        assert_eq!(reused_tensor.shape, vec![10, 10]);
+        assert_eq!(reused_tensor.data_type, "f32");
+        assert!(reused_tensor.in_use);
+        assert_eq!(reused_tensor.data, vec![0.0; 100]); // Data should be cleared
     }
 
     #[test]
-    fn test_pool_stats() {
-        let stats = PoolStats {
-            capacity: 1000,
-            used: 300,
-            available: 700,
-            alignment: 32,
-        };
+    fn test_global_pool() {
+        let mut pool = TensorPool::new(5);
+        let tensor1 = pool.get_tensor(&[10, 10], "f32");
+        let tensor2 = pool.get_tensor(&[5, 5], "f32");
         
-        assert_eq!(stats.usage_percentage(), 30.0);
+        return_tensor_to_pool(tensor1);
+        return_tensor_to_pool(tensor2);
+        
+        let stats = get_pool_stats();
+        assert_eq!(stats.total_available, 2);
+        assert_eq!(stats.total_in_use, 0);
+        assert_eq!(stats.total_memory_usage, 100 * 4 + 25 * 4); // 100 * 4 for 10x10, 25 * 4 for 5x5
     }
 
     #[test]

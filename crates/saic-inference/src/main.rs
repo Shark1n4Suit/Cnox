@@ -4,9 +4,11 @@
 
 use clap::Parser;
 use saic_core::SaicResult;
-use saic_inference::BackendRegistry;
 use saic_core::{validation, memory};
 use std::path::Path;
+use std::collections::HashMap;
+use saic_inference::hardware::HardwareInfo;
+use saic_inference::BackendRegistry;
 use image::{ImageBuffer, Rgb, DynamicImage};
 
 #[derive(Parser, Debug)]
@@ -93,7 +95,7 @@ fn execute_inference(saic_file: &Path, input_data: &[f32], backend_name: &str, v
     }
     
     // Create backend registry
-    let registry = BackendRegistry::new();
+    let mut registry = BackendRegistry::new();
     
     if verbose {
         println!("Available backends: {:?}", registry.available_backends());
@@ -103,13 +105,19 @@ fn execute_inference(saic_file: &Path, input_data: &[f32], backend_name: &str, v
     // Select backend
     let backend = if backend_name == "auto" {
         // Auto-select based on model format and hardware
-        let hardware = saic_inference::hardware::HardwareInfo::detect();
+        let hardware = HardwareInfo::detect();
         
         if verbose {
             println!("Detected hardware: {:?}", hardware);
         }
         
-        registry.get_recommended_backend(&hardware)
+        let recommended_name = registry.get_recommended_backend(&hardware)
+            .ok_or_else(|| saic_core::SaicError::InvalidFormat("No suitable backend found".to_string()))?;
+        
+        // Store the name to avoid borrow checker issues
+        let name = recommended_name.to_string();
+        registry.get_backend(&name)
+            .ok_or_else(|| saic_core::SaicError::InvalidFormat(format!("Backend not found: {}", name)))?
     } else {
         // Use specified backend
         registry.get_backend(backend_name)
@@ -118,13 +126,19 @@ fn execute_inference(saic_file: &Path, input_data: &[f32], backend_name: &str, v
     
     if verbose {
         println!("Selected backend: {}", backend.name());
-        println!("Backend hardware requirements: {:?}", backend.hardware_requirements());
     }
     
     // Execute inference (backends handle their own initialization)
-    let results = backend.execute(model_payload, input_data).map_err(|e| saic_core::SaicError::InferenceError(e.to_string()))?;
+    let mut inputs = HashMap::new();
+    inputs.insert("input".to_string(), input_data.to_vec());
     
-    Ok(results)
+    let results = backend.execute(inputs).map_err(|e| saic_core::SaicError::InferenceError(e.to_string()))?;
+    
+    // Extract the output data
+    let output_data = results.values().next()
+        .ok_or_else(|| saic_core::SaicError::InvalidFormat("No output tensors found".to_string()))?;
+    
+    Ok(output_data.clone())
 }
 
 fn main() -> SaicResult<()> {
