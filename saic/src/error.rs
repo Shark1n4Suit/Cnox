@@ -78,6 +78,18 @@ pub enum SaicError {
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),
+    
+    /// Unsupported hardware target
+    #[error("Unsupported hardware target: {0:?}")]
+    UnsupportedHardwareTarget(crate::format::HardwareTarget),
+    
+    /// Missing template parameter
+    #[error("Missing template parameter: {0}")]
+    MissingTemplateParameter(String),
+    
+    /// Unsupported operation
+    #[error("Unsupported operation: {0:?}")]
+    UnsupportedOperation(crate::packager::ir::OpType),
 }
 
 impl SaicError {

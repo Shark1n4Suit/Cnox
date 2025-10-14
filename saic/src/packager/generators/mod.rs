@@ -7,6 +7,279 @@ use crate::{SaicError, SaicResult};
 use crate::format::HardwareTarget;
 use super::ir::{OptimizedIR, Operation, OpType, Attribute};
 
+// Include template-based code generation
+pub mod templates;
+pub mod real_templates;
+
+use templates::{AssemblyTemplate, UniversalTemplates};
+use real_templates::{RealAssemblyTemplate, RealUniversalTemplates};
+
+/// Template-based code generator
+pub struct TemplateCodeGenerator {
+    /// Generator name
+    name: String,
+    /// Generator version
+    version: String,
+    /// Universal templates
+    templates: UniversalTemplates,
+    /// Target hardware
+    target: HardwareTarget,
+}
+
+impl TemplateCodeGenerator {
+    /// Create a new template-based code generator
+    pub fn new(target: HardwareTarget) -> Self {
+        Self {
+            name: format!("template_generator_{:?}", target),
+            version: "1.0.0".to_string(),
+            templates: UniversalTemplates::new(),
+            target,
+        }
+    }
+    
+    /// Generate machine code using templates
+    fn generate_template_code(&self, operations: &[Operation]) -> SaicResult<Vec<u8>> {
+        let mut machine_code = Vec::new();
+        
+        // Generate function prologue
+        machine_code.extend_from_slice(&self.generate_prologue());
+        
+        // Save input and output pointers to stack
+        machine_code.extend_from_slice(&[0x48, 0x89, 0x7D, 0xF8]); // mov [rbp-8], rdi (input)
+        machine_code.extend_from_slice(&[0x48, 0x89, 0x75, 0xF0]); // mov [rbp-16], rsi (output)
+        
+        // Process operations using templates
+        for operation in operations {
+            let op_code = self.generate_operation_with_template(operation)?;
+            machine_code.extend_from_slice(&op_code);
+        }
+        
+        // Generate function epilogue
+        machine_code.extend_from_slice(&self.generate_epilogue());
+        
+        Ok(machine_code)
+    }
+    
+    /// Generate operation using template
+    fn generate_operation_with_template(&self, operation: &Operation) -> SaicResult<Vec<u8>> {
+        // Generate assembly using template
+        let _assembly = self.templates.generate_assembly(operation, self.target.clone())?;
+        
+        // For now, return placeholder machine code
+        // TODO: Implement actual assembly to machine code conversion
+        let mut machine_code = Vec::new();
+        
+        // Generate basic operation based on type
+        match operation.op_type {
+            OpType::Add => {
+                // Load input and output pointers
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x45, 0xF8]); // mov rax, [rbp-8] (input)
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x4D, 0xF0]); // mov rcx, [rbp-16] (output)
+                
+                // Load first float and add 1.0
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x10, 0x00]); // movss xmm0, [rax]
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2)
+                
+                // Store result
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x11, 0x01]); // movss [rcx], xmm0
+            }
+            OpType::Multiply => {
+                // Load input and output pointers
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x45, 0xF8]); // mov rax, [rbp-8] (input)
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x4D, 0xF0]); // mov rcx, [rbp-16] (output)
+                
+                // Load first float and multiply by 4
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x10, 0x00]); // movss xmm0, [rax]
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2 again)
+                
+                // Store result
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x11, 0x01]); // movss [rcx], xmm0
+            }
+            OpType::Convolution => {
+                // Load input and output pointers
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x45, 0xF8]); // mov rax, [rbp-8] (input)
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x4D, 0xF0]); // mov rcx, [rbp-16] (output)
+                
+                // Simple convolution: multiply by 8
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x10, 0x00]); // movss xmm0, [rax]
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2 again)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2 again)
+                
+                // Store result
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x11, 0x01]); // movss [rcx], xmm0
+            }
+            OpType::MatMul => {
+                // Load input and output pointers
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x45, 0xF8]); // mov rax, [rbp-8] (input)
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x4D, 0xF0]); // mov rcx, [rbp-16] (output)
+                
+                // Simple matrix multiplication: multiply by 16
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x10, 0x00]); // movss xmm0, [rax]
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2 again)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2 again)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2 again)
+                
+                // Store result
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x11, 0x01]); // movss [rcx], xmm0
+            }
+            _ => {
+                // Generic operation
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x45, 0xF8]); // mov rax, [rbp-8] (input)
+                machine_code.extend_from_slice(&[0x48, 0x8B, 0x4D, 0xF0]); // mov rcx, [rbp-16] (output)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x10, 0x00]); // movss xmm0, [rax]
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x58, 0xC0]); // addss xmm0, xmm0 (multiply by 2)
+                machine_code.extend_from_slice(&[0xF3, 0x0F, 0x11, 0x01]); // movss [rcx], xmm0
+            }
+        }
+        
+        Ok(machine_code)
+    }
+    
+    /// Generate function prologue
+    fn generate_prologue(&self) -> Vec<u8> {
+        vec![
+            0x55,                    // push rbp
+            0x48, 0x89, 0xE5,        // mov rbp, rsp
+            0x48, 0x83, 0xEC, 0x20,  // sub rsp, 32
+            // Save callee-saved registers
+            0x53,                    // push rbx
+            0x56,                    // push rsi
+            0x57,                    // push rdi
+        ]
+    }
+    
+    /// Generate function epilogue
+    fn generate_epilogue(&self) -> Vec<u8> {
+        vec![
+            // Restore callee-saved registers
+            0x5F,                    // pop rdi
+            0x5E,                    // pop rsi
+            0x5B,                    // pop rbx
+            0x48, 0x83, 0xC4, 0x20,  // add rsp, 32
+            0x5D,                    // pop rbp
+            0xC3,                    // ret
+        ]
+    }
+}
+
+impl CodeGenerator for TemplateCodeGenerator {
+    fn generate(&self, optimized_ir: &OptimizedIR) -> SaicResult<Vec<u8>> {
+        self.generate_template_code(&optimized_ir.optimized_operations)
+    }
+    
+    fn target_hardware(&self) -> HardwareTarget {
+        self.target.clone()
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+    
+    fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+/// Real template-based code generator with actual machine code
+pub struct RealTemplateCodeGenerator {
+    /// Generator name
+    name: String,
+    /// Generator version
+    version: String,
+    /// Real universal templates
+    templates: RealUniversalTemplates,
+    /// Target hardware
+    target: HardwareTarget,
+}
+
+impl RealTemplateCodeGenerator {
+    /// Create a new real template-based code generator
+    pub fn new(target: HardwareTarget) -> Self {
+        Self {
+            name: format!("real_template_generator_{:?}", target),
+            version: "1.0.0".to_string(),
+            templates: RealUniversalTemplates::new(),
+            target,
+        }
+    }
+    
+    /// Generate real machine code using templates
+    fn generate_real_template_code(&self, operations: &[Operation]) -> SaicResult<Vec<u8>> {
+        let mut machine_code = Vec::new();
+        
+        // Generate function prologue
+        machine_code.extend_from_slice(&self.generate_prologue());
+        
+        // Save input and output pointers to stack
+        machine_code.extend_from_slice(&[0x48, 0x89, 0x7D, 0xF8]); // mov [rbp-8], rdi (input)
+        machine_code.extend_from_slice(&[0x48, 0x89, 0x75, 0xF0]); // mov [rbp-16], rsi (output)
+        
+        // Process operations using real templates
+        for operation in operations {
+            let op_code = self.generate_real_operation_with_template(operation)?;
+            machine_code.extend_from_slice(&op_code);
+        }
+        
+        // Generate function epilogue
+        machine_code.extend_from_slice(&self.generate_epilogue());
+        
+        Ok(machine_code)
+    }
+    
+    /// Generate operation using real template
+    fn generate_real_operation_with_template(&self, operation: &Operation) -> SaicResult<Vec<u8>> {
+        // Generate real machine code using templates
+        self.templates.generate_real_machine_code(operation, self.target.clone())
+    }
+    
+    /// Generate function prologue
+    fn generate_prologue(&self) -> Vec<u8> {
+        vec![
+            0x55,                    // push rbp
+            0x48, 0x89, 0xE5,        // mov rbp, rsp
+            0x48, 0x83, 0xEC, 0x20,  // sub rsp, 32
+            // Save callee-saved registers
+            0x53,                    // push rbx
+            0x56,                    // push rsi
+            0x57,                    // push rdi
+        ]
+    }
+    
+    /// Generate function epilogue
+    fn generate_epilogue(&self) -> Vec<u8> {
+        vec![
+            // Restore callee-saved registers
+            0x5F,                    // pop rdi
+            0x5E,                    // pop rsi
+            0x5B,                    // pop rbx
+            0x48, 0x83, 0xC4, 0x20,  // add rsp, 32
+            0x5D,                    // pop rbp
+            0xC3,                    // ret
+        ]
+    }
+}
+
+impl CodeGenerator for RealTemplateCodeGenerator {
+    fn generate(&self, optimized_ir: &OptimizedIR) -> SaicResult<Vec<u8>> {
+        self.generate_real_template_code(&optimized_ir.optimized_operations)
+    }
+    
+    fn target_hardware(&self) -> HardwareTarget {
+        self.target.clone()
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+    
+    fn version(&self) -> &str {
+        &self.version
+    }
+}
+
 /// Code generator trait
 pub trait CodeGenerator: Send + Sync {
     /// Generate machine code from optimized IR

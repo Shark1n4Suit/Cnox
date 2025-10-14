@@ -140,6 +140,8 @@ impl SaicPackager {
                 }
             }
             HardwareTarget::Custom(_) => OptimizationLevel::Basic,
+            HardwareTarget::NeuralEngine => OptimizationLevel::Maximum,
+            HardwareTarget::NPU => OptimizationLevel::Maximum,
         }
     }
     
@@ -177,6 +179,22 @@ impl SaicPackager {
                     optimized_ir.add_optimized_operation(op);
                 }
             }
+            HardwareTarget::NeuralEngine => {
+                // For Neural Engine, use CPU optimizer as fallback for now
+                let optimizer = optimizers::CpuOptimizer::new();
+                let optimized_operations = optimizer.optimize(&ir.operations, level)?;
+                for op in optimized_operations {
+                    optimized_ir.add_optimized_operation(op);
+                }
+            }
+            HardwareTarget::NPU => {
+                // For NPU, use CPU optimizer as fallback for now
+                let optimizer = optimizers::CpuOptimizer::new();
+                let optimized_operations = optimizer.optimize(&ir.operations, level)?;
+                for op in optimized_operations {
+                    optimized_ir.add_optimized_operation(op);
+                }
+            }
         }
         
         Ok(optimized_ir)
@@ -199,6 +217,16 @@ impl SaicPackager {
             }
             HardwareTarget::Custom(_) => {
                 // For custom targets, use CPU generator as fallback
+                let generator = generators::CpuCodeGenerator::new();
+                generator.generate(optimized_ir)
+            }
+            HardwareTarget::NeuralEngine => {
+                // For Neural Engine, use CPU generator as fallback for now
+                let generator = generators::CpuCodeGenerator::new();
+                generator.generate(optimized_ir)
+            }
+            HardwareTarget::NPU => {
+                // For NPU, use CPU generator as fallback for now
                 let generator = generators::CpuCodeGenerator::new();
                 generator.generate(optimized_ir)
             }

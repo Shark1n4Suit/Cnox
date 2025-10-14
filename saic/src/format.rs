@@ -151,6 +151,10 @@ pub enum HardwareTarget {
     Gpu,
     /// Edge device target
     Edge,
+    /// Apple Neural Engine
+    NeuralEngine,
+    /// NPU (Neural Processing Unit)
+    NPU,
     /// Custom target
     Custom(String),
 }

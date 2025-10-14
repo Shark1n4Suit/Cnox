@@ -72,10 +72,204 @@ enum CompressionType {
 }
 ```
 
-### **Priority 2: Real Neural Network Operations**
+### **Priority 2: Template-Based Code Generation**
+**Status:** ❌ Missing - Foundation for all operations
+
+#### **Week 1-2: Assembly Template System**
+```rust
+// Universal assembly template structure
+pub struct AssemblyTemplate {
+    pub operation: OpType,
+    pub template: String,        // Universal assembly template
+    pub parameters: Vec<String>, // Template parameters
+    pub hardware_targets: Vec<HardwareTarget>,
+}
+
+// Template-based code generation
+impl AssemblyTemplate {
+    pub fn instantiate(&self, params: &HashMap<String, String>, target: HardwareTarget) -> SaicResult<Vec<u8>> {
+        let mut assembly = self.template.clone();
+        
+        // Substitute parameters
+        for (param, value) in params {
+            assembly = assembly.replace(&format!("{{{{{}}}}}", param), value);
+        }
+        
+        // Translate to hardware-specific assembly
+        let hardware_assembly = self.translate_for_hardware(&assembly, target)?;
+        
+        // Assemble to machine code
+        let machine_code = self.assemble(&hardware_assembly)?;
+        
+        Ok(machine_code)
+    }
+}
+
+// Universal templates for core operations
+pub struct UniversalTemplates {
+    pub add_template: AssemblyTemplate,
+    pub mul_template: AssemblyTemplate,
+    pub conv_template: AssemblyTemplate,
+    pub matmul_template: AssemblyTemplate,
+}
+
+impl UniversalTemplates {
+    pub fn new() -> Self {
+        Self {
+            add_template: AssemblyTemplate {
+                operation: OpType::Add,
+                template: r#"
+                    load {{INPUT_A_PTR}}, {{REG_A}}
+                    load {{INPUT_B_PTR}}, {{REG_B}}
+                    add {{REG_A}}, {{REG_B}}, {{RESULT_REG}}
+                    store {{RESULT_REG}}, {{OUTPUT_PTR}}
+                "#.to_string(),
+                parameters: vec![
+                    "INPUT_A_PTR".to_string(),
+                    "INPUT_B_PTR".to_string(),
+                    "OUTPUT_PTR".to_string(),
+                    "REG_A".to_string(),
+                    "REG_B".to_string(),
+                    "RESULT_REG".to_string(),
+                ],
+                hardware_targets: vec![HardwareTarget::CPU, HardwareTarget::GPU],
+            },
+            mul_template: AssemblyTemplate {
+                operation: OpType::Mul,
+                template: r#"
+                    load {{INPUT_A_PTR}}, {{REG_A}}
+                    load {{INPUT_B_PTR}}, {{REG_B}}
+                    multiply {{REG_A}}, {{REG_B}}, {{RESULT_REG}}
+                    store {{RESULT_REG}}, {{OUTPUT_PTR}}
+                "#.to_string(),
+                parameters: vec![
+                    "INPUT_A_PTR".to_string(),
+                    "INPUT_B_PTR".to_string(),
+                    "OUTPUT_PTR".to_string(),
+                    "REG_A".to_string(),
+                    "REG_B".to_string(),
+                    "RESULT_REG".to_string(),
+                ],
+                hardware_targets: vec![HardwareTarget::CPU, HardwareTarget::GPU],
+            },
+            conv_template: AssemblyTemplate {
+                operation: OpType::Convolution,
+                template: r#"
+                    // Convolution template
+                    load {{INPUT_PTR}}, {{INPUT_REG}}
+                    load {{KERNEL_PTR}}, {{KERNEL_REG}}
+                    convolution {{INPUT_REG}}, {{KERNEL_REG}}, {{OUTPUT_REG}}, {{KERNEL_SIZE}}, {{STRIDE}}, {{PADDING}}
+                    store {{OUTPUT_REG}}, {{OUTPUT_PTR}}
+                "#.to_string(),
+                parameters: vec![
+                    "INPUT_PTR".to_string(),
+                    "KERNEL_PTR".to_string(),
+                    "OUTPUT_PTR".to_string(),
+                    "INPUT_REG".to_string(),
+                    "KERNEL_REG".to_string(),
+                    "OUTPUT_REG".to_string(),
+                    "KERNEL_SIZE".to_string(),
+                    "STRIDE".to_string(),
+                    "PADDING".to_string(),
+                ],
+                hardware_targets: vec![HardwareTarget::CPU, HardwareTarget::GPU],
+            },
+            matmul_template: AssemblyTemplate {
+                operation: OpType::MatMul,
+                template: r#"
+                    // Matrix multiplication template
+                    load {{MATRIX_A_PTR}}, {{MATRIX_A_REG}}
+                    load {{MATRIX_B_PTR}}, {{MATRIX_B_REG}}
+                    matmul {{MATRIX_A_REG}}, {{MATRIX_B_REG}}, {{RESULT_REG}}, {{M}}, {{N}}, {{K}}
+                    store {{RESULT_REG}}, {{OUTPUT_PTR}}
+                "#.to_string(),
+                parameters: vec![
+                    "MATRIX_A_PTR".to_string(),
+                    "MATRIX_B_PTR".to_string(),
+                    "OUTPUT_PTR".to_string(),
+                    "MATRIX_A_REG".to_string(),
+                    "MATRIX_B_REG".to_string(),
+                    "RESULT_REG".to_string(),
+                    "M".to_string(),
+                    "N".to_string(),
+                    "K".to_string(),
+                ],
+                hardware_targets: vec![HardwareTarget::CPU, HardwareTarget::GPU],
+            },
+        }
+    }
+}
+```
+
+#### **Week 2-3: Hardware Translation Layer**
+```rust
+// Hardware-specific translation
+pub trait HardwareTranslator {
+    fn translate(&self, template: &AssemblyTemplate) -> SaicResult<String>;
+    fn optimize(&self, assembly: &str) -> SaicResult<String>;
+}
+
+// CPU translator (x86-64)
+impl HardwareTranslator for CpuTranslator {
+    fn translate(&self, template: &AssemblyTemplate) -> SaicResult<String> {
+        let mut assembly = template.template.clone();
+        
+        // Translate universal instructions to x86-64
+        assembly = assembly
+            .replace("load", "mov")
+            .replace("add", "add")
+            .replace("multiply", "mul")
+            .replace("store", "mov")
+            .replace("{{REG_A}}", "rax")
+            .replace("{{REG_B}}", "rcx")
+            .replace("{{RESULT_REG}}", "rdx");
+        
+        Ok(assembly)
+    }
+    
+    fn optimize(&self, assembly: &str) -> SaicResult<String> {
+        // Apply CPU-specific optimizations
+        let optimized = assembly
+            .replace("mov rax, [rbp+8]", "mov rax, [rbp+8]  // Optimized load")
+            .replace("add rax, rcx", "add rax, rcx  // Optimized add");
+        
+        Ok(optimized)
+    }
+}
+
+// GPU translator (CUDA)
+impl HardwareTranslator for GpuTranslator {
+    fn translate(&self, template: &AssemblyTemplate) -> SaicResult<String> {
+        let mut assembly = template.template.clone();
+        
+        // Translate universal instructions to CUDA
+        assembly = assembly
+            .replace("load", "ld.global")
+            .replace("add", "add")
+            .replace("multiply", "mul")
+            .replace("store", "st.global")
+            .replace("{{REG_A}}", "r0")
+            .replace("{{REG_B}}", "r1")
+            .replace("{{RESULT_REG}}", "r2");
+        
+        Ok(assembly)
+    }
+    
+    fn optimize(&self, assembly: &str) -> SaicResult<String> {
+        // Apply GPU-specific optimizations
+        let optimized = assembly
+            .replace("ld.global", "ld.global.v4  // Vectorized load")
+            .replace("add", "add  // GPU optimized add");
+        
+        Ok(optimized)
+    }
+}
+```
+
+### **Priority 3: Real Neural Network Operations**
 **Status:** ⚠️ Simplified - Need real implementations
 
-#### **Week 2-3: Convolution Implementation**
+#### **Week 3-4: Convolution Implementation**
 ```rust
 fn generate_convolution_operation_real(&self, op: &Operation) -> Vec<u8> {
     let mut code = Vec::new();
