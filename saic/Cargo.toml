@@ -60,8 +60,10 @@ toml = "0.8"
 # Time and date handling
 chrono = { version = "0.4", features = ["serde"] }
 
-# Compression
+# Compression (packaging only, not runtime)
 flate2 = "1.0"
+zstd = { version = "0.12", optional = true }
+lz4 = { version = "1.24", optional = true }
 
 # Platform-specific
 libc = "0.2"
@@ -90,8 +92,9 @@ cc = "1.0"
 default = ["cli", "format", "packager"]
 cli = []
 format = []
-packager = []
-runtime = []
+packager = ["packaging"]
+packaging = ["zstd", "lz4"]  # Compression for packaging only
+runtime = []  # NO compression deps at runtime
 backends = []
 openvino = []
 tensorrt = []

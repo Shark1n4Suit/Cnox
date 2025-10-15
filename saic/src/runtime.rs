@@ -112,8 +112,8 @@ impl SaicRuntime {
             )));
         }
         
-        // Execute the machine code
-        let output = self.execute_machine_code(container, input_data)?;
+        // Execute the machine code with weights
+        let output = self.execute_machine_code_with_weights(container, input_data)?;
         
         // Update statistics
         let execution_time = start_time.elapsed().as_micros() as u64;
@@ -123,7 +123,151 @@ impl SaicRuntime {
         Ok(output)
     }
     
-    /// Execute machine code from container
+    /// Execute machine code with weights
+    fn execute_machine_code_with_weights(&self, container: &SaicContainer, input_data: &[f32]) -> SaicResult<Vec<f32>> {
+        // Load weights from container
+        let weights = container.decompress_weights()?;
+        
+        // Calculate output size
+        let output_size: usize = container.manifest.output_shapes.iter()
+            .map(|shape| shape.iter().product::<usize>())
+            .sum();
+        
+        let mut output = vec![0.0f32; output_size];
+        
+        // Execute operations with real weights
+        for operation in &container.manifest.operations {
+            let op_output = self.execute_operation_with_weights(operation, input_data, &weights)?;
+            
+            // Copy operation output to final output
+            for (i, &val) in op_output.iter().enumerate() {
+                if i < output.len() {
+                    output[i] = val;
+                }
+            }
+        }
+        
+        Ok(output)
+    }
+    
+    /// Execute a single operation with weights
+    fn execute_operation_with_weights(&self, operation: &crate::packager::ir::Operation, input_data: &[f32], weights: &[f32]) -> SaicResult<Vec<f32>> {
+        match operation.op_type {
+            crate::packager::ir::OpType::Add => {
+                // Real addition with weights
+                let mut output = Vec::new();
+                for (i, &val) in input_data.iter().enumerate() {
+                    if i < weights.len() {
+                        output.push(val + weights[i]);
+                    } else {
+                        output.push(val);
+                    }
+                }
+                Ok(output)
+            }
+            crate::packager::ir::OpType::Multiply => {
+                // Real multiplication with weights
+                let mut output = Vec::new();
+                for (i, &val) in input_data.iter().enumerate() {
+                    if i < weights.len() {
+                        output.push(val * weights[i]);
+                    } else {
+                        output.push(val);
+                    }
+                }
+                Ok(output)
+            }
+            crate::packager::ir::OpType::Convolution => {
+                // Simple convolution implementation
+                self.execute_convolution_with_weights(operation, input_data, weights)
+            }
+            crate::packager::ir::OpType::MatMul => {
+                // Simple matrix multiplication implementation
+                self.execute_matmul_with_weights(operation, input_data, weights)
+            }
+            crate::packager::ir::OpType::Activation => {
+                // ReLU activation
+                let output: Vec<f32> = input_data.iter().map(|&x| if x > 0.0 { x } else { 0.0 }).collect();
+                Ok(output)
+            }
+            _ => {
+                // Fallback: pass through input
+                Ok(input_data.to_vec())
+            }
+        }
+    }
+    
+    /// Execute convolution with weights
+    fn execute_convolution_with_weights(&self, operation: &crate::packager::ir::Operation, input_data: &[f32], weights: &[f32]) -> SaicResult<Vec<f32>> {
+        // Simple convolution implementation
+        let mut output = Vec::new();
+        
+        // Get kernel size from operation attributes
+        let kernel_size = operation.attributes.get("kernel_size")
+            .and_then(|attr| match attr {
+                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                _ => None,
+            })
+            .unwrap_or(3);
+        
+        // Simple 1D convolution
+        for i in 0..input_data.len().saturating_sub(kernel_size - 1) {
+            let mut sum = 0.0;
+            for j in 0..kernel_size {
+                if i + j < input_data.len() && j < weights.len() {
+                    sum += input_data[i + j] * weights[j];
+                }
+            }
+            output.push(sum);
+        }
+        
+        Ok(output)
+    }
+    
+    /// Execute matrix multiplication with weights
+    fn execute_matmul_with_weights(&self, operation: &crate::packager::ir::Operation, input_data: &[f32], weights: &[f32]) -> SaicResult<Vec<f32>> {
+        // Simple matrix multiplication implementation
+        let mut output = Vec::new();
+        
+        // Get matrix dimensions from operation attributes
+        let dims = operation.attributes.get("dimensions")
+            .and_then(|attr| match attr {
+                crate::packager::ir::Attribute::IntArray(dims) => Some(dims.iter().map(|&x| x as i32).collect()),
+                _ => None,
+            })
+            .unwrap_or(vec![input_data.len() as i32, 1]);
+        
+        if dims.len() >= 2 {
+            let rows = dims[0] as usize;
+            let cols = dims[1] as usize;
+            
+            // Simple matrix multiplication: input * weights
+            for i in 0..rows {
+                let mut sum = 0.0;
+                for j in 0..cols {
+                    let input_idx = i * cols + j;
+                    let weight_idx = i * cols + j;
+                    if input_idx < input_data.len() && weight_idx < weights.len() {
+                        sum += input_data[input_idx] * weights[weight_idx];
+                    }
+                }
+                output.push(sum);
+            }
+        } else {
+            // Fallback: element-wise multiplication
+            for (i, &val) in input_data.iter().enumerate() {
+                if i < weights.len() {
+                    output.push(val * weights[i]);
+                } else {
+                    output.push(val);
+                }
+            }
+        }
+        
+        Ok(output)
+    }
+    
+    /// Execute machine code from container (legacy method)
     fn execute_machine_code(&self, container: &SaicContainer, input_data: &[f32]) -> SaicResult<Vec<f32>> {
         // Calculate output size
         let output_size: usize = container.manifest.output_shapes.iter()

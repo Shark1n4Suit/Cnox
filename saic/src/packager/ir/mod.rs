@@ -87,7 +87,11 @@ pub enum OpType {
     
     // Advanced operations
     Attention,
+    MultiHeadAttention,
+    SelfAttention,
     Transformer,
+    Encoder,
+    Decoder,
     Custom(String),
 }
 

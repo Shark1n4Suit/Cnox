@@ -9,10 +9,12 @@ use super::ir::{OptimizedIR, Operation, OpType, Attribute};
 
 // Include template-based code generation
 pub mod templates;
-pub mod real_templates;
+// Include backend translators
+pub mod backend_translators;
 
-use templates::{AssemblyTemplate, UniversalTemplates};
-use real_templates::{RealAssemblyTemplate, RealUniversalTemplates};
+use templates::TemplateRegistry;
+use backend_translators::{BackendTranslatorManager, SaicAiOperation, SaicAiOperationParams};
+use backend_translators::saic_operations::SaicAttribute;
 
 /// Template-based code generator
 pub struct TemplateCodeGenerator {
@@ -20,8 +22,20 @@ pub struct TemplateCodeGenerator {
     name: String,
     /// Generator version
     version: String,
-    /// Universal templates
-    templates: UniversalTemplates,
+    /// Template registry
+    template_registry: TemplateRegistry,
+    /// Target hardware
+    target: HardwareTarget,
+}
+
+/// Backend translator-based code generator
+pub struct BackendTranslatorCodeGenerator {
+    /// Generator name
+    name: String,
+    /// Generator version
+    version: String,
+    /// Backend translator manager
+    translator_manager: BackendTranslatorManager,
     /// Target hardware
     target: HardwareTarget,
 }
@@ -32,9 +46,126 @@ impl TemplateCodeGenerator {
         Self {
             name: format!("template_generator_{:?}", target),
             version: "1.0.0".to_string(),
-            templates: UniversalTemplates::new(),
+            template_registry: TemplateRegistry::new(),
             target,
         }
+    }
+}
+
+impl BackendTranslatorCodeGenerator {
+    /// Create a new backend translator-based code generator
+    pub fn new(target: HardwareTarget) -> Self {
+        Self {
+            name: format!("backend_translator_generator_{:?}", target),
+            version: "1.0.0".to_string(),
+            translator_manager: BackendTranslatorManager::new(),
+            target,
+        }
+    }
+    
+    /// Generate code using backend translators
+    fn generate_backend_translator_code(&self, operations: &[Operation]) -> SaicResult<Vec<u8>> {
+        let mut machine_code = Vec::new();
+        
+        // Generate function prologue
+        machine_code.extend_from_slice(&self.generate_prologue());
+        
+        // Generate code for each operation using backend translators
+        for operation in operations {
+            let saic_operation = self.convert_to_saic_operation(operation)?;
+            let saic_params = self.convert_to_saic_params(operation)?;
+            
+            let operation_code = self.translator_manager.translate_operation(
+                &saic_operation,
+                &saic_params,
+                self.target.clone()
+            )?;
+            
+            // Convert string code to bytes (placeholder)
+            machine_code.extend_from_slice(operation_code.as_bytes());
+        }
+        
+        // Generate function epilogue
+        machine_code.extend_from_slice(&self.generate_epilogue());
+        
+        Ok(machine_code)
+    }
+    
+    /// Convert Operation to SaicAiOperation
+    fn convert_to_saic_operation(&self, operation: &Operation) -> SaicResult<SaicAiOperation> {
+        match operation.op_type {
+            OpType::Add => Ok(SaicAiOperation::Add),
+            OpType::Subtract => Ok(SaicAiOperation::Subtract),
+            OpType::Multiply => Ok(SaicAiOperation::Multiply),
+            OpType::Divide => Ok(SaicAiOperation::Divide),
+            OpType::Convolution => Ok(SaicAiOperation::Convolution),
+            OpType::Pooling => Ok(SaicAiOperation::Pooling),
+            OpType::Activation => Ok(SaicAiOperation::Activation),
+            OpType::BatchNorm => Ok(SaicAiOperation::BatchNorm),
+            OpType::Dropout => Ok(SaicAiOperation::Dropout),
+            OpType::MatMul => Ok(SaicAiOperation::MatMul),
+            OpType::Transpose => Ok(SaicAiOperation::Transpose),
+            OpType::Reshape => Ok(SaicAiOperation::Reshape),
+            OpType::Attention => Ok(SaicAiOperation::Attention),
+            OpType::MultiHeadAttention => Ok(SaicAiOperation::MultiHeadAttention),
+            OpType::SelfAttention => Ok(SaicAiOperation::SelfAttention),
+            OpType::Transformer => Ok(SaicAiOperation::Transformer),
+            OpType::Encoder => Ok(SaicAiOperation::Encoder),
+            OpType::Decoder => Ok(SaicAiOperation::Decoder),
+            OpType::Custom(ref name) => Ok(SaicAiOperation::Custom(name.clone())),
+            _ => Err(SaicError::Internal(format!("Unsupported operation: {:?}", operation.op_type))),
+        }
+    }
+    
+    /// Convert Operation to SaicAiOperationParams
+    fn convert_to_saic_params(&self, operation: &Operation) -> SaicResult<SaicAiOperationParams> {
+        let mut input_shapes = Vec::new();
+        let mut output_shapes = Vec::new();
+        let mut attributes = std::collections::HashMap::new();
+        let mut optimization_hints = Vec::new();
+        
+        // Convert input shapes (placeholder - Operation doesn't have shape info)
+        for _input in &operation.inputs {
+            input_shapes.push(vec![1, 1]); // Placeholder shape
+        }
+        
+        // Convert output shapes (placeholder - Operation doesn't have shape info)
+        for _output in &operation.outputs {
+            output_shapes.push(vec![1, 1]); // Placeholder shape
+        }
+        
+        // Convert attributes
+        for (key, value) in &operation.attributes {
+            match value {
+                Attribute::Int(i) => {
+                    attributes.insert(key.clone(), SaicAttribute::Int(*i as i32));
+                }
+                Attribute::Float(f) => {
+                    attributes.insert(key.clone(), SaicAttribute::Float(*f));
+                }
+                Attribute::String(s) => {
+                    attributes.insert(key.clone(), SaicAttribute::String(s.clone()));
+                }
+                Attribute::Bool(b) => {
+                    attributes.insert(key.clone(), SaicAttribute::Bool(*b));
+                }
+                Attribute::FloatArray(_) | Attribute::IntArray(_) => {
+                    // Skip array attributes for now
+                    continue;
+                }
+            }
+        }
+        
+        // Get optimization hints from the operation
+        let saic_operation = self.convert_to_saic_operation(operation)?;
+        optimization_hints = saic_operation.optimization_hints();
+        
+        Ok(SaicAiOperationParams {
+            input_shapes,
+            output_shapes,
+            attributes,
+            optimization_hints,
+        })
     }
     
     /// Generate machine code using templates
@@ -62,11 +193,15 @@ impl TemplateCodeGenerator {
     
     /// Generate operation using template
     fn generate_operation_with_template(&self, operation: &Operation) -> SaicResult<Vec<u8>> {
-        // Generate assembly using template
-        let _assembly = self.templates.generate_assembly(operation, self.target.clone())?;
+        // Convert to SAIC operations
+        let saic_operation = self.convert_to_saic_operation(operation)?;
+        let saic_params = self.convert_to_saic_params(operation)?;
+        
+        // Generate code using translator manager
+        let _code = self.translator_manager.translate_operation(&saic_operation, &saic_params, self.target.clone())?;
         
         // For now, return placeholder machine code
-        // TODO: Implement actual assembly to machine code conversion
+        // TODO: Implement actual code to machine code conversion
         let mut machine_code = Vec::new();
         
         // Generate basic operation based on type
@@ -167,7 +302,14 @@ impl TemplateCodeGenerator {
 
 impl CodeGenerator for TemplateCodeGenerator {
     fn generate(&self, optimized_ir: &OptimizedIR) -> SaicResult<Vec<u8>> {
-        self.generate_template_code(&optimized_ir.optimized_operations)
+        let mut final_code = Vec::new();
+        
+        for operation in &optimized_ir.optimized_operations {
+            let code_str = self.template_registry.generate_code(operation, self.target.clone())?;
+            final_code.extend_from_slice(code_str.as_bytes());
+        }
+        
+        Ok(final_code)
     }
     
     fn target_hardware(&self) -> HardwareTarget {
@@ -190,7 +332,7 @@ pub struct RealTemplateCodeGenerator {
     /// Generator version
     version: String,
     /// Real universal templates
-    templates: RealUniversalTemplates,
+    templates: TemplateRegistry,
     /// Target hardware
     target: HardwareTarget,
 }
@@ -201,7 +343,7 @@ impl RealTemplateCodeGenerator {
         Self {
             name: format!("real_template_generator_{:?}", target),
             version: "1.0.0".to_string(),
-            templates: RealUniversalTemplates::new(),
+            templates: crate::packager::generators::templates::TemplateRegistry::new(),
             target,
         }
     }
@@ -232,7 +374,8 @@ impl RealTemplateCodeGenerator {
     /// Generate operation using real template
     fn generate_real_operation_with_template(&self, operation: &Operation) -> SaicResult<Vec<u8>> {
         // Generate real machine code using templates
-        self.templates.generate_real_machine_code(operation, self.target.clone())
+        let code_str = self.templates.generate_code(operation, self.target.clone())?;
+        Ok(code_str.as_bytes().to_vec())
     }
     
     /// Generate function prologue
@@ -1065,6 +1208,30 @@ impl CodeGenerator for EdgeCodeGenerator {
     
     fn target_hardware(&self) -> HardwareTarget {
         HardwareTarget::Edge
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+    
+    fn version(&self) -> &str {
+        &self.version
+    }
+}
+
+impl CodeGenerator for BackendTranslatorCodeGenerator {
+    fn generate(&self, optimized_ir: &OptimizedIR) -> SaicResult<Vec<u8>> {
+        println!("🔧 Generating code using backend translators for {:?}", self.target);
+        
+        // Generate code using backend translators
+        let machine_code = self.generate_backend_translator_code(&optimized_ir.optimized_operations)?;
+        
+        println!("✅ Generated {} bytes of machine code using backend translators", machine_code.len());
+        Ok(machine_code)
+    }
+    
+    fn target_hardware(&self) -> HardwareTarget {
+        self.target.clone()
     }
     
     fn name(&self) -> &str {

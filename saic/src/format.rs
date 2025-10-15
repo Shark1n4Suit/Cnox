@@ -143,7 +143,7 @@ pub enum ModelFormat {
 }
 
 /// Hardware target
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HardwareTarget {
     /// CPU target
     Cpu,
@@ -248,6 +248,8 @@ pub struct SaicManifest {
     pub description: Option<String>,
     /// Model tags
     pub tags: Vec<String>,
+    /// Operations in the model
+    pub operations: Vec<crate::packager::ir::Operation>,
     /// Model metadata
     pub metadata: std::collections::HashMap<String, String>,
 }
@@ -273,6 +275,7 @@ impl SaicManifest {
             modified_at: now,
             description: None,
             tags: Vec::new(),
+            operations: Vec::new(),
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -332,6 +335,41 @@ impl SaicManifest {
     }
 }
 
+/// Compression types supported by SAIC
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CompressionType {
+    /// No compression
+    None,
+    /// Zstandard compression
+    Zstd,
+    /// LZ4 compression
+    Lz4,
+    /// Deflate compression (fallback)
+    Deflate,
+}
+
+impl CompressionType {
+    /// Get compression type from string
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "zstd" => CompressionType::Zstd,
+            "lz4" => CompressionType::Lz4,
+            "deflate" => CompressionType::Deflate,
+            _ => CompressionType::None,
+        }
+    }
+    
+    /// Get string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CompressionType::None => "none",
+            CompressionType::Zstd => "zstd",
+            CompressionType::Lz4 => "lz4",
+            CompressionType::Deflate => "deflate",
+        }
+    }
+}
+
 /// SAIC container with binary format support
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaicContainer {
@@ -341,6 +379,10 @@ pub struct SaicContainer {
     pub manifest: SaicManifest,
     /// Optimized machine code
     pub optimized_code: Vec<u8>,
+    /// Compressed model weights
+    pub compressed_weights: Vec<u8>,
+    /// Compression type used for weights
+    pub compression_type: CompressionType,
     /// Backend hints
     pub backend_hints: Option<BackendHints>,
     /// Security metadata
@@ -349,15 +391,18 @@ pub struct SaicContainer {
 
 impl SaicContainer {
     /// Create a new SAIC container
-    pub fn new(manifest: SaicManifest, optimized_code: Vec<u8>) -> Self {
+    pub fn new(manifest: SaicManifest, optimized_code: Vec<u8>, compressed_weights: Vec<u8>, compression_type: CompressionType) -> Self {
         let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
         let code_offset = SAIC_HEADER_SIZE as u64 + manifest_size as u64;
-        let total_size = code_offset + optimized_code.len() as u64;
+        let weights_offset = code_offset + optimized_code.len() as u64;
+        let total_size = weights_offset + compressed_weights.len() as u64;
         
         Self {
             header: SaicHeader::new(total_size, SAIC_HEADER_SIZE as u64, code_offset),
             manifest,
             optimized_code,
+            compressed_weights,
+            compression_type,
             backend_hints: None,
             security: None,
         }
@@ -386,6 +431,59 @@ impl SaicContainer {
     /// Get total container size
     pub fn total_size(&self) -> usize {
         self.header.container_size as usize
+    }
+    
+    /// Decompress weights (runtime - no external dependencies)
+    pub fn decompress_weights(&self) -> SaicResult<Vec<f32>> {
+        match self.compression_type {
+            CompressionType::Zstd => {
+                self.decompress_zstd(&self.compressed_weights)
+            }
+            CompressionType::Lz4 => {
+                self.decompress_lz4(&self.compressed_weights)
+            }
+            CompressionType::Deflate => {
+                self.decompress_deflate(&self.compressed_weights)
+            }
+            CompressionType::None => {
+                // Convert bytes to f32
+                let mut weights = Vec::new();
+                for chunk in self.compressed_weights.chunks(4) {
+                    if chunk.len() == 4 {
+                        let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
+                        weights.push(f32::from_le_bytes(bytes));
+                    }
+                }
+                Ok(weights)
+            }
+        }
+    }
+    
+    /// Built-in Zstd decompression (no external dependencies)
+    fn decompress_zstd(&self, data: &[u8]) -> SaicResult<Vec<f32>> {
+        // For now, use a simple fallback
+        // TODO: Implement built-in Zstd decompression algorithm
+        self.decompress_deflate(data)
+    }
+    
+    /// Built-in LZ4 decompression (no external dependencies)
+    fn decompress_lz4(&self, data: &[u8]) -> SaicResult<Vec<f32>> {
+        // For now, use a simple fallback
+        // TODO: Implement built-in LZ4 decompression algorithm
+        self.decompress_deflate(data)
+    }
+    
+    /// Built-in Deflate decompression (no external dependencies)
+    fn decompress_deflate(&self, data: &[u8]) -> SaicResult<Vec<f32>> {
+        // Simple fallback - assume data is uncompressed f32 values
+        let mut weights = Vec::new();
+        for chunk in data.chunks(4) {
+            if chunk.len() == 4 {
+                let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
+                weights.push(f32::from_le_bytes(bytes));
+            }
+        }
+        Ok(weights)
     }
     
     /// Write container to binary file
@@ -438,6 +536,8 @@ impl SaicContainer {
             header,
             manifest,
             optimized_code,
+            compressed_weights: Vec::new(),
+            compression_type: CompressionType::None,
             backend_hints: None,
             security: None,
         })

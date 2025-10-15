@@ -3,10 +3,11 @@
 //! This module provides the main packaging functionality for SAIC, including
 //! model translation, optimization, and container creation.
 
-use crate::{SaicError, SaicResult, format::{HardwareTarget, OptimizationLevel, SaicContainer, SaicManifest}};
+use crate::{SaicError, SaicResult, format::{HardwareTarget, OptimizationLevel, SaicContainer, SaicManifest, CompressionType}};
 use crate::utils::SystemEnvironment;
 use crate::packager::generators::CodeGenerator;
 use std::path::Path;
+use prost::Message;
 
 pub mod ir;
 pub mod plugins;
@@ -38,6 +39,76 @@ impl SaicPackager {
         })
     }
     
+    /// Compress weights using available compression algorithms
+    #[cfg(feature = "packaging")]
+    fn compress_weights(&self, weights: &[f32]) -> SaicResult<(Vec<u8>, CompressionType)> {
+        // Convert f32 weights to bytes
+        let mut weight_bytes = Vec::new();
+        for &weight in weights {
+            weight_bytes.extend_from_slice(&weight.to_le_bytes());
+        }
+        
+        // Try different compression algorithms
+        let mut best_compressed = weight_bytes.clone();
+        let mut best_type = CompressionType::None;
+        
+        // Try Zstd compression
+        #[cfg(feature = "zstd")]
+        if let Ok(zstd_compressed) = zstd::encode_all(&*weight_bytes, 0) {
+            if zstd_compressed.len() < best_compressed.len() {
+                best_compressed = zstd_compressed;
+                best_type = CompressionType::Zstd;
+            }
+        }
+        
+        // Try LZ4 compression
+        #[cfg(feature = "lz4")]
+        if let Ok(lz4_compressed) = lz4::block::compress(&weight_bytes, Some(lz4::block::CompressionMode::FAST(1)), false) {
+            if lz4_compressed.len() < best_compressed.len() {
+                best_compressed = lz4_compressed;
+                best_type = CompressionType::Lz4;
+            }
+        }
+        
+        // Try Deflate compression (fallback)
+        if let Ok(deflate_compressed) = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default()).finish() {
+            if deflate_compressed.len() < best_compressed.len() {
+                best_compressed = deflate_compressed;
+                best_type = CompressionType::Deflate;
+            }
+        }
+        
+        Ok((best_compressed, best_type))
+    }
+    
+    /// Compress weights (fallback when compression features are not available)
+    #[cfg(not(feature = "packaging"))]
+    fn compress_weights(&self, weights: &[f32]) -> SaicResult<(Vec<u8>, CompressionType)> {
+        // Convert f32 weights to bytes (no compression)
+        let mut weight_bytes = Vec::new();
+        for &weight in weights {
+            weight_bytes.extend_from_slice(&weight.to_le_bytes());
+        }
+        Ok((weight_bytes, CompressionType::None))
+    }
+    
+    /// Extract weights from model data
+    fn extract_weights(&self, model_data: &[u8], format: &crate::format::ModelFormat) -> SaicResult<Vec<f32>> {
+        match format {
+            crate::format::ModelFormat::Onnx => {
+                // Get ONNX plugin
+                let onnx_plugin = self.plugin_manager.find_plugin(crate::format::ModelFormat::Onnx)
+                    .ok_or_else(|| SaicError::format("ONNX plugin not found"))?;
+                
+                // Extract weights using ONNX plugin (which has its own fallback mechanism)
+                onnx_plugin.extract_weights(model_data)
+            }
+            _ => {
+                Err(SaicError::format(&format!("Weight extraction not supported for format: {:?}", format)))
+            }
+        }
+    }
+    
     /// Package a model into a SAIC container
     pub fn package(&self, model_path: &Path, target: HardwareTarget) -> SaicResult<SaicContainer> {
         // Detect model format
@@ -62,11 +133,17 @@ impl SaicPackager {
         // Generate machine code
         let machine_code = self.generate_machine_code(&optimized_ir, &target)?;
         
+        // Extract weights from model
+        let weights = self.extract_weights(&model_data, &format)?;
+        
+        // Compress weights
+        let (compressed_weights, compression_type) = self.compress_weights(&weights)?;
+        
         // Create manifest
         let manifest = self.create_manifest(&universal_ir, machine_code.len())?;
         
-        // Create container
-        let container = SaicContainer::new(manifest, machine_code);
+        // Create container with weights
+        let container = SaicContainer::new(manifest, machine_code, compressed_weights, compression_type);
         
         Ok(container)
     }
@@ -80,9 +157,9 @@ impl SaicPackager {
     /// Detect model format from data
     fn detect_format(&self, model_data: &[u8]) -> SaicResult<crate::format::ModelFormat> {
         if model_data.len() >= 4 {
-            // ONNX files start with protobuf magic (08 08 is common)
-            if (model_data[0] == 0x08 && model_data[1] == 0x08) || 
-               (model_data[0] == 0x08 && model_data[1] == 0x00 && model_data[2] == 0x00 && model_data[3] == 0x00) {
+            // ONNX files start with protobuf magic (08 is the protobuf field tag)
+            // The second byte can vary, so we just check for 08 as the first byte
+            if model_data[0] == 0x08 {
                 return Ok(crate::format::ModelFormat::Onnx);
             }
             

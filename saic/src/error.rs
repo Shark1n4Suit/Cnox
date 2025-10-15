@@ -47,6 +47,10 @@ pub enum SaicError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
     
+    /// Serialization error (including protobuf)
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+    
     /// Unsupported model format
     #[error("Unsupported model format: {0}")]
     UnsupportedModelFormat(String),
@@ -78,6 +82,10 @@ pub enum SaicError {
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),
+    
+    /// Invalid parameter
+    #[error("Invalid parameter: {0}")]
+    InvalidParameter(String),
     
     /// Unsupported hardware target
     #[error("Unsupported hardware target: {0:?}")]
@@ -126,5 +134,11 @@ impl SaicError {
     /// Create an internal error
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::Internal(msg.into())
+    }
+}
+
+impl From<prost::DecodeError> for SaicError {
+    fn from(err: prost::DecodeError) -> Self {
+        SaicError::Serialization(err.to_string())
     }
 }

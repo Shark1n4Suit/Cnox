@@ -54,8 +54,8 @@ pub struct NodeProto {
     pub name: String,
     #[prost(string, tag = "4")]
     pub op_type: String,
-    #[prost(string, repeated, tag = "5")]
-    pub domain: Vec<String>,
+    #[prost(bytes, repeated, tag = "5")]
+    pub domain: Vec<Vec<u8>>,
     #[prost(message, repeated, tag = "6")]
     pub attribute: Vec<AttributeProto>,
     #[prost(string, tag = "7")]
