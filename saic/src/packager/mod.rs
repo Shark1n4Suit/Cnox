@@ -42,41 +42,141 @@ impl SaicPackager {
     /// Compress weights using available compression algorithms
     #[cfg(feature = "packaging")]
     fn compress_weights(&self, weights: &[f32]) -> SaicResult<(Vec<u8>, CompressionType)> {
-        // Convert f32 weights to bytes
-        let mut weight_bytes = Vec::new();
+        println!("🗜️  Starting dynamic compression for {} weights", weights.len());
+        
+        // For very large weight sets, use streaming compression
+        if weights.len() > 10_000_000 { // 10M weights threshold
+            return self.compress_weights_streaming(weights);
+        }
+        
+        // For smaller weight sets, use standard compression
+        self.compress_weights_standard(weights)
+    }
+    
+    #[cfg(feature = "packaging")]
+    fn compress_weights_streaming(&self, weights: &[f32]) -> SaicResult<(Vec<u8>, CompressionType)> {
+        println!("🌊 Using streaming compression for large weight set ({}M weights)", weights.len() / 1_000_000);
+        
+        // Convert weights to bytes in chunks to avoid memory explosion
+        let mut compressed_data = Vec::new();
+        let chunk_size = 1_000_000; // 1M weights per chunk
+        
+        for chunk_start in (0..weights.len()).step_by(chunk_size) {
+            let chunk_end = std::cmp::min(chunk_start + chunk_size, weights.len());
+            let weight_chunk = &weights[chunk_start..chunk_end];
+            
+            // Convert chunk to bytes
+            let mut chunk_bytes = Vec::with_capacity(weight_chunk.len() * 4);
+            for &weight in weight_chunk {
+                chunk_bytes.extend_from_slice(&weight.to_le_bytes());
+            }
+            
+            // Compress chunk
+            #[cfg(feature = "zstd")]
+            match zstd::encode_all(&*chunk_bytes, 1) { // Lower compression level for speed
+                Ok(compressed_chunk) => {
+                    compressed_data.extend_from_slice(&compressed_chunk);
+                }
+                Err(e) => {
+                    println!("⚠️  Zstd compression failed for chunk, using LZ4: {}", e);
+                    #[cfg(feature = "lz4")]
+                    match lz4::block::compress(&chunk_bytes, Some(lz4::block::CompressionMode::FAST(1)), false) {
+                        Ok(compressed_chunk) => {
+                            compressed_data.extend_from_slice(&compressed_chunk);
+                        }
+                        Err(e) => {
+                            println!("⚠️  LZ4 compression failed for chunk, using raw: {}", e);
+                            compressed_data.extend_from_slice(&chunk_bytes);
+                        }
+                    }
+                }
+            }
+            
+            if chunk_start % 5_000_000 == 0 { // Progress every 5M weights
+                println!("📊 Compressed {}M weights", chunk_start / 1_000_000);
+            }
+        }
+        
+        println!("✅ Streaming compression complete: {} bytes from {}M weights", compressed_data.len(), weights.len() / 1_000_000);
+        Ok((compressed_data, CompressionType::Zstd))
+    }
+    
+    #[cfg(feature = "packaging")]
+    fn compress_weights_standard(&self, weights: &[f32]) -> SaicResult<(Vec<u8>, CompressionType)> {
+        println!("📦 Using standard compression for {} weights", weights.len());
+        
+        // Debug: Check if packaging feature is enabled
+        #[cfg(feature = "packaging")]
+        println!("✅ Packaging feature is ENABLED - compression available");
+        #[cfg(not(feature = "packaging"))]
+        println!("❌ Packaging feature is DISABLED - no compression available");
+        
+        // Convert weights to bytes
+        let mut weight_bytes = Vec::with_capacity(weights.len() * 4);
         for &weight in weights {
             weight_bytes.extend_from_slice(&weight.to_le_bytes());
         }
         
-        // Try different compression algorithms
+        // Debug: Analyze weight distribution
+        let mut zero_count = 0;
+        let mut small_count = 0;
+        let mut large_count = 0;
+        for &weight in weights.iter().take(1000) { // Sample first 1000 weights
+            if weight == 0.0 { zero_count += 1; }
+            else if weight.abs() < 0.1 { small_count += 1; }
+            else if weight.abs() > 10.0 { large_count += 1; }
+        }
+        println!("🔍 Weight analysis (first 1000): zeros={}, small(<0.1)={}, large(>10)={}", 
+                zero_count, small_count, large_count);
+        
+        // Try different compression algorithms and choose the best
         let mut best_compressed = weight_bytes.clone();
         let mut best_type = CompressionType::None;
+        let mut best_size = weight_bytes.len();
         
-        // Try Zstd compression
-        #[cfg(feature = "zstd")]
-        if let Ok(zstd_compressed) = zstd::encode_all(&*weight_bytes, 0) {
-            if zstd_compressed.len() < best_compressed.len() {
-                best_compressed = zstd_compressed;
-                best_type = CompressionType::Zstd;
+        // Try Zstd (use higher compression level)
+        #[cfg(feature = "packaging")]
+        {
+            println!("🔧 Attempting Zstd compression...");
+            if let Ok(zstd_compressed) = zstd::encode_all(&*weight_bytes, 3) { // Level 3 for better compression
+                println!("🔧 Zstd compressed: {} bytes (from {} bytes)", zstd_compressed.len(), weight_bytes.len());
+                if zstd_compressed.len() < best_size {
+                    best_compressed = zstd_compressed;
+                    best_type = CompressionType::Zstd;
+                    best_size = best_compressed.len();
+                    println!("✅ Zstd is best so far: {} bytes", best_size);
+                }
+            } else {
+                println!("❌ Zstd compression failed");
+            }
+        }
+        #[cfg(not(feature = "packaging"))]
+        {
+            println!("⚠️  Packaging feature not enabled - no compression available");
+        }
+        
+        // Try LZ4
+        #[cfg(feature = "packaging")]
+        {
+            println!("🔧 Attempting LZ4 compression...");
+            if let Ok(lz4_compressed) = lz4::block::compress(&weight_bytes, Some(lz4::block::CompressionMode::FAST(1)), false) {
+                println!("🔧 LZ4 compressed: {} bytes (from {} bytes)", lz4_compressed.len(), weight_bytes.len());
+                if lz4_compressed.len() < best_size {
+                    best_compressed = lz4_compressed;
+                    best_type = CompressionType::Lz4;
+                    best_size = best_compressed.len();
+                    println!("✅ LZ4 is best so far: {} bytes", best_size);
+                }
+            } else {
+                println!("❌ LZ4 compression failed");
             }
         }
         
-        // Try LZ4 compression
-        #[cfg(feature = "lz4")]
-        if let Ok(lz4_compressed) = lz4::block::compress(&weight_bytes, Some(lz4::block::CompressionMode::FAST(1)), false) {
-            if lz4_compressed.len() < best_compressed.len() {
-                best_compressed = lz4_compressed;
-                best_type = CompressionType::Lz4;
-            }
-        }
+        // Skip deflate compression for now (has reporting bug)
+        // TODO: Fix deflate compression reporting
         
-        // Try Deflate compression (fallback)
-        if let Ok(deflate_compressed) = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default()).finish() {
-            if deflate_compressed.len() < best_compressed.len() {
-                best_compressed = deflate_compressed;
-                best_type = CompressionType::Deflate;
-            }
-        }
+        let compression_ratio = weight_bytes.len() as f64 / best_size as f64;
+        println!("✅ Standard compression complete: {} bytes ({}x compression)", best_size, compression_ratio);
         
         Ok((best_compressed, best_type))
     }
@@ -110,7 +210,7 @@ impl SaicPackager {
     }
     
     /// Package a model into a SAIC container
-    pub fn package(&self, model_path: &Path, target: HardwareTarget) -> SaicResult<SaicContainer> {
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>) -> SaicResult<SaicContainer> {
         // Detect model format
         let model_data = std::fs::read(model_path)
             .map_err(|e| SaicError::FileSystem(e))?;
@@ -121,8 +221,8 @@ impl SaicPackager {
         let translator = self.plugin_manager.find_plugin(format.clone())
             .ok_or_else(|| SaicError::UnsupportedModelFormat(format!("No translator for format: {:?}", format)))?;
         
-        // Translate model to Universal IR
-        let universal_ir = translator.translate(&model_data)?;
+        // Translate model to Universal IR with model type context
+        let universal_ir = translator.translate_with_context(&model_data, model_type, custom_input_shapes, custom_output_shapes)?;
         
         // Determine optimization level based on environment
         let optimization_level = self.determine_optimization_level(&target);
@@ -151,7 +251,7 @@ impl SaicPackager {
     /// Package with automatic target detection
     pub fn package_auto(&self, model_path: &Path) -> SaicResult<SaicContainer> {
         let recommended_target = self.environment.recommended_target();
-        self.package(model_path, recommended_target)
+        self.package(model_path, recommended_target, "custom", None, None)
     }
     
     /// Detect model format from data

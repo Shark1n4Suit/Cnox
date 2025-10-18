@@ -505,6 +505,9 @@ impl SaicContainer {
         // Write optimized code
         writer.write_all(&self.optimized_code)?;
         
+        // Write compressed weights
+        writer.write_all(&self.compressed_weights)?;
+        
         // TODO: Write backend hints and security metadata if present
         
         Ok(())

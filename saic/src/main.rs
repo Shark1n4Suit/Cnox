@@ -27,6 +27,18 @@ enum Commands {
         #[arg(short, long)]
         output: String,
         
+        /// Model type (cv, nlp, audio, tabular, custom)
+        #[arg(short, long, default_value = "cv")]
+        model_type: String,
+        
+        /// Input shapes for custom models (e.g., "[1,3,224,224],[1,1,28,28]")
+        #[arg(long)]
+        input_shapes: Option<String>,
+        
+        /// Output shapes for custom models (e.g., "[1,1000],[1,10]")
+        #[arg(long)]
+        output_shapes: Option<String>,
+        
         /// Target hardware (cpu, gpu, edge, auto)
         #[arg(short, long, default_value = "auto")]
         target: String,
@@ -87,8 +99,8 @@ fn main() -> SaicResult<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Package { input, output, target, optimization } => {
-            package_command(&input, &output, &target, &optimization)
+        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization } => {
+            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization)
         }
         Commands::Validate { file } => {
             validate_command(&file)
@@ -108,8 +120,49 @@ fn main() -> SaicResult<()> {
     }
 }
 
-fn package_command(input: &str, output: &str, target: &str, optimization: &str) -> SaicResult<()> {
+fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, optimization: &str) -> SaicResult<()> {
     info!("Packaging model: {} -> {}", input, output);
+    info!("Model type: {}", model_type);
+    
+    // Validate model type
+    let valid_types = ["cv", "nlp", "audio", "tabular", "custom"];
+    if !valid_types.contains(&model_type.to_lowercase().as_str()) {
+        return Err(SaicError::format(&format!(
+            "Invalid model type '{}'. Valid types: {}", 
+            model_type, 
+            valid_types.join(", ")
+        )));
+    }
+    
+    // Validate custom shapes if provided
+    if model_type.to_lowercase() == "custom" {
+        if input_shapes.is_none() || output_shapes.is_none() {
+            return Err(SaicError::format(
+                "Custom model type requires both --input-shapes and --output-shapes to be specified"
+            ));
+        }
+        
+        // Validate shape format
+        if let Some(input_shapes_str) = input_shapes {
+            if !is_valid_shape_format(input_shapes_str) {
+                return Err(SaicError::format(&format!(
+                    "Invalid input shapes format: '{}'. Expected format: '[1,3,224,224],[1,1,28,28]'",
+                    input_shapes_str
+                )));
+            }
+        }
+        
+        if let Some(output_shapes_str) = output_shapes {
+            if !is_valid_shape_format(output_shapes_str) {
+                return Err(SaicError::format(&format!(
+                    "Invalid output shapes format: '{}'. Expected format: '[1,1000],[1,10]'",
+                    output_shapes_str
+                )));
+            }
+        }
+        
+        info!("Custom shapes - Input: {:?}, Output: {:?}", input_shapes, output_shapes);
+    }
     
     // Create packager with environment detection
     let packager = SaicPackager::new()?;
@@ -145,7 +198,7 @@ fn package_command(input: &str, output: &str, target: &str, optimization: &str) 
     info!("Target hardware: {:?}", hardware_target);
     
     // Package the model
-    let container = packager.package(std::path::Path::new(input), hardware_target)?;
+    let container = packager.package(std::path::Path::new(input), hardware_target, model_type, input_shapes, output_shapes)?;
     
     // Save container to binary file
     container.write_binary_file(std::path::Path::new(output))?;
@@ -339,4 +392,33 @@ fn env_command() -> SaicResult<()> {
     println!("Recommended optimization: {:?}", recommended_optimization);
     
     Ok(())
+}
+
+/// Validate shape format (e.g., "[1,3,224,224],[1,1,28,28]")
+fn is_valid_shape_format(shapes_str: &str) -> bool {
+    // Split by comma to get individual shapes
+    let shapes: Vec<&str> = shapes_str.split(',').collect();
+    
+    // Each shape should be in format [dim1,dim2,dim3,...]
+    for shape in shapes {
+        let shape = shape.trim();
+        if !shape.starts_with('[') || !shape.ends_with(']') {
+            return false;
+        }
+        
+        // Remove brackets and split by comma
+        let dims_str = &shape[1..shape.len()-1];
+        if dims_str.is_empty() {
+            return false;
+        }
+        
+        // Check each dimension is a valid number
+        for dim in dims_str.split(',') {
+            if dim.trim().parse::<usize>().is_err() {
+                return false;
+            }
+        }
+    }
+    
+    true
 }
