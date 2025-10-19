@@ -1,25 +1,25 @@
-# SAIC (Secure AI Container)
+# COELANOX (Secure AI Container)
 
 <div align="center">
-  <img src="assets/coelanox-saic_logo.png" alt="SAIC Logo" width="300"/>
+  <img src="assets/coelanox-coelanox_logo.png" alt="COELANOX Logo" width="300"/>
   <br/>
   <em>The Universal Binary Container for AI Models</em>
 </div>
 
 <div align="center">
 
-[![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](https://github.com/coelanox/saic/blob/main/LICENSE)
+[![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](https://github.com/coelanox/coelanox/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://rustup.rs/)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://github.com/coelanox/saic#platform-support)
-[![Performance](https://img.shields.io/badge/Performance-23μs%20validation-brightgreen.svg)](https://github.com/coelanox/saic#performance)
-[![Security](https://img.shields.io/badge/Security-9.3%2F10%20rating-red.svg)](https://github.com/coelanox/saic#security)
-[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](https://github.com/coelanox/saic/actions)
-[![Code Coverage](https://img.shields.io/badge/Coverage-95%25-brightgreen.svg)](https://github.com/coelanox/saic#testing)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://github.com/coelanox/coelanox#platform-support)
+[![Performance](https://img.shields.io/badge/Performance-23μs%20validation-brightgreen.svg)](https://github.com/coelanox/coelanox#performance)
+[![Security](https://img.shields.io/badge/Security-9.3%2F10%20rating-red.svg)](https://github.com/coelanox/coelanox#security)
+[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](https://github.com/coelanox/coelanox/actions)
+[![Code Coverage](https://img.shields.io/badge/Coverage-95%25-brightgreen.svg)](https://github.com/coelanox/coelanox#testing)
 
-[![GitHub stars](https://img.shields.io/github/stars/coelanox/saic?style=social)](https://github.com/coelanox/saic)
-[![GitHub forks](https://img.shields.io/github/forks/coelanox/saic?style=social)](https://github.com/coelanox/saic)
-[![GitHub issues](https://img.shields.io/github/issues/coelanox/saic)](https://github.com/coelanox/saic/issues)
-[![GitHub pull requests](https://img.shields.io/github/issues-pr/coelanox/saic)](https://github.com/coelanox/saic/pulls)
+[![GitHub stars](https://img.shields.io/github/stars/coelanox/coelanox?style=social)](https://github.com/coelanox/coelanox)
+[![GitHub forks](https://img.shields.io/github/forks/coelanox/coelanox?style=social)](https://github.com/coelanox/coelanox)
+[![GitHub issues](https://img.shields.io/github/issues/coelanox/coelanox)](https://github.com/coelanox/coelanox/issues)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/coelanox/coelanox)](https://github.com/coelanox/coelanox/pulls)
 
 </div>
 
@@ -27,11 +27,11 @@
 
 ## 🚀 **Revolutionary AI Container Technology**
 
-**SAIC** is the world's first **universal binary container** for AI models, delivering **100,000x faster** validation than traditional containers with **zero runtime dependencies**.
+**COELANOX** is the world's first **universal binary container** for AI models, delivering **100,000x faster** validation than traditional containers with **zero runtime dependencies**.
 
 ### **🎯 Key Features**
 
-| Feature | SAIC | Traditional | Improvement |
+| Feature | COELANOX | Traditional | Improvement |
 |---------|------|-------------|-------------|
 | **Validation Speed** | **23μs** | 2-5s | **100,000x faster** |
 | **File Overhead** | **21 bytes** | 500MB+ | **25,000,000x smaller** |
@@ -43,14 +43,14 @@
 
 ### **Universal Container Design**
 
-SAIC uses a revolutionary **universal container** approach:
+COELANOX uses a revolutionary **universal container** approach:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    SAIC Universal Architecture              │
+│                    COELANOX Universal Architecture              │
 ├─────────────────────────────────────────────────────────────┤
 │  📦 Universal Container (Zero Format Knowledge)           │
-│  ├── Header: 8 bytes (Magic: 'SAIC', Version: 0.1.0.0)  │
+│  ├── Header: 8 bytes (Magic: 'COELANOX', Version: 0.1.0.0)  │
 │  ├── Manifest: JSON metadata (Framework: None - universal)│
 │  └── Model Payload: Raw bytes (Any format supported)     │
 ├─────────────────────────────────────────────────────────────┤
@@ -69,11 +69,11 @@ SAIC uses a revolutionary **universal container** approach:
 ### **Component Architecture**
 
 ```
-SAIC Core Components:
-├── saic-core/          # Core library and format
-├── saic-packager/      # Model packaging tool  
-├── saic-runner/        # Validation engine
-└── saic-inference/     # Inference engine
+COELANOX Core Components:
+├── coelanox-core/          # Core library and format
+├── coelanox-packager/      # Model packaging tool  
+├── coelanox-runner/        # Validation engine
+└── coelanox-inference/     # Inference engine
 
 Backend System:
 ├── OpenVINO Backend    # Intel CPU optimization
@@ -81,7 +81,7 @@ Backend System:
 └── Fallback Backend    # Universal dummy inference
 ```
 
-## 🎯 **What Makes SAIC Revolutionary?**
+## 🎯 **What Makes COELANOX Revolutionary?**
 
 ### **📦 Universal Container**
 - **Format-Agnostic**: Works with ONNX, TensorFlow, PyTorch, and any binary format
@@ -90,7 +90,7 @@ Backend System:
 - **Minimal Overhead**: Only 21 bytes of container overhead
 
 ### **🔧 Backend Interpreter Pattern**
-- **SAIC Container**: Universal binary container (zero format knowledge)
+- **COELANOX Container**: Universal binary container (zero format knowledge)
 - **Backend Interpreters**: Format-specific execution engines
 - **Graceful Degradation**: Falls back to universal dummy inference
 - **Hardware Optimization**: Leverages vendor-specific optimizations
@@ -113,48 +113,48 @@ Backend System:
 
 ```bash
 # Clone the repository
-git clone https://github.com/coelanox/saic.git
-cd saic
+git clone https://github.com/coelanox/coelanox.git
+cd coelanox
 
 # Build all components
 cargo build --release
 
 # Install (optional)
-cargo install --path crates/saic-packager
-cargo install --path crates/saic-runner
-cargo install --path crates/saic-inference
+cargo install --path crates/coelanox-packager
+cargo install --path crates/coelanox-runner
+cargo install --path crates/coelanox-inference
 ```
 
-### **Create Your First SAIC Container**
+### **Create Your First COELANOX Container**
 
 ```bash
 # Package any model format
-./target/release/saic-packager \
+./target/release/coelanox-packager \
   --model MobileNet-v2.onnx \
   --name "MobileNet-v2" \
-  --output mobilenet-v2.saic
+  --output mobilenet-v2.coelanox
 
 # Validate the container (trust-based, linear performance)
-./target/release/saic-runner mobilenet-v2.saic
+./target/release/coelanox-runner mobilenet-v2.coelanox
 
 # Run inference (with fallback backend)
-./target/release/saic-inference mobilenet-v2.saic --backend fallback
+./target/release/coelanox-inference mobilenet-v2.coelanox --backend fallback
 ```
 
 ### **Universal Model Support**
 
 ```bash
 # ONNX models
-saic-packager --model model.onnx --name my-model --output model.saic
+coelanox-packager --model model.onnx --name my-model --output model.coelanox
 
 # TensorFlow models  
-saic-packager --model model.pb --name my-model --output model.saic
+coelanox-packager --model model.pb --name my-model --output model.coelanox
 
 # PyTorch models
-saic-packager --model model.pt --name my-model --output model.saic
+coelanox-packager --model model.pt --name my-model --output model.coelanox
 
 # Any binary format
-saic-packager --model model.bin --name my-model --output model.saic
+coelanox-packager --model model.bin --name my-model --output model.coelanox
 ```
 
 ## 📊 **Performance Benchmarks**
@@ -171,7 +171,7 @@ saic-packager --model model.bin --name my-model --output model.saic
 ### **Performance Philosophy**
 
 ```
-SAIC Trust-Based Validation:
+COELANOX Trust-Based Validation:
 ├── Header validation only (magic number + structure)
 ├── Trust deployment-ready files (no full validation)
 ├── Flat-line performance regardless of model size
@@ -180,7 +180,7 @@ SAIC Trust-Based Validation:
 
 ### **vs Traditional Containers**
 
-| Metric | SAIC | Docker | Improvement |
+| Metric | COELANOX | Docker | Improvement |
 |--------|------|--------|-------------|
 | **Validation Latency** | **23μs** | 2-5s | **100,000x faster** |
 | **File Size Overhead** | **21 bytes** | 500MB+ | **25,000,000x smaller** |
@@ -218,17 +218,17 @@ SAIC Trust-Based Validation:
 
 ## 🏗️ **Technical Architecture**
 
-### **SAIC File Format**
+### **COELANOX File Format**
 
 ```
-SAIC File Structure (v0.1.0.0):
+COELANOX File Structure (v0.1.0.0):
 ┌─────────────┬─────────────┬─────────────┬─────────────┐
 │   Header    │   Length    │  Manifest   │   Payload   │
 │   (8 bytes) │  (4 bytes) │  (JSON)     │  (Binary)   │
 └─────────────┴─────────────┴─────────────┴─────────────┘
 
 Header Breakdown:
-├── Magic Number: "SAIC" (4 bytes)
+├── Magic Number: "COELANOX" (4 bytes)
 ├── Version: 0.1.0.0 (4 bytes)
 │   ├── Major: 0
 │   ├── Minor: 1
@@ -267,7 +267,7 @@ pub struct FallbackBackend;    // Universal dummy inference
 
 ### **Security Architecture**
 
-SAIC implements comprehensive security layers:
+COELANOX implements comprehensive security layers:
 
 ```
 Security Layers:
@@ -309,8 +309,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
 # Clone and build
-git clone https://github.com/coelanox/saic.git
-cd saic
+git clone https://github.com/coelanox/coelanox.git
+cd coelanox
 cargo build --release
 
 # Run tests
@@ -323,12 +323,12 @@ cargo bench
 ### **Project Structure**
 
 ```
-saic/
+coelanox/
 ├── crates/
-│   ├── saic-core/          # Core library and format
-│   ├── saic-packager/      # Model packaging tool
-│   ├── saic-runner/        # Validation engine
-│   └── saic-inference/     # Inference engine
+│   ├── coelanox-core/          # Core library and format
+│   ├── coelanox-packager/      # Model packaging tool
+│   ├── coelanox-runner/        # Validation engine
+│   └── coelanox-inference/     # Inference engine
 ├── docs/                   # Documentation
 ├── assets/                 # Logos and images
 ├── tests/                  # Integration tests
@@ -353,20 +353,20 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 - **[Examples](examples/)** - Usage examples and tutorials
 
 ### **Development**
-- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to SAIC
+- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to COELANOX
 - **[Roadmap](ROADMAP.md)** - Development roadmap and future plans
 - **[Testing Guide](docs/TESTING.md)** - Testing and quality assurance
 
 ## 🤝 **Community**
 
-- **📧 [GitHub Issues](https://github.com/coelanox/saic/issues)** - Bug reports & feature requests
-- **💬 [GitHub Discussions](https://github.com/coelanox/saic/discussions)** - Community discussions
-- **📖 [Documentation](https://docs.coelanox.com/saic)** - Complete documentation
+- **📧 [GitHub Issues](https://github.com/coelanox/coelanox/issues)** - Bug reports & feature requests
+- **💬 [GitHub Discussions](https://github.com/coelanox/coelanox/discussions)** - Community discussions
+- **📖 [Documentation](https://docs.coelanox.com/coelanox)** - Complete documentation
 - **🐦 [Twitter](https://twitter.com/coelanox)** - Latest updates
 
 ## 📄 **License**
 
-SAIC is licensed under the [BSL-1.1 License](LICENSE) - see the [LICENSE](LICENSE) file for details.
+COELANOX is licensed under the [BSL-1.1 License](LICENSE) - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 **Acknowledgments**
 
@@ -379,9 +379,9 @@ SAIC is licensed under the [BSL-1.1 License](LICENSE) - see the [LICENSE](LICENS
 
 <div align="center">
 
-**SAIC**: The Universal Binary Container for AI Models
+**COELANOX**: The Universal Binary Container for AI Models
 
-[![GitHub stars](https://img.shields.io/github/stars/coelanox/saic?style=social)](https://github.com/coelanox/saic)
-[![GitHub forks](https://img.shields.io/github/forks/coelanox/saic?style=social)](https://github.com/coelanox/saic)
+[![GitHub stars](https://img.shields.io/github/stars/coelanox/coelanox?style=social)](https://github.com/coelanox/coelanox)
+[![GitHub forks](https://img.shields.io/github/forks/coelanox/coelanox?style=social)](https://github.com/coelanox/coelanox)
 
 </div> 

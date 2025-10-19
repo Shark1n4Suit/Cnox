@@ -128,7 +128,7 @@ ir.connect_nodes(producer_node, output_idx, consumer_node, input_idx)?;
 ## Example Usage
 
 ```rust
-use saic::packager::ir::*;
+use coelanox::packager::ir::*;
 
 // Create a new IR
 let mut ir = UniversalIR::new("my_model".to_string());
@@ -202,4 +202,4 @@ The Universal IR is now a proper compiler IR that can:
 - ✅ Decompose high-level operations into hardware-executable primitives
 - ✅ Support graph optimization and code generation
 
-This refactoring transforms SAIC from a basic model storage format into a true "LLVM for AI" that can efficiently compile any model to any hardware target.
+This refactoring transforms COELANOX from a basic model storage format into a true "LLVM for AI" that can efficiently compile any model to any hardware target.
