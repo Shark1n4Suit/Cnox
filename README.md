@@ -132,29 +132,29 @@ cargo install --path crates/coelanox-inference
 ./target/release/coelanox-packager \
   --model MobileNet-v2.onnx \
   --name "MobileNet-v2" \
-  --output mobilenet-v2.coelanox
+  --output mobilenet-v2.cnox
 
 # Validate the container (trust-based, linear performance)
-./target/release/coelanox-runner mobilenet-v2.coelanox
+./target/release/coelanox-runner mobilenet-v2.cnox
 
 # Run inference (with fallback backend)
-./target/release/coelanox-inference mobilenet-v2.coelanox --backend fallback
+./target/release/coelanox-inference mobilenet-v2.cnox --backend fallback
 ```
 
 ### **Universal Model Support**
 
 ```bash
 # ONNX models
-coelanox-packager --model model.onnx --name my-model --output model.coelanox
+coelanox-packager --model model.onnx --name my-model --output model.cnox
 
 # TensorFlow models  
-coelanox-packager --model model.pb --name my-model --output model.coelanox
+coelanox-packager --model model.pb --name my-model --output model.cnox
 
 # PyTorch models
-coelanox-packager --model model.pt --name my-model --output model.coelanox
+coelanox-packager --model model.pt --name my-model --output model.cnox
 
 # Any binary format
-coelanox-packager --model model.bin --name my-model --output model.coelanox
+coelanox-packager --model model.bin --name my-model --output model.cnox
 ```
 
 ## 📊 **Performance Benchmarks**

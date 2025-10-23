@@ -1,0 +1,27 @@
+[package]
+name = "coelanox-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Coelanox command-line interface"
+authors = ["Benjamin Morin <benjamin.morin@example.com>"]
+license = "MIT"
+repository = "https://github.com/benjamin-morin/coelanox"
+
+[[bin]]
+name = "coelanox"
+path = "src/main.rs"
+
+[dependencies]
+coelanox-core = { path = "../coelanox-core" }
+coelanox-packager = { path = "../coelanox-packager" }
+coelanox-runtime = { path = "../coelanox-runtime" }
+clap = { version = "4.4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,29 @@
+[package]
+name = "coelanox-packager"
+version = "0.5.0-beta"
+edition = "2021"
+authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
+description = "COELANOX Packager - Model packaging and optimization tool"
+license = "MIT"
+repository = "https://github.com/coelanox-ai/coelanox"
+
+[dependencies]
+coelanox-core = { path = "../coelanox-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prost = "0.12"
+prost-types = "0.12"
+flate2 = "1.0"
+memmap2 = "0.9"
+walkdir = "2.4"
+tracing = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+num_cpus = "1.16"
+bytes = "1.5"
+zstd = "0.12"
+lz4 = "1.24"
+
+[dev-dependencies]
+tempfile = "3.8"

@@ -1,0 +1,21 @@
+[package]
+name = "coelanox-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Coelanox runtime execution engine"
+authors = ["Benjamin Morin <benjamin.morin@example.com>"]
+license = "MIT"
+repository = "https://github.com/benjamin-morin/coelanox"
+
+[dependencies]
+coelanox-core = { path = "../coelanox-core" }
+libc = "0.2"
+windows-sys = { version = "0.48", features = ["Win32_System_Memory"] }
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,21 @@
+[package]
+name = "coelanox-core"
+version = "0.5.0-beta"
+edition = "2021"
+authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
+description = "COELANOX Core Library - Shared data structures and utilities"
+license = "MIT"
+repository = "https://github.com/coelanox-ai/coelanox"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = "1.0"
+bytes = "1.5"
+libc = "0.2"
+sha2 = "0.10"
+chrono = { workspace = true }
+thiserror = "1.0"
+anyhow = "1.0"
+prost = "0.12"
+prost-types = "0.12"
+num_cpus = "1.16"
