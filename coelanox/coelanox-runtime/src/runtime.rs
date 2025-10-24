@@ -5,6 +5,7 @@
 
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_core::format::CoelanoxContainer;
+use coelanox_core::ir::{Operation, OpType, Attribute};
 use std::collections::HashMap;
 
 /// COELANOX runtime for executing containers
@@ -154,8 +155,12 @@ impl CoelanoxRuntime {
         let mut output = vec![0.0f32; output_size];
         
         // Execute operations with real weights
-        for operation in &container.manifest.operations {
-            let op_output = self.execute_operation_with_weights(operation, input_data, &weights)?;
+        for operation_json in &container.manifest.operations {
+            // Convert JSON to Operation struct
+            let operation: Operation = serde_json::from_value(operation_json.clone())
+                .map_err(|e| CoelanoxError::format(&format!("Failed to deserialize operation: {}", e)))?;
+            
+            let op_output = self.execute_operation_with_weights(&operation, input_data, &weights)?;
             
             // Copy operation output to final output
             for (i, &val) in op_output.iter().enumerate() {
@@ -169,9 +174,9 @@ impl CoelanoxRuntime {
     }
     
     /// Execute a single operation with weights
-    fn execute_operation_with_weights(&self, operation: &crate::packager::ir::Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
+    fn execute_operation_with_weights(&self, operation: &Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
         match operation.op_type {
-            crate::packager::ir::OpType::Add => {
+            OpType::Add => {
                 // Real addition with weights
                 let mut output = Vec::new();
                 for (i, &val) in input_data.iter().enumerate() {
@@ -183,7 +188,7 @@ impl CoelanoxRuntime {
                 }
                 Ok(output)
             }
-            crate::packager::ir::OpType::Multiply => {
+            OpType::Multiply => {
                 // Real multiplication with weights
                 let mut output = Vec::new();
                 for (i, &val) in input_data.iter().enumerate() {
@@ -195,15 +200,15 @@ impl CoelanoxRuntime {
                 }
                 Ok(output)
             }
-            crate::packager::ir::OpType::Convolution => {
+            OpType::Convolution => {
                 // Simple convolution implementation
                 self.execute_convolution_with_weights(operation, input_data, weights)
             }
-            crate::packager::ir::OpType::MatMul => {
+            OpType::MatMul => {
                 // Simple matrix multiplication implementation
                 self.execute_matmul_with_weights(operation, input_data, weights)
             }
-            crate::packager::ir::OpType::Activation => {
+            OpType::Activation => {
                 // ReLU activation
                 let output: Vec<f32> = input_data.iter().map(|&x| if x > 0.0 { x } else { 0.0 }).collect();
                 Ok(output)
@@ -216,14 +221,14 @@ impl CoelanoxRuntime {
     }
     
     /// Execute convolution with weights
-    fn execute_convolution_with_weights(&self, operation: &crate::packager::ir::Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
+    fn execute_convolution_with_weights(&self, operation: &Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
         // Simple convolution implementation
         let mut output = Vec::new();
         
         // Get kernel size from operation attributes
         let kernel_size = operation.attributes.get("kernel_size")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(3);
@@ -243,14 +248,14 @@ impl CoelanoxRuntime {
     }
     
     /// Execute matrix multiplication with weights
-    fn execute_matmul_with_weights(&self, operation: &crate::packager::ir::Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
+    fn execute_matmul_with_weights(&self, operation: &Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
         // Simple matrix multiplication implementation
         let mut output = Vec::new();
         
         // Get matrix dimensions from operation attributes
         let dims = operation.attributes.get("dimensions")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::IntArray(dims) => Some(dims.iter().map(|&x| x as i32).collect()),
+                Attribute::IntArray(dims) => Some(dims.iter().map(|&x| x as i32).collect()),
                 _ => None,
             })
             .unwrap_or(vec![input_data.len() as i32, 1]);
@@ -478,9 +483,15 @@ impl CoelanoxRuntime {
         };
         
         // Process each operation in the container
-        for operation in &container.manifest.operations {
+        for operation_json in &container.manifest.operations {
+            // Convert JSON to Operation struct
+            let operation: Operation = match serde_json::from_value(operation_json.clone()) {
+                Ok(op) => op,
+                Err(_) => continue, // Skip invalid operations
+            };
+            
             match operation.op_type {
-                crate::packager::ir::OpType::Add => {
+                OpType::Add => {
                     // Element-wise addition with weights
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() && i < weights.len() {
@@ -490,7 +501,7 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Subtract => {
+                OpType::Subtract => {
                     // Element-wise subtraction with weights
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() && i < weights.len() {
@@ -500,7 +511,7 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Multiply => {
+                OpType::Multiply => {
                     // Element-wise multiplication with weights
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() && i < weights.len() {
@@ -510,7 +521,7 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Divide => {
+                OpType::Divide => {
                     // Element-wise division with weights
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() && i < weights.len() {
@@ -520,7 +531,7 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Relu => {
+                OpType::Relu => {
                     // ReLU activation
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() {
@@ -528,7 +539,7 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Sigmoid => {
+                OpType::Sigmoid => {
                     // Sigmoid activation
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() {
@@ -536,7 +547,7 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Tanh => {
+                OpType::Tanh => {
                     // Tanh activation
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() {
@@ -544,11 +555,11 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Softmax => {
+                OpType::Softmax => {
                     // Softmax activation
                     self.execute_softmax_fallback(input, output);
                 }
-                crate::packager::ir::OpType::Gelu => {
+                OpType::Gelu => {
                     // GELU activation
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() {
@@ -556,7 +567,7 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Swish => {
+                OpType::Swish => {
                     // Swish activation (x * sigmoid(x))
                     for (i, &val) in input.iter().enumerate() {
                         if i < output.len() {
@@ -565,57 +576,57 @@ impl CoelanoxRuntime {
                         }
                     }
                 }
-                crate::packager::ir::OpType::Convolution => {
+                OpType::Convolution => {
                     // Simple convolution implementation
-                    self.execute_convolution_fallback(input, output, &weights, operation);
+                    self.execute_convolution_fallback(input, output, &weights, &operation);
                 }
-                crate::packager::ir::OpType::MatMul => {
+                OpType::MatMul => {
                     // Matrix multiplication implementation
-                    self.execute_matmul_fallback(input, output, &weights, operation);
+                    self.execute_matmul_fallback(input, output, &weights, &operation);
                 }
-                crate::packager::ir::OpType::Gemm => {
+                OpType::Gemm => {
                     // Generalized matrix multiplication (same as MatMul for now)
-                    self.execute_matmul_fallback(input, output, &weights, operation);
+                    self.execute_matmul_fallback(input, output, &weights, &operation);
                 }
-                crate::packager::ir::OpType::MaxPool => {
+                OpType::MaxPool => {
                     // Max pooling implementation
-                    self.execute_maxpool_fallback(input, output, operation);
+                    self.execute_maxpool_fallback(input, output, &operation);
                 }
-                crate::packager::ir::OpType::AvgPool => {
+                OpType::AvgPool => {
                     // Average pooling implementation
-                    self.execute_avgpool_fallback(input, output, operation);
+                    self.execute_avgpool_fallback(input, output, &operation);
                 }
-                crate::packager::ir::OpType::GlobalMaxPool => {
+                OpType::GlobalMaxPool => {
                     // Global max pooling
                     self.execute_global_maxpool_fallback(input, output);
                 }
-                crate::packager::ir::OpType::GlobalAvgPool => {
+                OpType::GlobalAvgPool => {
                     // Global average pooling
                     self.execute_global_avgpool_fallback(input, output);
                 }
-                crate::packager::ir::OpType::BatchNorm => {
+                OpType::BatchNorm => {
                     // Batch normalization
-                    self.execute_batchnorm_fallback(input, output, &weights, operation);
+                    self.execute_batchnorm_fallback(input, output, &weights, &operation);
                 }
-                crate::packager::ir::OpType::LayerNorm => {
+                OpType::LayerNorm => {
                     // Layer normalization
-                    self.execute_layernorm_fallback(input, output, &weights, operation);
+                    self.execute_layernorm_fallback(input, output, &weights, &operation);
                 }
-                crate::packager::ir::OpType::ReduceSum => {
+                OpType::ReduceSum => {
                     // Sum reduction
-                    self.execute_reduce_sum_fallback(input, output, operation);
+                    self.execute_reduce_sum_fallback(input, output, &operation);
                 }
-                crate::packager::ir::OpType::ReduceMean => {
+                OpType::ReduceMean => {
                     // Mean reduction
-                    self.execute_reduce_mean_fallback(input, output, operation);
+                    self.execute_reduce_mean_fallback(input, output, &operation);
                 }
-                crate::packager::ir::OpType::ReduceMax => {
+                OpType::ReduceMax => {
                     // Max reduction
-                    self.execute_reduce_max_fallback(input, output, operation);
+                    self.execute_reduce_max_fallback(input, output, &operation);
                 }
-                crate::packager::ir::OpType::ReduceMin => {
+                OpType::ReduceMin => {
                     // Min reduction
-                    self.execute_reduce_min_fallback(input, output, operation);
+                    self.execute_reduce_min_fallback(input, output, &operation);
                 }
                 _ => {
                     // Default: passthrough for unsupported operations
@@ -630,10 +641,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute convolution using fallback implementation
-    fn execute_convolution_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &crate::packager::ir::Operation) {
+    fn execute_convolution_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &Operation) {
         let kernel_size = operation.attributes.get("kernel_size")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(3);
@@ -653,32 +664,32 @@ impl CoelanoxRuntime {
     }
     
     /// Execute matrix multiplication using fallback implementation
-    fn execute_matmul_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &crate::packager::ir::Operation) {
+    fn execute_matmul_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &Operation) {
         // Get matrix dimensions from operation attributes or infer from sizes
         let input_rows = operation.attributes.get("input_rows")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(1);
         
         let input_cols = operation.attributes.get("input_cols")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(input.len());
         
         let weight_rows = operation.attributes.get("weight_rows")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(weights.len() / input_cols.max(1));
         
         let weight_cols = operation.attributes.get("weight_cols")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(weights.len() / weight_rows.max(1));
@@ -716,10 +727,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute max pooling using fallback implementation
-    fn execute_maxpool_fallback(&self, input: &[f32], output: &mut [f32], operation: &crate::packager::ir::Operation) {
+    fn execute_maxpool_fallback(&self, input: &[f32], output: &mut [f32], operation: &Operation) {
         let pool_size = operation.attributes.get("pool_size")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(2);
@@ -740,10 +751,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute average pooling using fallback implementation
-    fn execute_avgpool_fallback(&self, input: &[f32], output: &mut [f32], operation: &crate::packager::ir::Operation) {
+    fn execute_avgpool_fallback(&self, input: &[f32], output: &mut [f32], operation: &Operation) {
         let pool_size = operation.attributes.get("pool_size")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             })
             .unwrap_or(2);
@@ -818,10 +829,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute batch normalization using fallback implementation
-    fn execute_batchnorm_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &crate::packager::ir::Operation) {
+    fn execute_batchnorm_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &Operation) {
         let epsilon = operation.attributes.get("epsilon")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Float(f) => Some(*f),
+                Attribute::Float(f) => Some(*f),
                 _ => None,
             })
             .unwrap_or(1e-5);
@@ -850,10 +861,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute layer normalization using fallback implementation
-    fn execute_layernorm_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &crate::packager::ir::Operation) {
+    fn execute_layernorm_fallback(&self, input: &[f32], output: &mut [f32], weights: &[f32], operation: &Operation) {
         let epsilon = operation.attributes.get("epsilon")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Float(f) => Some(*f),
+                Attribute::Float(f) => Some(*f),
                 _ => None,
             })
             .unwrap_or(1e-5);
@@ -883,10 +894,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute sum reduction using fallback implementation
-    fn execute_reduce_sum_fallback(&self, input: &[f32], output: &mut [f32], operation: &crate::packager::ir::Operation) {
+    fn execute_reduce_sum_fallback(&self, input: &[f32], output: &mut [f32], operation: &Operation) {
         let axis = operation.attributes.get("axis")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             });
         
@@ -909,10 +920,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute mean reduction using fallback implementation
-    fn execute_reduce_mean_fallback(&self, input: &[f32], output: &mut [f32], operation: &crate::packager::ir::Operation) {
+    fn execute_reduce_mean_fallback(&self, input: &[f32], output: &mut [f32], operation: &Operation) {
         let axis = operation.attributes.get("axis")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             });
         
@@ -935,10 +946,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute max reduction using fallback implementation
-    fn execute_reduce_max_fallback(&self, input: &[f32], output: &mut [f32], operation: &crate::packager::ir::Operation) {
+    fn execute_reduce_max_fallback(&self, input: &[f32], output: &mut [f32], operation: &Operation) {
         let axis = operation.attributes.get("axis")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             });
         
@@ -961,10 +972,10 @@ impl CoelanoxRuntime {
     }
     
     /// Execute min reduction using fallback implementation
-    fn execute_reduce_min_fallback(&self, input: &[f32], output: &mut [f32], operation: &crate::packager::ir::Operation) {
+    fn execute_reduce_min_fallback(&self, input: &[f32], output: &mut [f32], operation: &Operation) {
         let axis = operation.attributes.get("axis")
             .and_then(|attr| match attr {
-                crate::packager::ir::Attribute::Int(i) => Some(*i as usize),
+                Attribute::Int(i) => Some(*i as usize),
                 _ => None,
             });
         

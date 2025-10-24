@@ -5,7 +5,7 @@
 
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_core::format::HardwareTarget;
-use super::ir::{OptimizedIR, Operation, OpType, Attribute};
+use coelanox_core::ir::{OptimizedIR, Operation, OpType, Attribute};
 
 // Include template-based code generation
 pub mod templates;
@@ -149,7 +149,7 @@ impl BackendTranslatorCodeGenerator {
                 Attribute::Bool(b) => {
                     attributes.insert(key.clone(), CoelanoxAttribute::Bool(*b));
                 }
-                Attribute::FloatArray(_) | Attribute::IntArray(_) => {
+                Attribute::FloatArray(_) | Attribute::IntArray(_) | Attribute::StringArray(_) => {
                     // Skip array attributes for now
                     continue;
                 }

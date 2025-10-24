@@ -3,7 +3,8 @@ members = [
     "coelanox-core",
     "coelanox-packager", 
     "coelanox-runtime",
-    "coelanox-cli"
+    "coelanox-cli",
+    "translators/onnx-translator"
 ]
 
 [workspace.dependencies]

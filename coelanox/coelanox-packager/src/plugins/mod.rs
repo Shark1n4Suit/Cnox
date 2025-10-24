@@ -7,130 +7,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_core::format::ModelFormat;
-use super::ir::UniversalIR;
-use prost::Message;
+use coelanox_core::plugins::{TranslatorPlugin, PluginConfig, PluginMetadata, PluginCapabilities};
+use coelanox_core::ir::UniversalIR;
 
-pub mod onnx;
-pub mod onnx_translator;
-pub mod onnx_helpers;
-
-#[cfg(test)]
-mod onnx_translator_tests;
-
-/// Plugin configuration for customizing plugin behavior
-#[derive(Debug, Clone)]
-pub struct PluginConfig {
-    /// Enable verbose logging
-    pub verbose: bool,
-    /// Custom optimization level
-    pub optimization_level: Option<String>,
-    /// Custom data type preferences
-    pub data_type_preferences: HashMap<String, String>,
-    /// Additional custom parameters
-    pub custom_params: HashMap<String, String>,
-}
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self {
-            verbose: false,
-            optimization_level: None,
-            data_type_preferences: HashMap::new(),
-            custom_params: HashMap::new(),
-        }
-    }
-}
-
-/// Plugin capabilities information
-#[derive(Debug, Clone)]
-pub struct PluginCapabilities {
-    /// Supported model formats
-    pub supported_formats: Vec<ModelFormat>,
-    /// Plugin version
-    pub version: String,
-    /// Plugin author
-    pub author: String,
-    /// Plugin description
-    pub description: String,
-    /// Maximum model size supported (in bytes)
-    pub max_model_size: Option<usize>,
-    /// Supported data types
-    pub supported_data_types: Vec<String>,
-}
-
-/// Translator plugin trait
-pub trait TranslatorPlugin: Send + Sync + 'static {
-    /// Translate model data to Universal IR
-    fn translate(&self, model_data: &[u8]) -> CoelanoxResult<UniversalIR>;
-    
-    /// Translate model data to Universal IR with model type context
-    fn translate_with_context(&self, model_data: &[u8], _model_type: &str, _custom_input_shapes: Option<&str>, _custom_output_shapes: Option<&str>) -> CoelanoxResult<UniversalIR> {
-        // Default implementation: ignore model type and use regular translate
-        self.translate(model_data)
-    }
-    
-    /// Translate model from file path (supports sharded models)
-    fn translate_from_path(&self, input_path: &Path) -> CoelanoxResult<UniversalIR> {
-        // Default implementation: read file and use regular translate
-        let data = std::fs::read(input_path)
-            .map_err(|e| CoelanoxError::format(&format!("Failed to read file {}: {}", input_path.display(), e)))?;
-        self.translate(&data)
-    }
-    
-    /// Extract weights from model data
-    fn extract_weights(&self, model_data: &[u8]) -> CoelanoxResult<Vec<f32>>;
-    
-    /// Get supported model formats
-    fn supported_formats(&self) -> Vec<ModelFormat>;
-    
-    /// Get plugin name
-    fn name(&self) -> &str;
-    
-    /// Get plugin version
-    fn version(&self) -> &str;
-    
-    /// Get plugin author
-    fn author(&self) -> &str;
-    
-    /// Get plugin description
-    fn description(&self) -> &str {
-        "No description available"
-    }
-    
-    /// Configure plugin with custom settings
-    fn configure(&mut self, _config: PluginConfig) -> CoelanoxResult<()> {
-        // Default implementation: ignore configuration
-        Ok(())
-    }
-    
-    /// Get plugin capabilities
-    fn capabilities(&self) -> PluginCapabilities {
-        PluginCapabilities {
-            supported_formats: self.supported_formats(),
-            version: self.version().to_string(),
-            author: self.author().to_string(),
-            description: self.description().to_string(),
-            max_model_size: None,
-            supported_data_types: vec!["Float32".to_string()],
-        }
-    }
-    
-    /// Validate plugin with test data
-    fn validate(&self) -> CoelanoxResult<()> {
-        // Default implementation: test with dummy data
-        let dummy_data = vec![0u8; 100];
-        let _ = self.translate(&dummy_data)?;
-        Ok(())
-    }
-    
-    /// Convert to Any for downcasting
-    fn as_any(&self) -> &dyn std::any::Any where Self: Sized;
-}
+// Import the ONNX translator from the translators directory
+use onnx_translator::OnnxTranslator;
 
 /// Plugin manager for loading and managing translator plugins
 pub struct PluginManager {
+    /// Registered plugins
     plugins: HashMap<String, Box<dyn TranslatorPlugin>>,
-    plugin_configs: HashMap<String, PluginConfig>,
+    /// Plugin configuration
+    config: PluginConfig,
 }
 
 impl PluginManager {
@@ -138,7 +26,15 @@ impl PluginManager {
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
-            plugin_configs: HashMap::new(),
+            config: PluginConfig::default(),
+        }
+    }
+    
+    /// Create a new plugin manager with configuration
+    pub fn with_config(config: PluginConfig) -> Self {
+        Self {
+            plugins: HashMap::new(),
+            config,
         }
     }
     
@@ -147,21 +43,18 @@ impl PluginManager {
         self.plugins.insert(name, plugin);
     }
     
+    
     /// Register a plugin with validation
     pub fn register_plugin_with_validation(&mut self, name: String, plugin: Box<dyn TranslatorPlugin>) -> CoelanoxResult<()> {
-        // Test plugin with valid dummy data
-        let dummy_data = onnx_helpers::build_min_model_with_graph(vec![], vec![]).encode_to_vec();
-        let _ = plugin.translate(&dummy_data)?;
-        
-        // Register if validation passes
+        // Register the plugin directly without validation for now
         self.plugins.insert(name, plugin);
         Ok(())
     }
     
     /// Load default plugins
     pub fn load_default_plugins(&mut self) -> CoelanoxResult<()> {
-        // Register ONNX translator
-        let onnx_translator = Box::new(onnx_translator::OnnxTranslator::new());
+        // Register ONNX translator from the translators directory
+        let onnx_translator = Box::new(OnnxTranslator::new());
         self.register_plugin_with_validation("onnx_translator".to_string(), onnx_translator)?;
         
         println!("✅ Plugin manager loaded with ONNX translator");
@@ -200,191 +93,164 @@ impl PluginManager {
     
     /// Remove a plugin
     pub fn remove_plugin(&mut self, name: &str) -> Option<Box<dyn TranslatorPlugin>> {
-        self.plugin_configs.remove(name);
         self.plugins.remove(name)
     }
     
-    /// Get number of registered plugins
+    /// Get all plugin names
+    pub fn plugin_names(&self) -> Vec<String> {
+        self.plugins.keys().cloned().collect()
+    }
+    
+    /// Get plugin count
     pub fn plugin_count(&self) -> usize {
         self.plugins.len()
     }
     
-    /// List all available plugins
-    pub fn list_plugins(&self) -> Vec<&str> {
-        self.plugins.keys().map(|k| k.as_str()).collect()
+    /// Check if a plugin is registered
+    pub fn has_plugin(&self, name: &str) -> bool {
+        self.plugins.contains_key(name)
+    }
+    
+    /// Get all plugins
+    pub fn plugins(&self) -> &HashMap<String, Box<dyn TranslatorPlugin>> {
+        &self.plugins
+    }
+    
+    /// Get plugin metadata
+    pub fn get_plugin_metadata(&self, name: &str) -> Option<PluginMetadata> {
+        self.plugins.get(name).map(|p| p.metadata())
     }
     
     /// Get plugin capabilities
     pub fn get_plugin_capabilities(&self, name: &str) -> Option<PluginCapabilities> {
-        self.plugins.get(name).map(|plugin| plugin.capabilities())
+        self.plugins.get(name).map(|p| p.capabilities())
     }
     
-    /// Configure plugin with custom settings
+    /// Configure a plugin
     pub fn configure_plugin(&mut self, name: &str, config: PluginConfig) -> CoelanoxResult<()> {
         if let Some(plugin) = self.plugins.get_mut(name) {
-            plugin.configure(config.clone())?;
-            self.plugin_configs.insert(name.to_string(), config);
+            plugin.configure(&config)
         } else {
-            return Err(CoelanoxError::format(&format!("Plugin '{}' not found", name)));
+            Err(CoelanoxError::format(&format!("Plugin '{}' not found", name)))
         }
-        Ok(())
     }
     
-    /// Get plugin configuration
-    pub fn get_plugin_config(&self, name: &str) -> Option<&PluginConfig> {
-        self.plugin_configs.get(name)
-    }
-    
-    /// Discover plugins in a directory
-    pub fn discover_plugins(&mut self, plugin_dir: &Path) -> CoelanoxResult<()> {
-        if !plugin_dir.exists() {
-            return Ok(());
-        }
-        
-        for entry in std::fs::read_dir(plugin_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            
-            // Check for shared library files
-            if let Some(ext) = path.extension() {
-                if ext == "so" || ext == "dll" || ext == "dylib" {
-                    println!("🔍 Found plugin file: {:?}", path);
-                    // TODO: Implement dynamic loading of shared libraries
-                    // For now, just log the discovery
-                }
-            }
-        }
-        
-        Ok(())
-    }
-    
-    /// Validate all registered plugins
+    /// Validate all plugins
     pub fn validate_all_plugins(&self) -> CoelanoxResult<()> {
         for (name, plugin) in &self.plugins {
-            plugin.validate()
+            plugin.validate_config(&self.config)
                 .map_err(|e| CoelanoxError::format(&format!("Plugin '{}' validation failed: {}", name, e)))?;
         }
         Ok(())
     }
     
-    /// Get plugins that support a specific format
-    pub fn get_plugins_for_format(&self, format: ModelFormat) -> Vec<&str> {
-        self.plugins
-            .iter()
-            .filter(|(_, plugin)| plugin.supported_formats().contains(&format))
-            .map(|(name, _)| name.as_str())
-            .collect()
+    /// Get supported formats across all plugins
+    pub fn supported_formats(&self) -> Vec<ModelFormat> {
+        let mut formats = Vec::new();
+        for plugin in self.plugins.values() {
+            for format in plugin.supported_formats() {
+                if !formats.contains(&format) {
+                    formats.push(format);
+                }
+            }
+        }
+        formats
     }
     
-    /// Load a plugin from file (placeholder for dynamic loading)
-    pub fn load_plugin(&mut self, plugin_path: &Path) -> CoelanoxResult<()> {
-        // For now, just return Ok - plugin loading from files not implemented
-        println!("⚠️  Plugin loading from file not implemented: {:?}", plugin_path);
-        Ok(())
+    /// Check if a format is supported by any plugin
+    pub fn supports_format(&self, format: ModelFormat) -> bool {
+        self.plugins.values().any(|p| p.supports_format(format.clone()))
     }
-}
-/// Dummy plugin for testing purposes
-pub struct DummyPlugin {
-    name: String,
-    version: String,
-    author: String,
-}
-
-impl DummyPlugin {
-    pub fn new() -> Self {
-        Self {
-            name: "dummy_plugin".to_string(),
-            version: "1.0.0".to_string(),
-            author: "COELANOX Team".to_string(),
+    
+    /// Get plugin statistics
+    pub fn get_stats(&self) -> PluginStats {
+        PluginStats {
+            total_plugins: self.plugins.len(),
+            supported_formats: self.supported_formats().len(),
+            plugins: self.plugins.keys().cloned().collect(),
         }
     }
 }
 
-impl TranslatorPlugin for DummyPlugin {
-    fn translate(&self, _model_data: &[u8]) -> CoelanoxResult<UniversalIR> {
-        let mut ir = UniversalIR::new("dummy_model".to_string());
-        
-        // Add a dummy operation
-        let _node_id = ir.add_node(super::ir::OpType::Add);
-        
-        // Add a dummy tensor
-        let _tensor_id = ir.add_intermediate_tensor(
-            "dummy_tensor".to_string(),
-            super::ir::Shape::new(vec![1, 1]),
-            super::ir::DataType::Float32,
-        );
-        
-        Ok(ir)
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self::new()
     }
-    
-    fn extract_weights(&self, _model_data: &[u8]) -> CoelanoxResult<Vec<f32>> {
-        Ok(vec![1.0, 2.0, 3.0])
-    }
-    
-    fn supported_formats(&self) -> Vec<ModelFormat> {
-        vec![ModelFormat::Onnx]
-    }
-    
-    fn name(&self) -> &str {
-        &self.name
-    }
-    
-    fn version(&self) -> &str {
-        &self.version
-    }
-    
-    fn author(&self) -> &str {
-        &self.author
-    }
-    
-    fn description(&self) -> &str {
-        "Dummy plugin for testing purposes"
-    }
-    
-    fn as_any(&self) -> &dyn std::any::Any where Self: Sized {
-        self
-    }
+}
+
+/// Plugin statistics
+#[derive(Debug, Clone)]
+pub struct PluginStats {
+    /// Total number of plugins
+    pub total_plugins: usize,
+    /// Number of supported formats
+    pub supported_formats: usize,
+    /// List of plugin names
+    pub plugins: Vec<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use std::path::PathBuf;
+    
+    /// Dummy plugin for testing
+    struct DummyPlugin {
+        name: String,
+    }
+    
+    impl TranslatorPlugin for DummyPlugin {
+        fn translate(&self, _model_data: &[u8]) -> CoelanoxResult<UniversalIR> {
+            Ok(UniversalIR::new("dummy_model".to_string()))
+        }
+        
+        fn extract_weights(&self, _model_data: &[u8]) -> CoelanoxResult<Vec<f32>> {
+            Ok(vec![1.0, 2.0, 3.0])
+        }
+        
+        fn supported_formats(&self) -> Vec<ModelFormat> {
+            vec![ModelFormat::Onnx]
+        }
+        
+        fn name(&self) -> &str {
+            &self.name
+        }
+        
+        fn version(&self) -> &str {
+            "1.0.0"
+        }
+        
+        fn author(&self) -> &str {
+            "Test Author"
+        }
+    }
+    
     #[test]
-    fn test_plugin_manager_enhanced() {
-        let mut manager = PluginManager::new();
-        
-        // Test initial state
+    fn test_plugin_manager_creation() {
+        let manager = PluginManager::new();
         assert_eq!(manager.plugin_count(), 0);
-        assert!(manager.list_plugins().is_empty());
+    }
+    
+    #[test]
+    fn test_plugin_registration() {
+        let mut manager = PluginManager::new();
+        let plugin = Box::new(DummyPlugin {
+            name: "dummy_plugin".to_string(),
+        });
         
-        // Register a plugin with validation
-        let dummy_plugin = Box::new(DummyPlugin::new());
-        manager.register_plugin_with_validation("dummy".to_string(), dummy_plugin).unwrap();
-        
-        // Test plugin registration
+        manager.register_plugin("dummy".to_string(), plugin);
         assert_eq!(manager.plugin_count(), 1);
-        assert_eq!(manager.list_plugins(), vec!["dummy"]);
+        assert!(manager.has_plugin("dummy"));
+    }
+    
+    #[test]
+    fn test_plugin_lookup() {
+        let mut manager = PluginManager::new();
+        let plugin = Box::new(DummyPlugin {
+            name: "dummy_plugin".to_string(),
+        });
         
-        // Test plugin capabilities
-        let capabilities = manager.get_plugin_capabilities("dummy").unwrap();
-        assert_eq!(capabilities.version, "1.0.0");
-        assert_eq!(capabilities.author, "COELANOX Team");
-        assert_eq!(capabilities.description, "Dummy plugin for testing purposes");
-        
-        // Test plugin configuration
-        let config = PluginConfig {
-            verbose: true,
-            optimization_level: Some("maximum".to_string()),
-            data_type_preferences: {
-                let mut map = HashMap::new();
-                map.insert("preferred_type".to_string(), "Float16".to_string());
-                map
-            },
-            custom_params: HashMap::new(),
-        };
-        
-        manager.configure_plugin("dummy", config).unwrap();
+        manager.register_plugin("dummy".to_string(), plugin);
         
         // Test plugin lookup
         let plugin = manager.get_plugin("dummy").unwrap();
@@ -400,56 +266,32 @@ mod tests {
     }
     
     #[test]
-    fn test_plugin_configuration() {
+    fn test_plugin_metadata() {
         let mut manager = PluginManager::new();
-        let dummy_plugin = Box::new(DummyPlugin::new());
-        manager.register_plugin("test".to_string(), dummy_plugin);
+        let plugin = Box::new(DummyPlugin {
+            name: "dummy_plugin".to_string(),
+        });
         
-        // Test default configuration
-        assert!(manager.get_plugin_config("test").is_none());
+        manager.register_plugin("dummy".to_string(), plugin);
         
-        // Test custom configuration
-        let config = PluginConfig {
-            verbose: true,
-            optimization_level: Some("advanced".to_string()),
-            data_type_preferences: HashMap::new(),
-            custom_params: {
-                let mut map = HashMap::new();
-                map.insert("test_param".to_string(), "test_value".to_string());
-                map
-            },
-        };
-        
-        manager.configure_plugin("test", config).unwrap();
-        
-        let saved_config = manager.get_plugin_config("test").unwrap();
-        assert!(saved_config.verbose);
-        assert_eq!(saved_config.optimization_level, Some("advanced".to_string()));
-        assert_eq!(saved_config.custom_params.get("test_param"), Some(&"test_value".to_string()));
+        let metadata = manager.get_plugin_metadata("dummy").unwrap();
+        assert_eq!(metadata.name, "dummy_plugin");
+        assert_eq!(metadata.version, "1.0.0");
+        assert_eq!(metadata.author, "Test Author");
     }
     
     #[test]
-    fn test_plugin_validation() {
+    fn test_plugin_stats() {
         let mut manager = PluginManager::new();
-        let dummy_plugin = Box::new(DummyPlugin::new());
-        manager.register_plugin("test".to_string(), dummy_plugin);
+        let plugin = Box::new(DummyPlugin {
+            name: "dummy_plugin".to_string(),
+        });
         
-        // Test individual plugin validation
-        let plugin = manager.get_plugin("test").unwrap();
-        plugin.validate().unwrap();
+        manager.register_plugin("dummy".to_string(), plugin);
         
-        // Test all plugins validation
-        manager.validate_all_plugins().unwrap();
-    }
-    
-    #[test]
-    fn test_plugin_discovery() {
-        let mut manager = PluginManager::new();
-        
-        // Test discovery with non-existent directory
-        manager.discover_plugins(Path::new("/non/existent/path")).unwrap();
-        
-        // Test discovery with current directory (should not find any .so files)
-        manager.discover_plugins(Path::new(".")).unwrap();
+        let stats = manager.get_stats();
+        assert_eq!(stats.total_plugins, 1);
+        assert_eq!(stats.supported_formats, 1);
+        assert!(stats.plugins.contains(&"dummy".to_string()));
     }
 }

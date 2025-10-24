@@ -4,7 +4,7 @@
 //! Real TPU templates will be implemented by hardware vendors.
 
 use std::collections::HashMap;
-use crate::ir::{OpType, Operation};
+use coelanox_core::ir::{OpType, Operation};
 use coelanox_core::{CoelanoxResult, CoelanoxError};
 use coelanox_core::format::HardwareTarget;
 
@@ -183,7 +183,7 @@ impl TpuTemplates {
     /// Generate TPU code for operation (placeholder)
     pub fn generate_tpu_code(&self, operation: &Operation) -> CoelanoxResult<String> {
         let template = self.get_template(operation.op_type.clone())
-            .ok_or_else(|| CoelanoxError::UnsupportedOperation(operation.op_type.clone()))?;
+            .ok_or_else(|| CoelanoxError::UnsupportedOperation(format!("{:?}", operation.op_type)))?;
         
         // Extract parameters from operation
         let mut params = HashMap::new();
@@ -217,8 +217,8 @@ impl TpuTemplates {
 }
 
 impl super::HardwareTemplate for TpuTemplates {
-    fn operation(&self) -> crate::ir::OpType {
-        crate::ir::OpType::Custom("TPU".to_string())
+    fn operation(&self) -> OpType {
+        OpType::Custom("TPU".to_string())
     }
     
     fn parameters(&self) -> Vec<String> {
@@ -229,7 +229,7 @@ impl super::HardwareTemplate for TpuTemplates {
         vec![coelanox_core::format::HardwareTarget::Custom("TPU".to_string())]
     }
     
-    fn generate_code(&self, operation: &crate::ir::Operation) -> CoelanoxResult<String> {
+    fn generate_code(&self, operation: &Operation) -> CoelanoxResult<String> {
         // Placeholder implementation
         Ok(format!("// TPU code for {:?}", operation.op_type))
     }

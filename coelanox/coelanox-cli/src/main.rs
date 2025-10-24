@@ -7,11 +7,46 @@ use tracing::{info, warn};
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
 use coelanox_packager::CoelanoxPackager;
 use coelanox_runtime::CoelanoxRuntime;
+use std::path::{Path, PathBuf};
+use std::fs;
+
+/// Ensure output directory exists and return proper output path
+fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<PathBuf> {
+    let input_path = Path::new(input_path);
+    let output_path = Path::new(output_path);
+    
+    // If output path is relative, make it relative to models/output/
+    let final_output_path = if output_path.is_relative() {
+        let mut models_output = PathBuf::from("models/output");
+        models_output.push(output_path);
+        models_output
+    } else {
+        output_path.to_path_buf()
+    };
+    
+    // Ensure the output directory exists
+    if let Some(parent) = final_output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| CoelanoxError::FileSystem(e))?;
+    }
+    
+    // If no extension provided, add .cnox
+    let final_path = if final_output_path.extension().is_none() {
+        final_output_path.with_extension("cnox")
+    } else {
+        final_output_path
+    };
+    
+    println!("📁 Input: {}", input_path.display());
+    println!("📁 Output: {}", final_path.display());
+    
+    Ok(final_path)
+}
 
 #[derive(Parser)]
 #[command(name = "coelanox")]
 #[command(about = "COELANOX - Secure AI Container")]
-#[command(version = "0.5.0-beta")]
+#[command(version = "0.6.0-beta")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -126,6 +161,9 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     info!("Packaging model: {} -> {}", input, output);
     info!("Model type: {}", model_type);
     
+    // Ensure proper output path and directory structure
+    let final_output_path = ensure_output_path(input, output)?;
+    
     // Validate model type
     let valid_types = ["cv", "nlp", "audio", "tabular", "custom"];
     if !valid_types.contains(&model_type.to_lowercase().as_str()) {
@@ -202,11 +240,11 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     // Package the model
     let container = packager.package(std::path::Path::new(input), hardware_target, model_type, input_shapes, output_shapes)?;
     
-    // Save container to binary file
-    container.write_binary_file(std::path::Path::new(output))?;
+    // Save container to binary file using the proper output path
+    container.write_binary_file(&final_output_path)?;
     
     info!("✅ Container packaged successfully");
-    info!("Container saved to: {}", output);
+    info!("Container saved to: {}", final_output_path.display());
     info!("Container size: {} bytes", container.total_size());
     
     // Show compression info
@@ -218,12 +256,12 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
 }
 
 fn validate_command(file: &str) -> CoelanoxResult<()> {
-    info!("Validating SAIC container: {}", file);
+    info!("Validating COELANOX container: {}", file);
     
     let container = coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
     
     println!("✅ Container is valid");
-    println!("Version: 0.5.0-beta");
+    println!("Version: 0.6.0-beta");
     println!("Model: {}", container.manifest.name);
     println!("Format: {:?}", container.manifest.format);
     println!("Size: {} bytes", container.total_size());
@@ -232,13 +270,13 @@ fn validate_command(file: &str) -> CoelanoxResult<()> {
 }
 
 fn info_command(file: &str) -> CoelanoxResult<()> {
-    info!("Getting info for SAIC container: {}", file);
+    info!("Getting info for COELANOX container: {}", file);
     
     let container = coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
     
-    println!("=== SAIC Container Information ===");
+    println!("=== COELANOX Container Information ===");
     println!("File: {}", file);
-    println!("Version: 0.5.0-beta");
+    println!("Version: 0.6.0-beta");
     println!("Status: ✅ Valid");
     println!();
     println!("=== Model Information ===");
@@ -258,7 +296,7 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
     println!("Machine code size: {} bytes", container.optimized_code.len());
     println!();
     println!("=== Performance ===");
-    // Calculate actual compression ratio (original file size / SAIC size)
+    // Calculate actual compression ratio (original file size / COELANOX size)
     // For now, we don't have access to original file size in info command
     // This would need to be stored in the manifest or calculated during packaging
     println!("Compression ratio: N/A (original size not available)");
@@ -319,7 +357,7 @@ fn run_command(file: &str, input: Option<&str>, output: &str) -> CoelanoxResult<
 }
 
 fn benchmark_command(file: &str, iterations: usize) -> CoelanoxResult<()> {
-    info!("Benchmarking SAIC container: {} ({} iterations)", file, iterations);
+    info!("Benchmarking COELANOX container: {} ({} iterations)", file, iterations);
     
     // Load runtime
     let mut runtime = CoelanoxRuntime::new();

@@ -5,7 +5,7 @@
 
 use coelanox_core::{CoelanoxResult};
 use coelanox_core::format::HardwareTarget;
-use crate::ir::{UniversalIR, OptimizedIR, OpType, GraphNode, Attribute};
+use coelanox_core::ir::{UniversalIR, OpType, GraphNode, Attribute, TensorRef, OptimizedIR, IntermediateTensor, DataType};
 
 /// Hardware optimizer trait - operates directly on graph structure
 pub trait HardwareOptimizer: Send + Sync {
@@ -72,14 +72,14 @@ impl CpuOptimizer {
         for tensor_id in &input_tensors {
             if let Some(tensor_ref) = ir.get_tensor(*tensor_id) {
                 match tensor_ref {
-                    crate::ir::TensorRef::Weight(tensor) => {
+                    TensorRef::Weight(tensor) => {
                         // Optimize based on weight tensor properties
                         if tensor.shape.dimensions.len() == 4 {
                             // 4D tensor - likely convolution weights
                             node.add_attribute("weight_layout".to_string(), Attribute::String("NCHW".to_string()));
                         }
                     }
-                    crate::ir::TensorRef::Intermediate(tensor) => {
+                    TensorRef::Intermediate(tensor) => {
                         // Optimize based on intermediate tensor properties
                         if tensor.shape.total_elements() > 1000000 {
                             // Large tensor - use memory-efficient algorithms
@@ -281,10 +281,10 @@ impl CpuOptimizer {
                 
                 // Infer the output shape using shape inference
                 if let Some(output_shape) = ir.infer_fused_output_shape(fused_op_name, &fused_node.input_tensors) {
-                    let fused_tensor = crate::ir::IntermediateTensor {
+                    let fused_tensor = IntermediateTensor {
                         name: format!("{}_fused_intermediate", node_id),
                         shape: output_shape,
-                        data_type: crate::ir::DataType::Float32,
+                        data_type: DataType::Float32,
                     };
                     optimized_ir.add_intermediate_tensor(fused_tensor);
                 }
@@ -390,14 +390,14 @@ impl GpuOptimizer {
         for tensor_id in &input_tensors {
             if let Some(tensor_ref) = ir.get_tensor(*tensor_id) {
                 match tensor_ref {
-                    crate::ir::TensorRef::Weight(tensor) => {
+                    TensorRef::Weight(tensor) => {
                         // Optimize based on weight tensor properties
                         if tensor.shape.dimensions.len() == 4 {
                             // 4D tensor - likely convolution weights
                             node.add_attribute("weight_layout".to_string(), Attribute::String("NHWC".to_string()));
                         }
                     }
-                    crate::ir::TensorRef::Intermediate(tensor) => {
+                    TensorRef::Intermediate(tensor) => {
                         // Optimize based on intermediate tensor properties
                         if tensor.shape.total_elements() > 1000000 {
                             // Large tensor - use memory-efficient algorithms
@@ -489,10 +489,10 @@ impl GpuOptimizer {
                 
                 // Infer the output shape using shape inference
                 if let Some(output_shape) = ir.infer_fused_output_shape("ConvBatchNormReLU", &fused_node.input_tensors) {
-                    let fused_tensor = crate::ir::IntermediateTensor {
+                    let fused_tensor = IntermediateTensor {
                         name: format!("{}_gpu_fused_intermediate", node_id),
                         shape: output_shape,
-                        data_type: crate::ir::DataType::Float32,
+                        data_type: DataType::Float32,
                     };
                     optimized_ir.add_intermediate_tensor(fused_tensor);
                 }
@@ -598,14 +598,14 @@ impl EdgeOptimizer {
         for tensor_id in &input_tensors {
             if let Some(tensor_ref) = ir.get_tensor(*tensor_id) {
                 match tensor_ref {
-                    crate::ir::TensorRef::Weight(tensor) => {
+                    TensorRef::Weight(tensor) => {
                         // Optimize based on weight tensor properties
                         if tensor.shape.dimensions.len() == 4 {
                             // 4D tensor - likely convolution weights
                             node.add_attribute("weight_layout".to_string(), Attribute::String("NCHW".to_string()));
                         }
                     }
-                    crate::ir::TensorRef::Intermediate(tensor) => {
+                    TensorRef::Intermediate(tensor) => {
                         // Optimize based on intermediate tensor properties
                         if tensor.shape.total_elements() > 100000 {
                             // Large tensor - use memory-efficient algorithms
@@ -694,10 +694,10 @@ impl EdgeOptimizer {
                 
                 // Infer the output shape using shape inference
                 if let Some(output_shape) = ir.infer_fused_output_shape("EdgeConvReLU", &fused_node.input_tensors) {
-                    let fused_tensor = crate::ir::IntermediateTensor {
+                    let fused_tensor = IntermediateTensor {
                         name: format!("{}_edge_fused_intermediate", node_id),
                         shape: output_shape,
-                        data_type: crate::ir::DataType::UInt8, // Edge uses quantized data
+                        data_type: DataType::UInt8, // Edge uses quantized data
                     };
                     optimized_ir.add_intermediate_tensor(fused_tensor);
                 }

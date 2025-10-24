@@ -5,11 +5,11 @@
 
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::{HardwareTarget, OptimizationLevel, CoelanoxContainer, CoelanoxManifest, CompressionType}};
 use coelanox_core::utils::SystemEnvironment;
+use coelanox_core::ir::UniversalIR;
 use crate::generators::CodeGenerator;
 use crate::optimizers::HardwareOptimizer;
 use std::path::Path;
 
-pub mod ir;
 pub mod plugins;
 pub mod optimizers;
 pub mod generators;
@@ -324,7 +324,7 @@ impl CoelanoxPackager {
     }
     
     /// Optimize IR for target hardware
-    fn optimize_ir(&self, ir: ir::UniversalIR, target: &HardwareTarget, _level: OptimizationLevel) -> CoelanoxResult<ir::OptimizedIR> {
+    fn optimize_ir(&self, ir: UniversalIR, target: &HardwareTarget, _level: OptimizationLevel) -> CoelanoxResult<coelanox_core::ir::OptimizedIR> {
         match target {
             HardwareTarget::Cpu => {
                 let optimizer = optimizers::CpuOptimizer::new();
@@ -357,7 +357,7 @@ impl CoelanoxPackager {
     }
     
     /// Generate machine code for target hardware
-    fn generate_machine_code(&self, optimized_ir: &ir::OptimizedIR, target: &HardwareTarget) -> CoelanoxResult<Vec<u8>> {
+    fn generate_machine_code(&self, optimized_ir: &coelanox_core::ir::OptimizedIR, target: &HardwareTarget) -> CoelanoxResult<Vec<u8>> {
         match target {
             HardwareTarget::Cpu => {
                 let generator = generators::CpuCodeGenerator::new();
@@ -390,7 +390,7 @@ impl CoelanoxPackager {
     }
     
     /// Create manifest from IR
-    fn create_manifest(&self, ir: &ir::UniversalIR, machine_code_size: usize) -> CoelanoxResult<CoelanoxManifest> {
+    fn create_manifest(&self, ir: &UniversalIR, machine_code_size: usize) -> CoelanoxResult<CoelanoxManifest> {
         let manifest = CoelanoxManifest::new(
             ir.metadata.name.clone(),
             coelanox_core::format::ModelFormat::Onnx, // TODO: Get from IR

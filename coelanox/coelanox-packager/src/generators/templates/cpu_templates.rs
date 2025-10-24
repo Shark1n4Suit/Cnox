@@ -3,7 +3,7 @@
 //! This module implements CPU-specific templates with real x86-64 machine code generation.
 
 use std::collections::HashMap;
-use crate::ir::{OpType, Operation};
+use coelanox_core::ir::{OpType, Operation};
 use coelanox_core::{CoelanoxResult, CoelanoxError};
 
 /// CPU-specific assembly template
@@ -298,7 +298,7 @@ impl CpuTemplates {
     /// Generate CPU machine code for operation
     pub fn generate_cpu_code(&self, operation: &Operation, available_simd: &[SimdCapability]) -> CoelanoxResult<Vec<u8>> {
         let template = self.get_template(operation.op_type.clone())
-            .ok_or_else(|| CoelanoxError::UnsupportedOperation(operation.op_type.clone()))?;
+            .ok_or_else(|| CoelanoxError::UnsupportedOperation(format!("{:?}", operation.op_type)))?;
         
         // Extract parameters from operation
         let mut params = HashMap::new();
@@ -333,8 +333,8 @@ impl CpuTemplates {
 }
 
 impl super::HardwareTemplate for CpuTemplates {
-    fn operation(&self) -> crate::ir::OpType {
-        crate::ir::OpType::Add // Default operation
+    fn operation(&self) -> OpType {
+        OpType::Add // Default operation
     }
     
     fn parameters(&self) -> Vec<String> {
@@ -353,7 +353,7 @@ impl super::HardwareTemplate for CpuTemplates {
         vec![coelanox_core::format::HardwareTarget::Cpu]
     }
     
-    fn generate_code(&self, operation: &crate::ir::Operation) -> CoelanoxResult<String> {
+    fn generate_code(&self, operation: &Operation) -> CoelanoxResult<String> {
         // Use the existing generate_cpu_code method
         let available_simd = vec![SimdCapability::AVX2]; // Default SIMD capability
         let machine_code = self.generate_cpu_code(operation, &available_simd)?;

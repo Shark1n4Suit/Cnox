@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use coelanox_core::{CoelanoxError, CoelanoxResult};
+use crate::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
 
 /// Unique identifier for nodes in the computation graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -211,6 +211,8 @@ pub enum Attribute {
     IntArray(Vec<i64>),
     /// Boolean value
     Bool(bool),
+    /// String array
+    StringArray(Vec<String>),
 }
 
 impl Attribute {
@@ -477,7 +479,7 @@ impl OptimizationHint {
 #[derive(Debug, Clone)]
 pub struct OptimizedIR {
     /// Hardware target
-    pub target: coelanox_core::format::HardwareTarget,
+    pub target: HardwareTarget,
     /// Optimized graph nodes (using high-performance ID-based system)
     pub optimized_nodes: Vec<GraphNode>,
     /// Intermediate tensors created during optimization
@@ -492,7 +494,7 @@ pub struct OptimizedIR {
 
 impl OptimizedIR {
     /// Create new optimized IR from original IR (efficiently sharing weights)
-    pub fn new(original_ir: &UniversalIR, target: coelanox_core::format::HardwareTarget) -> Self {
+    pub fn new(original_ir: &UniversalIR, target: HardwareTarget) -> Self {
         Self {
             target: target.clone(),
             optimized_nodes: Vec::new(),
@@ -505,7 +507,7 @@ impl OptimizedIR {
     
     /// Create optimized IR from components (for advanced use cases)
     pub fn from_components(
-        target: coelanox_core::format::HardwareTarget,
+        target: HardwareTarget,
         optimized_nodes: Vec<GraphNode>,
         intermediate_tensors: Vec<IntermediateTensor>,
         original_model_name: String,
@@ -1589,7 +1591,7 @@ mod tests {
         original_ir.add_node_output(matmul_node, output_tensor).unwrap();
         
         // Create optimized IR using high-performance architecture
-        let target = coelanox_core::format::HardwareTarget::Cpu;
+        let target = crate::format::HardwareTarget::Cpu;
         let mut optimized_ir = OptimizedIR::new(&original_ir, target.clone());
         
         // Add optimized nodes (simulating optimization that reorders/fuses operations)

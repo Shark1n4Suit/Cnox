@@ -232,8 +232,8 @@ pub mod memory {
     }
     
     /// Calculate memory usage
-    pub fn calculate_memory_usage(operations: &[crate::ir::Operation], tensors: &[crate::ir::Tensor]) -> usize {
-        let operation_size = operations.len() * std::mem::size_of::<crate::ir::Operation>();
+    pub fn calculate_memory_usage(operations: &[coelanox_core::ir::Operation], tensors: &[coelanox_core::ir::Tensor]) -> usize {
+        let operation_size = operations.len() * std::mem::size_of::<coelanox_core::ir::Operation>();
         let tensor_size: usize = tensors.iter().map(|t| t.size()).sum();
         
         operation_size + tensor_size

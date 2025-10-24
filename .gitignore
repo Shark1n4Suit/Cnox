@@ -37,3 +37,17 @@ temp/
 # Performance analysis outputs
 reports/*/output/
 reports/*/temp/
+
+# Model files and containers
+models/input/
+models/output/
+*.onnx
+*.cnox
+*.bin
+*.pth
+*.pt
+*.h5
+*.pb
+*.tflite
+*.mlmodel
+*.coreml

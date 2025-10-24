@@ -8,7 +8,7 @@ pub mod gpu_templates;
 pub mod npu_templates;
 pub mod tpu_templates;
 
-use crate::ir::{OpType, Operation};
+use coelanox_core::ir::{OpType, Operation};
 use coelanox_core::format::HardwareTarget;
 use coelanox_core::{CoelanoxResult, CoelanoxError};
 
