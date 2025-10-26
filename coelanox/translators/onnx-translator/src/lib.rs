@@ -304,11 +304,20 @@ impl OnnxTranslator {
                     if let Some(tensor_shape) = &tensor_type.tensor_type {
                         if let Some(shape) = &tensor_shape.shape {
                             let dimensions: Vec<usize> = shape.dim.iter()
-                                .filter_map(|dim| {
+                                .map(|dim| {
                                     if dim.dim_value > 0 {
-                                        Some(dim.dim_value as usize)
+                                        dim.dim_value as usize
+                                    } else if !dim.dim_param.is_empty() {
+                                        // Handle dynamic dimensions with reasonable defaults
+                                        match dim.dim_param.as_str() {
+                                            "batch_size" | "N" => 1,  // Default batch size
+                                            "sequence_length" | "seq_len" | "max_length" => 512,  // Default sequence length
+                                            "hidden_size" | "d_model" => 768,  // BERT hidden size
+                                            "vocab_size" => 30522,  // BERT vocab size
+                                            _ => 1,  // Default fallback
+                                        }
                                     } else {
-                                        None // Skip dynamic dimensions for now
+                                        1  // Default fallback for unknown dimensions
                                     }
                                 })
                                 .collect();
@@ -327,11 +336,20 @@ impl OnnxTranslator {
                     if let Some(tensor_shape) = &tensor_type.tensor_type {
                         if let Some(shape) = &tensor_shape.shape {
                             let dimensions: Vec<usize> = shape.dim.iter()
-                                .filter_map(|dim| {
+                                .map(|dim| {
                                     if dim.dim_value > 0 {
-                                        Some(dim.dim_value as usize)
+                                        dim.dim_value as usize
+                                    } else if !dim.dim_param.is_empty() {
+                                        // Handle dynamic dimensions with reasonable defaults
+                                        match dim.dim_param.as_str() {
+                                            "batch_size" | "N" => 1,  // Default batch size
+                                            "sequence_length" | "seq_len" | "max_length" => 512,  // Default sequence length
+                                            "hidden_size" | "d_model" => 768,  // BERT hidden size
+                                            "vocab_size" => 30522,  // BERT vocab size
+                                            _ => 1,  // Default fallback
+                                        }
                                     } else {
-                                        None // Skip dynamic dimensions for now
+                                        1  // Default fallback for unknown dimensions
                                     }
                                 })
                                 .collect();
@@ -409,11 +427,20 @@ impl OnnxTranslator {
                         // Extract shape
                         let dimensions: Vec<usize> = if let Some(shape) = &tensor_shape.shape {
                             shape.dim.iter()
-                                .filter_map(|dim| {
+                                .map(|dim| {
                                     if dim.dim_value > 0 {
-                                        Some(dim.dim_value as usize)
+                                        dim.dim_value as usize
+                                    } else if !dim.dim_param.is_empty() {
+                                        // Handle dynamic dimensions with reasonable defaults
+                                        match dim.dim_param.as_str() {
+                                            "batch_size" | "N" => 1,  // Default batch size
+                                            "sequence_length" | "seq_len" | "max_length" => 512,  // Default sequence length
+                                            "hidden_size" | "d_model" => 768,  // BERT hidden size
+                                            "vocab_size" => 30522,  // BERT vocab size
+                                            _ => 1,  // Default fallback
+                                        }
                                     } else {
-                                        None // Skip dynamic dimensions for now
+                                        1  // Default fallback for unknown dimensions
                                     }
                                 })
                                 .collect()

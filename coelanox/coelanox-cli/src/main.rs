@@ -112,6 +112,10 @@ enum Commands {
         /// Output file
         #[arg(short, long)]
         output: String,
+        
+        /// Backend to use (cpu, gpu, npu, tpu)
+        #[arg(short, long, default_value = "cpu")]
+        backend: String,
     },
     
     /// Benchmark a COELANOX container
@@ -145,7 +149,7 @@ fn main() -> CoelanoxResult<()> {
         Commands::Info { file } => {
             info_command(&file)
         }
-        Commands::Run { file, input, output } => {
+        Commands::Run { file, input, output, backend } => {
             run_command(&file, input.as_deref(), &output)
         }
         Commands::Benchmark { file, iterations } => {

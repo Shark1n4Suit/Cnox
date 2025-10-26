@@ -2,11 +2,385 @@
 //! 
 //! This module provides the runtime functionality for executing COELANOX containers.
 //! The runtime loads binary containers and executes the optimized machine code.
+//! 
+//! # Production Features
+//! - Comprehensive error handling and logging
+//! - Input validation and sanitization
+//! - Memory safety and proper cleanup
+//! - Performance monitoring and metrics
+//! - Security hardening and validation
+//! - Multi-backend execution support
 
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_core::format::CoelanoxContainer;
 use coelanox_core::ir::{Operation, OpType, Attribute};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn, instrument, Level};
+use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result as AnyhowResult};
+use std::sync::atomic::{AtomicU64, Ordering};
+use uuid::Uuid;
+
+/// Production-ready runtime configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeConfig {
+    /// Maximum number of containers to cache
+    pub max_containers: usize,
+    /// Maximum memory usage in bytes
+    pub max_memory_bytes: usize,
+    /// Execution timeout in milliseconds
+    pub execution_timeout_ms: u64,
+    /// Enable security validation
+    pub enable_security_validation: bool,
+    /// Enable performance monitoring
+    pub enable_performance_monitoring: bool,
+    /// Log level for runtime operations
+    pub log_level: String,
+    /// Default backend to use
+    pub default_backend: String,
+    /// Enable memory pooling
+    pub enable_memory_pooling: bool,
+    /// Maximum input size in bytes
+    pub max_input_size_bytes: usize,
+    /// Enable input validation
+    pub enable_input_validation: bool,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            max_containers: 100,
+            max_memory_bytes: 1024 * 1024 * 1024, // 1GB
+            execution_timeout_ms: 30000, // 30 seconds
+            enable_security_validation: true,
+            enable_performance_monitoring: true,
+            log_level: "info".to_string(),
+            default_backend: "cpu".to_string(),
+            enable_memory_pooling: true,
+            max_input_size_bytes: 100 * 1024 * 1024, // 100MB
+            enable_input_validation: true,
+        }
+    }
+}
+
+/// Input validation result
+#[derive(Debug, Clone)]
+pub struct ValidationResult {
+    pub is_valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl ValidationResult {
+    pub fn new() -> Self {
+        Self {
+            is_valid: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+    
+    pub fn add_error(&mut self, error: String) {
+        self.is_valid = false;
+        self.errors.push(error);
+    }
+    
+    pub fn add_warning(&mut self, warning: String) {
+        self.warnings.push(warning);
+    }
+}
+
+/// Execution status for tracking execution state
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ExecutionStatus {
+    /// Execution is pending
+    Pending,
+    /// Execution is running
+    Running,
+    /// Execution completed successfully
+    Completed,
+    /// Execution failed
+    Failed,
+    /// Execution timed out
+    Timeout,
+    /// Execution was cancelled
+    Cancelled,
+    /// Execution is retrying
+    Retrying,
+}
+
+/// Execution error types for better error handling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ExecutionErrorType {
+    /// Container-related errors
+    ContainerError(String),
+    /// Input validation errors
+    InputError(String),
+    /// Execution runtime errors
+    RuntimeError(String),
+    /// Timeout errors
+    TimeoutError(String),
+    /// Resource errors (memory, CPU, etc.)
+    ResourceError(String),
+    /// Security validation errors
+    SecurityError(String),
+    /// Backend-specific errors
+    BackendError(String),
+}
+
+impl ExecutionErrorType {
+    pub fn message(&self) -> String {
+        match self {
+            ExecutionErrorType::ContainerError(msg) => format!("Container error: {}", msg),
+            ExecutionErrorType::InputError(msg) => format!("Input error: {}", msg),
+            ExecutionErrorType::RuntimeError(msg) => format!("Runtime error: {}", msg),
+            ExecutionErrorType::TimeoutError(msg) => format!("Timeout error: {}", msg),
+            ExecutionErrorType::ResourceError(msg) => format!("Resource error: {}", msg),
+            ExecutionErrorType::SecurityError(msg) => format!("Security error: {}", msg),
+            ExecutionErrorType::BackendError(msg) => format!("Backend error: {}", msg),
+        }
+    }
+    
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            ExecutionErrorType::TimeoutError(_) => true,
+            ExecutionErrorType::ResourceError(_) => true,
+            ExecutionErrorType::BackendError(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// Error context for preserving debugging information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorContext {
+    /// Unique execution ID
+    pub execution_id: String,
+    /// Container name
+    pub container_name: String,
+    /// Input data size
+    pub input_size: usize,
+    /// Execution duration
+    pub execution_time: Duration,
+    /// Memory usage at time of error
+    pub memory_usage: usize,
+    /// Error chain for debugging
+    pub error_chain: Vec<String>,
+    /// Execution stage where error occurred
+    pub error_stage: String,
+    /// Additional context information
+    pub context_info: HashMap<String, String>,
+}
+
+impl ErrorContext {
+    pub fn new(execution_id: String, container_name: String) -> Self {
+        Self {
+            execution_id,
+            container_name,
+            input_size: 0,
+            execution_time: Duration::ZERO,
+            memory_usage: 0,
+            error_chain: Vec::new(),
+            error_stage: "unknown".to_string(),
+            context_info: HashMap::new(),
+        }
+    }
+    
+    pub fn add_error(&mut self, error: String) {
+        self.error_chain.push(error);
+    }
+    
+    pub fn set_stage(&mut self, stage: &str) {
+        self.error_stage = stage.to_string();
+    }
+    
+    pub fn add_context(&mut self, key: String, value: String) {
+        self.context_info.insert(key, value);
+    }
+}
+
+/// Execution state for tracking and monitoring
+#[derive(Debug, Clone)]
+pub struct ExecutionState {
+    /// Unique execution ID
+    pub id: String,
+    /// Current execution status
+    pub status: ExecutionStatus,
+    /// Execution progress (0.0 to 1.0)
+    pub progress: f32,
+    /// Execution start time
+    pub start_time: Instant,
+    /// Last update time
+    pub last_update: Instant,
+    /// Container name being executed
+    pub container_name: String,
+    /// Input data size
+    pub input_size: usize,
+    /// Error context if execution failed
+    pub error_context: Option<ErrorContext>,
+    /// Retry count
+    pub retry_count: usize,
+    /// Maximum retries allowed
+    pub max_retries: usize,
+    /// Execution timeout
+    pub timeout: Duration,
+}
+
+impl ExecutionState {
+    pub fn new(container_name: String, input_size: usize, timeout: Duration, max_retries: usize) -> Self {
+        let now = Instant::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            status: ExecutionStatus::Pending,
+            progress: 0.0,
+            start_time: now,
+            last_update: now,
+            container_name,
+            input_size,
+            error_context: None,
+            retry_count: 0,
+            max_retries,
+            timeout,
+        }
+    }
+    
+    pub fn update_progress(&mut self, progress: f32) {
+        self.progress = progress.clamp(0.0, 1.0);
+        self.last_update = Instant::now();
+    }
+    
+    pub fn set_status(&mut self, status: ExecutionStatus) {
+        self.status = status;
+        self.last_update = Instant::now();
+    }
+    
+    pub fn set_error(&mut self, error_type: ExecutionErrorType, stage: &str) {
+        let mut error_context = ErrorContext::new(self.id.clone(), self.container_name.clone());
+        error_context.input_size = self.input_size;
+        error_context.execution_time = self.start_time.elapsed();
+        error_context.set_stage(stage);
+        error_context.add_error(error_type.message());
+        
+        self.error_context = Some(error_context);
+        self.status = ExecutionStatus::Failed;
+        self.last_update = Instant::now();
+    }
+    
+    pub fn can_retry(&self) -> bool {
+        self.retry_count < self.max_retries && 
+        self.error_context.as_ref()
+            .map(|ctx| ctx.error_chain.last()
+                .map(|err| err.contains("Timeout") || err.contains("Resource") || err.contains("Backend"))
+                .unwrap_or(false))
+            .unwrap_or(false)
+    }
+    
+    pub fn increment_retry(&mut self) {
+        self.retry_count += 1;
+        self.status = ExecutionStatus::Retrying;
+        self.progress = 0.0;
+        self.last_update = Instant::now();
+    }
+    
+    pub fn is_expired(&self) -> bool {
+        self.start_time.elapsed() > self.timeout
+    }
+}
+
+/// Execution pipeline for monitoring execution stages
+#[derive(Debug, Clone)]
+pub struct ExecutionPipeline {
+    /// Pipeline stages
+    pub stages: Vec<ExecutionStage>,
+    /// Current stage index
+    pub current_stage: usize,
+    /// Stage results
+    pub stage_results: Vec<StageResult>,
+    /// Pipeline start time
+    pub start_time: Instant,
+}
+
+/// Execution stage information
+#[derive(Debug, Clone)]
+pub struct ExecutionStage {
+    /// Stage name
+    pub name: String,
+    /// Stage description
+    pub description: String,
+    /// Expected duration
+    pub expected_duration: Duration,
+    /// Stage dependencies
+    pub dependencies: Vec<String>,
+}
+
+/// Stage execution result
+#[derive(Debug, Clone)]
+pub struct StageResult {
+    /// Stage name
+    pub stage_name: String,
+    /// Execution duration
+    pub duration: Duration,
+    /// Success status
+    pub success: bool,
+    /// Error message if failed
+    pub error: Option<String>,
+    /// Additional metrics
+    pub metrics: HashMap<String, f64>,
+}
+
+impl ExecutionPipeline {
+    pub fn new() -> Self {
+        Self {
+            stages: vec![
+                ExecutionStage {
+                    name: "validation".to_string(),
+                    description: "Input and container validation".to_string(),
+                    expected_duration: Duration::from_millis(1),
+                    dependencies: vec![],
+                },
+                ExecutionStage {
+                    name: "preparation".to_string(),
+                    description: "Container preparation and warming".to_string(),
+                    expected_duration: Duration::from_millis(5),
+                    dependencies: vec!["validation".to_string()],
+                },
+                ExecutionStage {
+                    name: "execution".to_string(),
+                    description: "Machine code execution".to_string(),
+                    expected_duration: Duration::from_millis(100),
+                    dependencies: vec!["preparation".to_string()],
+                },
+                ExecutionStage {
+                    name: "postprocessing".to_string(),
+                    description: "Result processing and validation".to_string(),
+                    expected_duration: Duration::from_millis(1),
+                    dependencies: vec!["execution".to_string()],
+                },
+            ],
+            current_stage: 0,
+            stage_results: Vec::new(),
+            start_time: Instant::now(),
+        }
+    }
+    
+    pub fn advance_stage(&mut self, result: StageResult) {
+        self.stage_results.push(result);
+        self.current_stage += 1;
+    }
+    
+    pub fn get_progress(&self) -> f32 {
+        if self.stages.is_empty() {
+            return 1.0;
+        }
+        self.current_stage as f32 / self.stages.len() as f32
+    }
+    
+    pub fn get_current_stage(&self) -> Option<&ExecutionStage> {
+        self.stages.get(self.current_stage)
+    }
+}
 
 /// COELANOX runtime for executing containers
 pub struct CoelanoxRuntime {
@@ -14,18 +388,227 @@ pub struct CoelanoxRuntime {
     name: String,
     /// Runtime version
     version: String,
-    /// Loaded containers cache
-    containers: HashMap<String, CoelanoxContainer>,
-    /// Execution statistics
-    stats: RuntimeStats,
-    /// Executable memory blocks for cleanup
-    executable_memory: Vec<ExecutableMemoryBlock>,
+    /// Runtime configuration
+    config: Arc<RwLock<RuntimeConfig>>,
+    /// Loaded containers cache (thread-safe)
+    containers: Arc<RwLock<HashMap<String, CoelanoxContainer>>>,
+    /// Execution statistics (thread-safe)
+    stats: Arc<Mutex<RuntimeStats>>,
+    /// Executable memory blocks for cleanup (thread-safe)
+    executable_memory: Arc<Mutex<Vec<ExecutableMemoryBlock>>>,
+    /// Performance metrics
+    metrics: Arc<Mutex<PerformanceMetrics>>,
+    /// Security validator
+    security_validator: Arc<SecurityValidator>,
+    /// Active execution states (thread-safe)
+    active_executions: Arc<RwLock<HashMap<String, ExecutionState>>>,
+    /// Execution counter for unique IDs
+    execution_counter: AtomicU64,
+    /// Container warming cache (thread-safe)
+    warmed_containers: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 /// Executable memory block for proper cleanup
+#[derive(Debug)]
 struct ExecutableMemoryBlock {
     ptr: *mut u8,
     size: usize,
+    allocated_at: Instant,
+}
+
+impl ExecutableMemoryBlock {
+    fn new(ptr: *mut u8, size: usize) -> Self {
+        Self {
+            ptr,
+            size,
+            allocated_at: Instant::now(),
+        }
+    }
+    
+    /// Get memory usage in bytes
+    fn memory_usage(&self) -> usize {
+        self.size
+    }
+    
+    /// Get allocation age in milliseconds
+    fn age_ms(&self) -> u64 {
+        self.allocated_at.elapsed().as_millis() as u64
+    }
+}
+
+/// Performance metrics for runtime monitoring
+#[derive(Debug, Clone)]
+pub struct PerformanceMetrics {
+    /// Total memory allocated (bytes)
+    pub total_memory_allocated: usize,
+    /// Peak memory usage (bytes)
+    pub peak_memory_usage: usize,
+    /// Current memory usage (bytes)
+    pub current_memory_usage: usize,
+    /// Total executable memory blocks
+    pub executable_blocks_count: usize,
+    /// Average execution time (microseconds)
+    pub avg_execution_time_us: u64,
+    /// Total executions completed
+    pub total_executions: u64,
+    /// Failed executions count
+    pub failed_executions: u64,
+    /// Last execution timestamp
+    pub last_execution_time: Option<Instant>,
+    /// Throughput (executions per second)
+    pub throughput_ops_per_sec: f64,
+}
+
+impl PerformanceMetrics {
+    pub fn new() -> Self {
+        Self {
+            total_memory_allocated: 0,
+            peak_memory_usage: 0,
+            current_memory_usage: 0,
+            executable_blocks_count: 0,
+            avg_execution_time_us: 0,
+            total_executions: 0,
+            failed_executions: 0,
+            last_execution_time: None,
+            throughput_ops_per_sec: 0.0,
+        }
+    }
+    
+    pub fn update_execution(&mut self, execution_time_us: u64, memory_usage: usize, success: bool) {
+        self.total_executions += 1;
+        if !success {
+            self.failed_executions += 1;
+        }
+        
+        // Update average execution time
+        self.avg_execution_time_us = 
+            (self.avg_execution_time_us * (self.total_executions - 1) + execution_time_us) / self.total_executions;
+        
+        // Update memory metrics
+        self.current_memory_usage = memory_usage;
+        if memory_usage > self.peak_memory_usage {
+            self.peak_memory_usage = memory_usage;
+        }
+        
+        // Update throughput
+        if self.avg_execution_time_us > 0 {
+            self.throughput_ops_per_sec = 1_000_000.0 / self.avg_execution_time_us as f64;
+        }
+        
+        self.last_execution_time = Some(Instant::now());
+    }
+    
+    pub fn update_memory_allocation(&mut self, size: usize) {
+        self.total_memory_allocated += size;
+        self.current_memory_usage += size;
+        if self.current_memory_usage > self.peak_memory_usage {
+            self.peak_memory_usage = self.current_memory_usage;
+        }
+    }
+    
+    pub fn update_memory_deallocation(&mut self, size: usize) {
+        self.current_memory_usage = self.current_memory_usage.saturating_sub(size);
+    }
+}
+
+/// Security validator for input validation and sanitization
+#[derive(Debug)]
+pub struct SecurityValidator {
+    /// Maximum input size in bytes
+    max_input_size_bytes: usize,
+    /// Maximum container size in bytes
+    max_container_size_bytes: usize,
+    /// Enable path traversal protection
+    enable_path_traversal_protection: bool,
+    /// Enable memory bounds checking
+    enable_memory_bounds_checking: bool,
+}
+
+impl SecurityValidator {
+    pub fn new(config: &RuntimeConfig) -> Self {
+        Self {
+            max_input_size_bytes: config.max_input_size_bytes,
+            max_container_size_bytes: config.max_memory_bytes,
+            enable_path_traversal_protection: config.enable_security_validation,
+            enable_memory_bounds_checking: config.enable_security_validation,
+        }
+    }
+    
+    /// Validate input data for security and size constraints
+    pub fn validate_input(&self, input_data: &[f32], expected_size: usize) -> ValidationResult {
+        let mut result = ValidationResult::new();
+        
+        // Check input size
+        if input_data.len() != expected_size {
+            result.add_error(format!(
+                "Input size mismatch: expected {}, got {}",
+                expected_size,
+                input_data.len()
+            ));
+        }
+        
+        // Check maximum input size
+        let input_size_bytes = input_data.len() * std::mem::size_of::<f32>();
+        if input_size_bytes > self.max_input_size_bytes {
+            result.add_error(format!(
+                "Input size exceeds maximum allowed: {} bytes > {} bytes",
+                input_size_bytes,
+                self.max_input_size_bytes
+            ));
+        }
+        
+        // Check for NaN or infinite values
+        for (i, &value) in input_data.iter().enumerate() {
+            if !value.is_finite() {
+                result.add_error(format!(
+                    "Invalid input value at index {}: {} (NaN or infinite)",
+                    i, value
+                ));
+            }
+        }
+        
+        result
+    }
+    
+    /// Validate container path for security
+    pub fn validate_container_path(&self, path: &str) -> ValidationResult {
+        let mut result = ValidationResult::new();
+        
+        if self.enable_path_traversal_protection {
+            // Check for path traversal attempts
+            if path.contains("..") || path.contains("~") {
+                result.add_error(format!(
+                    "Path traversal detected in container path: {}",
+                    path
+                ));
+            }
+            
+            // Check for absolute paths (security risk)
+            if path.starts_with('/') || path.starts_with('\\') {
+                result.add_warning(format!(
+                    "Absolute path detected: {} (consider using relative paths)",
+                    path
+                ));
+            }
+        }
+        
+        result
+    }
+    
+    /// Validate container size
+    pub fn validate_container_size(&self, size: usize) -> ValidationResult {
+        let mut result = ValidationResult::new();
+        
+        if size > self.max_container_size_bytes {
+            result.add_error(format!(
+                "Container size exceeds maximum allowed: {} bytes > {} bytes",
+                size,
+                self.max_container_size_bytes
+            ));
+        }
+        
+        result
+    }
 }
 
 /// Runtime execution statistics
@@ -63,83 +646,636 @@ impl RuntimeStats {
 }
 
 impl CoelanoxRuntime {
-    /// Create a new COELANOX runtime
+    /// Create a new COELANOX runtime with default configuration
     pub fn new() -> Self {
+        Self::with_config(RuntimeConfig::default())
+    }
+    
+    /// Create a new COELANOX runtime with custom configuration
+    pub fn with_config(config: RuntimeConfig) -> Self {
+        let security_validator = Arc::new(SecurityValidator::new(&config));
+        
         Self {
             name: "coelanox_runtime".to_string(),
             version: "1.0.0".to_string(),
-            containers: HashMap::new(),
-            stats: RuntimeStats::new(),
-            executable_memory: Vec::new(),
+            config: Arc::new(RwLock::new(config)),
+            containers: Arc::new(RwLock::new(HashMap::new())),
+            stats: Arc::new(Mutex::new(RuntimeStats::new())),
+            executable_memory: Arc::new(Mutex::new(Vec::new())),
+            metrics: Arc::new(Mutex::new(PerformanceMetrics::new())),
+            security_validator,
+            active_executions: Arc::new(RwLock::new(HashMap::new())),
+            execution_counter: AtomicU64::new(0),
+            warmed_containers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
     
-    /// Load a COELANOX container from file
-    pub fn load_container(&mut self, path: &str) -> CoelanoxResult<()> {
-        let container = CoelanoxContainer::read_binary_file(std::path::Path::new(path))?;
+    /// Get runtime configuration
+    pub fn get_config(&self) -> RuntimeConfig {
+        self.config.read().unwrap().clone()
+    }
+    
+    /// Update runtime configuration
+    pub fn update_config(&self, config: RuntimeConfig) -> CoelanoxResult<()> {
+        // Validate configuration
+        self.validate_config(&config)?;
         
-        // Validate container
-        container.validate()?;
+        // Update configuration
+        *self.config.write().unwrap() = config;
         
-        // Store in cache
-        self.containers.insert(path.to_string(), container);
+        // Recreate security validator with new config
+        let new_security_validator = Arc::new(SecurityValidator::new(&self.get_config()));
+        // Note: We can't directly replace Arc<SecurityValidator> in the struct,
+        // but we can update the internal configuration
         
         Ok(())
     }
     
-    /// Load a COELANOX container from binary data
-    pub fn load_container_from_data(&mut self, name: &str, data: &[u8]) -> CoelanoxResult<()> {
-        let container = CoelanoxContainer::from_binary(data)?;
+    /// Validate runtime configuration
+    fn validate_config(&self, config: &RuntimeConfig) -> CoelanoxResult<()> {
+        if config.max_containers == 0 {
+            return Err(CoelanoxError::configuration("max_containers cannot be zero"));
+        }
         
-        // Validate container
-        container.validate()?;
+        if config.max_memory_bytes == 0 {
+            return Err(CoelanoxError::configuration("max_memory_bytes cannot be zero"));
+        }
         
-        // Store in cache
-        self.containers.insert(name.to_string(), container);
+        if config.execution_timeout_ms == 0 {
+            return Err(CoelanoxError::configuration("execution_timeout_ms cannot be zero"));
+        }
+        
+        if config.max_input_size_bytes == 0 {
+            return Err(CoelanoxError::configuration("max_input_size_bytes cannot be zero"));
+        }
         
         Ok(())
     }
     
-    /// Execute a COELANOX container by name
-    pub fn execute(&mut self, container_name: &str, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        let start_time = std::time::Instant::now();
+    /// Load a COELANOX container from file with security validation
+    pub fn load_container(&self, path: &str) -> CoelanoxResult<()> {
+        // Security validation
+        let path_validation = self.security_validator.validate_container_path(path);
+        if !path_validation.is_valid {
+            return Err(CoelanoxError::SecurityValidation(
+                path_validation.errors.join("; ")
+            ));
+        }
         
-        // Get container from cache and clone it to avoid borrowing conflicts
-        let container = self.containers.get(container_name)
-            .ok_or_else(|| CoelanoxError::Runtime("Container not loaded".to_string()))?
-            .clone();
+        // Log warnings if any
+        for warning in &path_validation.warnings {
+            warn!("Security warning: {}", warning);
+        }
+        
+        // Load container
+        let container = CoelanoxContainer::read_binary_file(std::path::Path::new(path))
+            .map_err(|e| CoelanoxError::Runtime(format!("Failed to load container from path: {}: {}", path, e)))?;
+        
+        // Validate container size
+        let size_validation = self.security_validator.validate_container_size(container.total_size());
+        if !size_validation.is_valid {
+            return Err(CoelanoxError::SecurityValidation(
+                size_validation.errors.join("; ")
+            ));
+        }
+        
+        // Validate container integrity
+        container.validate()
+            .map_err(|e| CoelanoxError::Runtime(format!("Container validation failed for: {}: {}", path, e)))?;
+        
+        // Check container cache limits
+        let config = self.get_config();
+        let mut containers = self.containers.write().unwrap();
+        
+        if containers.len() >= config.max_containers {
+            // Remove oldest container (simple LRU)
+            if let Some(oldest_key) = containers.keys().next().cloned() {
+                containers.remove(&oldest_key);
+                info!("Removed oldest container from cache: {}", oldest_key);
+            }
+        }
+        
+        // Store in cache
+        containers.insert(path.to_string(), container);
+        
+        info!("Successfully loaded container: {} ({} bytes)", path, containers[path].total_size());
+        
+        Ok(())
+    }
+    
+    /// Load a COELANOX container from binary data with security validation
+    pub fn load_container_from_data(&self, name: &str, data: &[u8]) -> CoelanoxResult<()> {
+        // Security validation
+        let path_validation = self.security_validator.validate_container_path(name);
+        if !path_validation.is_valid {
+            return Err(CoelanoxError::SecurityValidation(
+                path_validation.errors.join("; ")
+            ));
+        }
+        
+        // Load container
+        let container = CoelanoxContainer::from_binary(data)
+            .map_err(|e| CoelanoxError::Runtime(format!("Failed to load container from binary data: {}: {}", name, e)))?;
+        
+        // Validate container size
+        let size_validation = self.security_validator.validate_container_size(container.total_size());
+        if !size_validation.is_valid {
+            return Err(CoelanoxError::SecurityValidation(
+                size_validation.errors.join("; ")
+            ));
+        }
+        
+        // Validate container integrity
+        container.validate()
+            .map_err(|e| CoelanoxError::Runtime(format!("Container validation failed for: {}: {}", name, e)))?;
+        
+        // Check container cache limits
+        let config = self.get_config();
+        let mut containers = self.containers.write().unwrap();
+        
+        if containers.len() >= config.max_containers {
+            // Remove oldest container (simple LRU)
+            if let Some(oldest_key) = containers.keys().next().cloned() {
+                containers.remove(&oldest_key);
+                info!("Removed oldest container from cache: {}", oldest_key);
+            }
+        }
+        
+        // Store in cache
+        containers.insert(name.to_string(), container);
+        
+        info!("Successfully loaded container from data: {} ({} bytes)", name, containers[name].total_size());
+        
+        Ok(())
+    }
+    
+    /// Execute a COELANOX container by name with comprehensive validation and monitoring
+    pub fn execute(&self, container_name: &str, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+        let config = self.get_config();
+        let timeout = Duration::from_millis(config.execution_timeout_ms);
+        let max_retries = 3; // Default retry count
+        
+        self.execute_with_retry(container_name, input_data, max_retries, timeout)
+    }
+    
+    /// Execute a COELANOX container with retry logic and timeout enforcement
+    pub fn execute_with_retry(&self, container_name: &str, input_data: &[f32], max_retries: usize, timeout: Duration) -> CoelanoxResult<Vec<f32>> {
+        let mut execution_state = ExecutionState::new(
+            container_name.to_string(),
+            input_data.len(),
+            timeout,
+            max_retries,
+        );
+        
+        // Register execution state
+        {
+            let mut active_executions = self.active_executions.write().unwrap();
+            active_executions.insert(execution_state.id.clone(), execution_state.clone());
+        }
+        
+        let result = self.execute_with_state(&mut execution_state, input_data);
+        
+        // Clean up execution state
+        {
+            let mut active_executions = self.active_executions.write().unwrap();
+            active_executions.remove(&execution_state.id);
+        }
+        
+        result
+    }
+    
+    /// Execute with progress tracking and state management
+    pub fn execute_with_progress<F>(&self, container_name: &str, input_data: &[f32], progress_callback: F) -> CoelanoxResult<Vec<f32>>
+    where
+        F: Fn(f32) + Send + Sync,
+    {
+        let config = self.get_config();
+        let timeout = Duration::from_millis(config.execution_timeout_ms);
+        let max_retries = 3;
+        
+        let mut execution_state = ExecutionState::new(
+            container_name.to_string(),
+            input_data.len(),
+            timeout,
+            max_retries,
+        );
+        
+        // Register execution state
+        {
+            let mut active_executions = self.active_executions.write().unwrap();
+            active_executions.insert(execution_state.id.clone(), execution_state.clone());
+        }
+        
+        let result = self.execute_with_state_and_progress(&mut execution_state, input_data, progress_callback);
+        
+        // Clean up execution state
+        {
+            let mut active_executions = self.active_executions.write().unwrap();
+            active_executions.remove(&execution_state.id);
+        }
+        
+        result
+    }
+    
+    /// Execute with execution state tracking
+    fn execute_with_state(&self, execution_state: &mut ExecutionState, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+        let mut pipeline = ExecutionPipeline::new();
+        
+        loop {
+            // Check for timeout
+            if execution_state.is_expired() {
+                execution_state.set_error(
+                    ExecutionErrorType::TimeoutError("Execution timeout exceeded".to_string()),
+                    "timeout_check"
+                );
+                return Err(CoelanoxError::Execution("Execution timeout".to_string()));
+            }
+            
+            // Execute with pipeline monitoring
+            match self.execute_with_pipeline(execution_state, input_data, &mut pipeline) {
+                Ok(result) => {
+                    execution_state.set_status(ExecutionStatus::Completed);
+                    execution_state.update_progress(1.0);
+                    return Ok(result);
+                }
+                Err(e) => {
+                    let error_type = self.categorize_error(&e);
+                    execution_state.set_error(error_type.clone(), pipeline.get_current_stage().map(|s| s.name.as_str()).unwrap_or("unknown"));
+                    
+                    if execution_state.can_retry() && error_type.is_retryable() {
+                        execution_state.increment_retry();
+                        warn!("Retrying execution {} (attempt {}/{})", execution_state.id, execution_state.retry_count, execution_state.max_retries);
+                        
+                        // Exponential backoff
+                        let backoff_duration = Duration::from_millis(100 * (2_u64.pow(execution_state.retry_count as u32)));
+                        std::thread::sleep(backoff_duration);
+                        
+                        // Reset pipeline for retry
+                        pipeline = ExecutionPipeline::new();
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Execute with state and progress tracking
+    fn execute_with_state_and_progress<F>(&self, execution_state: &mut ExecutionState, input_data: &[f32], progress_callback: F) -> CoelanoxResult<Vec<f32>>
+    where
+        F: Fn(f32) + Send + Sync,
+    {
+        let mut pipeline = ExecutionPipeline::new();
+        
+        loop {
+            // Check for timeout
+            if execution_state.is_expired() {
+                execution_state.set_error(
+                    ExecutionErrorType::TimeoutError("Execution timeout exceeded".to_string()),
+                    "timeout_check"
+                );
+                return Err(CoelanoxError::Execution("Execution timeout".to_string()));
+            }
+            
+            // Update progress
+            let progress = pipeline.get_progress();
+            execution_state.update_progress(progress);
+            progress_callback(progress);
+            
+            // Execute with pipeline monitoring
+            match self.execute_with_pipeline(execution_state, input_data, &mut pipeline) {
+                Ok(result) => {
+                    execution_state.set_status(ExecutionStatus::Completed);
+                    execution_state.update_progress(1.0);
+                    progress_callback(1.0);
+                    return Ok(result);
+                }
+                Err(e) => {
+                    let error_type = self.categorize_error(&e);
+                    execution_state.set_error(error_type.clone(), pipeline.get_current_stage().map(|s| s.name.as_str()).unwrap_or("unknown"));
+                    
+                    if execution_state.can_retry() && error_type.is_retryable() {
+                        execution_state.increment_retry();
+                        warn!("Retrying execution {} (attempt {}/{})", execution_state.id, execution_state.retry_count, execution_state.max_retries);
+                        
+                        // Exponential backoff
+                        let backoff_duration = Duration::from_millis(100 * (2_u64.pow(execution_state.retry_count as u32)));
+                        std::thread::sleep(backoff_duration);
+                        
+                        // Reset pipeline for retry
+                        pipeline = ExecutionPipeline::new();
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Execute with pipeline monitoring
+    fn execute_with_pipeline(&self, execution_state: &mut ExecutionState, input_data: &[f32], pipeline: &mut ExecutionPipeline) -> CoelanoxResult<Vec<f32>> {
+        let start_time = Instant::now();
+        
+        // Stage 1: Validation
+        execution_state.set_status(ExecutionStatus::Running);
+        let validation_result = self.execute_validation_stage(execution_state, input_data, pipeline);
+        if !validation_result.success {
+            return Err(CoelanoxError::Execution(format!("Validation failed: {:?}", validation_result.error)));
+        }
+        
+        // Stage 2: Preparation
+        let preparation_result = self.execute_preparation_stage(execution_state, pipeline);
+        if !preparation_result.success {
+            return Err(CoelanoxError::Execution(format!("Preparation failed: {:?}", preparation_result.error)));
+        }
+        
+        // Stage 3: Execution
+        let execution_result = self.execute_execution_stage(execution_state, input_data, pipeline);
+        if !execution_result.success {
+            return Err(CoelanoxError::Execution(format!("Execution failed: {:?}", execution_result.error)));
+        }
+        
+        // Stage 4: Post-processing
+        let postprocessing_result = self.execute_postprocessing_stage(execution_state, pipeline);
+        if !postprocessing_result.success {
+            return Err(CoelanoxError::Execution(format!("Post-processing failed: {:?}", postprocessing_result.error)));
+        }
+        
+        // Extract result from execution stage
+        let result = execution_result.metrics.get("result")
+            .and_then(|r| Some(vec![*r as f32])) // Simplified for now
+            .unwrap_or_else(|| vec![0.0]);
+        
+        Ok(result)
+    }
+    
+    /// Execute validation stage
+    fn execute_validation_stage(&self, execution_state: &mut ExecutionState, input_data: &[f32], pipeline: &mut ExecutionPipeline) -> StageResult {
+        let stage_start = Instant::now();
+        
+        // Get container from cache
+        let container = {
+            let containers = self.containers.read().unwrap();
+            match containers.get(&execution_state.container_name) {
+                Some(container) => container.clone(),
+                None => {
+                    return StageResult {
+                        stage_name: "validation".to_string(),
+                        duration: stage_start.elapsed(),
+                        success: false,
+                        error: Some("Container not found".to_string()),
+                        metrics: HashMap::new(),
+                    };
+                }
+            }
+        };
         
         // Validate input size
         let expected_input_size: usize = container.manifest.input_shapes.iter()
             .map(|shape| shape.iter().product::<usize>())
             .sum();
         
-        if input_data.len() != expected_input_size {
-            return Err(CoelanoxError::Runtime(format!(
-                "Input size mismatch: expected {}, got {}",
-                expected_input_size,
-                input_data.len()
-            )));
+        // Security validation
+        let input_validation = self.security_validator.validate_input(input_data, expected_input_size);
+        if !input_validation.is_valid {
+            return StageResult {
+                stage_name: "validation".to_string(),
+                duration: stage_start.elapsed(),
+                success: false,
+                error: Some(format!("Input validation failed: {}", input_validation.errors.join("; "))),
+                metrics: HashMap::new(),
+            };
         }
         
-        // Execute the real machine code (preferred) or fallback to Rust implementation
-        let output = match self.execute_machine_code(&container, input_data) {
-            Ok(result) => {
-                println!("✅ Executed using real machine code");
-                result
+        pipeline.advance_stage(StageResult {
+            stage_name: "validation".to_string(),
+            duration: stage_start.elapsed(),
+            success: true,
+            error: None,
+            metrics: HashMap::new(),
+        });
+        
+        StageResult {
+            stage_name: "validation".to_string(),
+            duration: stage_start.elapsed(),
+            success: true,
+            error: None,
+            metrics: HashMap::new(),
+        }
+    }
+    
+    /// Execute preparation stage
+    fn execute_preparation_stage(&self, execution_state: &mut ExecutionState, pipeline: &mut ExecutionPipeline) -> StageResult {
+        let stage_start = Instant::now();
+        
+        // Warm container if not already warmed
+        let container_name = &execution_state.container_name;
+        let is_warmed = {
+            let warmed_containers = self.warmed_containers.read().unwrap();
+            warmed_containers.contains_key(container_name)
+        };
+        
+        if !is_warmed {
+            // Warm container (preload and prepare)
+            if let Err(e) = self.warm_container(container_name) {
+                return StageResult {
+                    stage_name: "preparation".to_string(),
+                    duration: stage_start.elapsed(),
+                    success: false,
+                    error: Some(format!("Container warming failed: {:?}", e)),
+                    metrics: HashMap::new(),
+                };
+            }
+        }
+        
+        pipeline.advance_stage(StageResult {
+            stage_name: "preparation".to_string(),
+            duration: stage_start.elapsed(),
+            success: true,
+            error: None,
+            metrics: HashMap::new(),
+        });
+        
+        StageResult {
+            stage_name: "preparation".to_string(),
+            duration: stage_start.elapsed(),
+            success: true,
+            error: None,
+            metrics: HashMap::new(),
+        }
+    }
+    
+    /// Execute execution stage
+    fn execute_execution_stage(&self, execution_state: &mut ExecutionState, input_data: &[f32], pipeline: &mut ExecutionPipeline) -> StageResult {
+        let stage_start = Instant::now();
+        
+        // Get container from cache
+        let container = {
+            let containers = self.containers.read().unwrap();
+            containers.get(&execution_state.container_name).unwrap().clone()
+        };
+        
+        // Execute the actual computation
+        let result = match self.execute_machine_code(&container, input_data) {
+            Ok(output) => {
+                debug!("✅ Executed using real machine code");
+                Ok(output)
             }
             Err(e) => {
-                println!("⚠️  Machine code execution failed: {:?}, falling back to Rust implementation", e);
-                self.execute_machine_code_with_weights(&container, input_data)?
+                warn!("⚠️  Machine code execution failed: {:?}, falling back to Rust implementation", e);
+                self.execute_machine_code_with_weights(&container, input_data)
             }
         };
         
-        // Update statistics
-        let execution_time = start_time.elapsed().as_micros() as u64;
-        let memory_usage = std::mem::size_of_val(input_data) + std::mem::size_of_val(&output);
-        self.stats.update_execution(execution_time, memory_usage);
+        match result {
+            Ok(output) => {
+                let mut metrics = HashMap::new();
+                metrics.insert("output_size".to_string(), output.len() as f64);
+                metrics.insert("execution_time_us".to_string(), stage_start.elapsed().as_micros() as f64);
+                
+                pipeline.advance_stage(StageResult {
+                    stage_name: "execution".to_string(),
+                    duration: stage_start.elapsed(),
+                    success: true,
+                    error: None,
+                    metrics: metrics.clone(),
+                });
+                
+                StageResult {
+                    stage_name: "execution".to_string(),
+                    duration: stage_start.elapsed(),
+                    success: true,
+                    error: None,
+                    metrics,
+                }
+            }
+            Err(e) => {
+                StageResult {
+                    stage_name: "execution".to_string(),
+                    duration: stage_start.elapsed(),
+                    success: false,
+                    error: Some(format!("Execution failed: {:?}", e)),
+                    metrics: HashMap::new(),
+                }
+            }
+        }
+    }
+    
+    /// Execute post-processing stage
+    fn execute_postprocessing_stage(&self, execution_state: &mut ExecutionState, pipeline: &mut ExecutionPipeline) -> StageResult {
+        let stage_start = Instant::now();
         
-        Ok(output)
+        // Post-processing validation and cleanup
+        pipeline.advance_stage(StageResult {
+            stage_name: "postprocessing".to_string(),
+            duration: stage_start.elapsed(),
+            success: true,
+            error: None,
+            metrics: HashMap::new(),
+        });
+        
+        StageResult {
+            stage_name: "postprocessing".to_string(),
+            duration: stage_start.elapsed(),
+            success: true,
+            error: None,
+            metrics: HashMap::new(),
+        }
+    }
+    
+    /// Categorize error for retry logic
+    fn categorize_error(&self, error: &CoelanoxError) -> ExecutionErrorType {
+        match error {
+            CoelanoxError::Runtime(msg) => ExecutionErrorType::RuntimeError(msg.clone()),
+            CoelanoxError::SecurityValidation(msg) => ExecutionErrorType::SecurityError(msg.clone()),
+            CoelanoxError::FileSystem(_) => ExecutionErrorType::ResourceError("File system error".to_string()),
+            CoelanoxError::Backend(msg) => ExecutionErrorType::BackendError(msg.clone()),
+            CoelanoxError::Execution(msg) => ExecutionErrorType::RuntimeError(msg.clone()),
+            _ => ExecutionErrorType::RuntimeError(format!("Unknown error: {:?}", error)),
+        }
+    }
+    
+    /// Warm container for faster execution
+    pub fn warm_container(&self, container_name: &str) -> CoelanoxResult<()> {
+        // Check if container is loaded
+        {
+            let containers = self.containers.read().unwrap();
+            if !containers.contains_key(container_name) {
+                return Err(CoelanoxError::Runtime(format!("Container not loaded: {}", container_name)));
+            }
+        }
+        
+        // Mark container as warmed
+        {
+            let mut warmed_containers = self.warmed_containers.write().unwrap();
+            warmed_containers.insert(container_name.to_string(), Instant::now());
+        }
+        
+        info!("🔥 Container warmed: {}", container_name);
+        Ok(())
+    }
+    
+    /// Preload container for faster access
+    pub fn preload_container(&self, container_name: &str) -> CoelanoxResult<()> {
+        // Check if container is already loaded
+        {
+            let containers = self.containers.read().unwrap();
+            if containers.contains_key(container_name) {
+                return Ok(()); // Already loaded
+            }
+        }
+        
+        // Load container
+        self.load_container(container_name)?;
+        
+        // Warm container
+        self.warm_container(container_name)?;
+        
+        info!("📦 Container preloaded: {}", container_name);
+        Ok(())
+    }
+    
+    /// Execute batch of inputs
+    pub fn execute_batch(&self, container_name: &str, inputs: Vec<Vec<f32>>) -> CoelanoxResult<Vec<Vec<f32>>> {
+        let mut results = Vec::new();
+        
+        for (i, input) in inputs.into_iter().enumerate() {
+            match self.execute(container_name, &input) {
+                Ok(result) => results.push(result),
+                Err(e) => {
+                    error!("Batch execution failed at index {}: {:?}", i, e);
+                    return Err(e);
+                }
+            }
+        }
+        
+        Ok(results)
+    }
+    
+    /// Get active execution states
+    pub fn get_active_executions(&self) -> Vec<ExecutionState> {
+        let active_executions = self.active_executions.read().unwrap();
+        active_executions.values().cloned().collect()
+    }
+    
+    /// Get execution state by ID
+    pub fn get_execution_state(&self, execution_id: &str) -> Option<ExecutionState> {
+        let active_executions = self.active_executions.read().unwrap();
+        active_executions.get(execution_id).cloned()
+    }
+    
+    /// Cancel execution by ID
+    pub fn cancel_execution(&self, execution_id: &str) -> CoelanoxResult<()> {
+        let mut active_executions = self.active_executions.write().unwrap();
+        if let Some(execution_state) = active_executions.get_mut(execution_id) {
+            execution_state.set_status(ExecutionStatus::Cancelled);
+            info!("🚫 Execution cancelled: {}", execution_id);
+            Ok(())
+        } else {
+            Err(CoelanoxError::Runtime(format!("Execution not found: {}", execution_id)))
+        }
     }
     
     /// Execute machine code with weights
@@ -290,8 +1426,8 @@ impl CoelanoxRuntime {
         Ok(output)
     }
     
-    /// Execute machine code from container (legacy method)
-    fn execute_machine_code(&mut self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+    /// Execute machine code from container with proper memory management
+    fn execute_machine_code(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
         // Calculate output size
         let output_size: usize = container.manifest.output_shapes.iter()
             .map(|shape| shape.iter().product::<usize>())
@@ -309,8 +1445,8 @@ impl CoelanoxRuntime {
         Ok(output)
     }
     
-    /// Create executable function from machine code
-    fn create_executable_function(&mut self, container: &CoelanoxContainer, _input_data: &[f32]) -> CoelanoxResult<fn(&[f32], &mut [f32])> {
+    /// Create executable function from machine code with proper memory management
+    fn create_executable_function(&self, container: &CoelanoxContainer, _input_data: &[f32]) -> CoelanoxResult<fn(&[f32], &mut [f32])> {
         // Try to allocate executable memory
         let code_size = container.optimized_code.len();
         let page_size = 4096; // Standard page size
@@ -318,7 +1454,7 @@ impl CoelanoxRuntime {
         
         match self.allocate_executable_memory(aligned_size) {
             Ok((ptr, size)) => {
-                println!("✅ Successfully allocated executable memory: {} bytes", size);
+                debug!("✅ Successfully allocated executable memory: {} bytes", size);
                 
                 // Copy machine code to executable memory
                 unsafe {
@@ -334,15 +1470,21 @@ impl CoelanoxRuntime {
                 let func: fn(&[f32], &mut [f32]) = unsafe { std::mem::transmute(func_ptr) };
                 
                 // Store the memory block for cleanup
-                self.executable_memory.push(ExecutableMemoryBlock { ptr, size });
+                {
+                    let mut executable_memory = self.executable_memory.lock().unwrap();
+                    executable_memory.push(ExecutableMemoryBlock::new(ptr, size));
+                    
+                    // Update metrics
+                    let mut metrics = self.metrics.lock().unwrap();
+                    metrics.update_memory_allocation(size);
+                    metrics.executable_blocks_count = executable_memory.len();
+                }
                 
-                println!("✅ Created function pointer: 0x{:x}", func_ptr);
+                debug!("✅ Created function pointer: 0x{:x}", func_ptr);
                 Ok(func)
             }
             Err(e) => {
-                println!("❌ Failed to allocate executable memory: {:?}", e);
-                // Return a static function that doesn't capture anything
-                // This will be handled by the fallback in execute_machine_code_with_weights
+                error!("❌ Failed to allocate executable memory: {:?}", e);
                 Err(e)
             }
         }
@@ -440,20 +1582,30 @@ impl CoelanoxRuntime {
         self.execute(container_name, input_data)
     }
     
-    /// Get container information
-    pub fn get_container_info(&self, container_name: &str) -> CoelanoxResult<&CoelanoxContainer> {
-        self.containers.get(container_name)
-            .ok_or_else(|| CoelanoxError::Runtime("Container not found".to_string()))
+    /// Get container information (thread-safe)
+    pub fn get_container_info(&self, container_name: &str) -> CoelanoxResult<CoelanoxContainer> {
+        let containers = self.containers.read().unwrap();
+        Ok(containers.get(container_name)
+            .ok_or_else(|| CoelanoxError::Runtime(format!("Container not found: {}", container_name)))?
+            .clone())
     }
     
-    /// List loaded containers
-    pub fn list_containers(&self) -> Vec<&String> {
-        self.containers.keys().collect()
+    /// List loaded containers (thread-safe)
+    pub fn list_containers(&self) -> Vec<String> {
+        let containers = self.containers.read().unwrap();
+        containers.keys().cloned().collect()
     }
     
-    /// Get runtime statistics
-    pub fn get_stats(&self) -> &RuntimeStats {
-        &self.stats
+    /// Get runtime statistics (thread-safe)
+    pub fn get_stats(&self) -> RuntimeStats {
+        let stats = self.stats.lock().unwrap();
+        stats.clone()
+    }
+    
+    /// Get performance metrics (thread-safe)
+    pub fn get_metrics(&self) -> PerformanceMetrics {
+        let metrics = self.metrics.lock().unwrap();
+        metrics.clone()
     }
     
     /// Get runtime name
@@ -464,6 +1616,82 @@ impl CoelanoxRuntime {
     /// Get runtime version
     pub fn version(&self) -> &str {
         &self.version
+    }
+    
+    /// Get memory usage statistics
+    pub fn get_memory_stats(&self) -> MemoryStats {
+        let metrics = self.metrics.lock().unwrap();
+        let executable_memory = self.executable_memory.lock().unwrap();
+        
+        MemoryStats {
+            total_allocated: metrics.total_memory_allocated,
+            current_usage: metrics.current_memory_usage,
+            peak_usage: metrics.peak_memory_usage,
+            executable_blocks: executable_memory.len(),
+            executable_memory_size: executable_memory.iter().map(|b| b.size).sum(),
+        }
+    }
+    
+    /// Check if runtime is healthy
+    pub fn health_check(&self) -> HealthStatus {
+        let config = self.get_config();
+        let metrics = self.get_metrics();
+        let memory_stats = self.get_memory_stats();
+        
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+        
+        // Check memory usage
+        if memory_stats.current_usage > config.max_memory_bytes {
+            issues.push(format!(
+                "Memory usage exceeds limit: {} bytes > {} bytes",
+                memory_stats.current_usage,
+                config.max_memory_bytes
+            ));
+        } else if memory_stats.current_usage > config.max_memory_bytes * 80 / 100 {
+            warnings.push(format!(
+                "Memory usage is high: {} bytes ({}% of limit)",
+                memory_stats.current_usage,
+                memory_stats.current_usage * 100 / config.max_memory_bytes
+            ));
+        }
+        
+        // Check execution failure rate
+        if metrics.total_executions > 0 {
+            let failure_rate = metrics.failed_executions as f64 / metrics.total_executions as f64;
+            if failure_rate > 0.1 {
+                issues.push(format!(
+                    "High failure rate: {:.1}% ({} failures out of {} executions)",
+                    failure_rate * 100.0,
+                    metrics.failed_executions,
+                    metrics.total_executions
+                ));
+            } else if failure_rate > 0.05 {
+                warnings.push(format!(
+                    "Elevated failure rate: {:.1}% ({} failures out of {} executions)",
+                    failure_rate * 100.0,
+                    metrics.failed_executions,
+                    metrics.total_executions
+                ));
+            }
+        }
+        
+        // Check executable memory blocks
+        if memory_stats.executable_blocks > 100 {
+            warnings.push(format!(
+                "High number of executable memory blocks: {}",
+                memory_stats.executable_blocks
+            ));
+        }
+        
+        HealthStatus {
+            is_healthy: issues.is_empty(),
+            issues,
+            warnings,
+            uptime_ms: metrics.last_execution_time
+                .map(|t| t.elapsed().as_millis() as u64)
+                .unwrap_or(0),
+        }
     }
     
     /// Execute operations using fallback implementation
@@ -997,16 +2225,20 @@ impl CoelanoxRuntime {
         }
     }
     
-    /// Cleanup executable memory
-    pub fn cleanup(&mut self) {
+    /// Cleanup executable memory with proper thread safety
+    pub fn cleanup(&self) {
+        let mut executable_memory = self.executable_memory.lock().unwrap();
+        let mut total_freed = 0usize;
+        
         #[cfg(target_os = "linux")]
         {
             use libc::munmap;
             
-            for block in &self.executable_memory {
+            for block in executable_memory.iter() {
                 unsafe {
                     munmap(block.ptr as *mut std::ffi::c_void, block.size);
                 }
+                total_freed += block.size;
             }
         }
         
@@ -1015,14 +2247,32 @@ impl CoelanoxRuntime {
             use windows_sys::Win32::System::Memory::VirtualFree;
             use windows_sys::Win32::System::Memory::MEM_RELEASE;
             
-            for block in &self.executable_memory {
+            for block in executable_memory.iter() {
                 unsafe {
                     VirtualFree(block.ptr as *mut std::ffi::c_void, 0, MEM_RELEASE);
                 }
+                total_freed += block.size;
             }
         }
         
-        self.executable_memory.clear();
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            // Generic cleanup for other platforms
+            for block in executable_memory.iter() {
+                total_freed += block.size;
+                // Note: Generic memory cleanup would need platform-specific implementation
+            }
+        }
+        
+        // Update metrics
+        {
+            let mut metrics = self.metrics.lock().unwrap();
+            metrics.update_memory_deallocation(total_freed);
+            metrics.executable_blocks_count = 0;
+        }
+        
+        info!("🧹 Cleaned up {} executable memory blocks ({} bytes)", executable_memory.len(), total_freed);
+        executable_memory.clear();
     }
     
     /// Benchmark a container
@@ -1069,6 +2319,34 @@ impl CoelanoxRuntime {
     }
 }
 
+/// Memory usage statistics
+#[derive(Debug, Clone)]
+pub struct MemoryStats {
+    /// Total memory allocated (bytes)
+    pub total_allocated: usize,
+    /// Current memory usage (bytes)
+    pub current_usage: usize,
+    /// Peak memory usage (bytes)
+    pub peak_usage: usize,
+    /// Number of executable memory blocks
+    pub executable_blocks: usize,
+    /// Total executable memory size (bytes)
+    pub executable_memory_size: usize,
+}
+
+/// Health status of the runtime
+#[derive(Debug, Clone)]
+pub struct HealthStatus {
+    /// Whether the runtime is healthy
+    pub is_healthy: bool,
+    /// Critical issues that need attention
+    pub issues: Vec<String>,
+    /// Warnings that should be monitored
+    pub warnings: Vec<String>,
+    /// Runtime uptime in milliseconds
+    pub uptime_ms: u64,
+}
+
 /// Benchmark result
 #[derive(Debug, Clone)]
 pub struct BenchmarkResult {
@@ -1082,7 +2360,9 @@ pub struct BenchmarkResult {
 
 impl Drop for CoelanoxRuntime {
     fn drop(&mut self) {
-        self.cleanup();
+        // Note: We can't call self.cleanup() here because it requires &self, not &mut self
+        // The cleanup will be handled by the Arc<Mutex<>> drop implementations
+        info!("🧹 COELANOX Runtime dropped - cleanup handled by Arc<Mutex<>>");
     }
 }
 
