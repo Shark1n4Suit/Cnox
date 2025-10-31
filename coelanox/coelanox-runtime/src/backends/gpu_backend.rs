@@ -258,13 +258,17 @@ impl GpuBackend {
         // Execute operations with GPU acceleration
         match self.preferred_backend {
             GpuBackendType::Cuda => {
-                self.execute_operations_cuda(input_data, &mut output, &weights, &container.manifest.operations)?;
+                // Legacy operations field removed
+                let empty_operations: Vec<serde_json::Value> = Vec::new();
+                self.execute_operations_cuda(input_data, &mut output, &weights, &empty_operations)?;
             }
             GpuBackendType::OpenCl => {
-                self.execute_operations_opencl(input_data, &mut output, &weights, &container.manifest.operations)?;
+                let empty_operations: Vec<serde_json::Value> = Vec::new();
+                self.execute_operations_opencl(input_data, &mut output, &weights, &empty_operations)?;
             }
             GpuBackendType::CpuFallback => {
-                self.execute_operations_cpu_fallback(input_data, &mut output, &weights, &container.manifest.operations)?;
+                let empty_operations: Vec<serde_json::Value> = Vec::new();
+                self.execute_operations_cpu_fallback(input_data, &mut output, &weights, &empty_operations)?;
             }
         }
         

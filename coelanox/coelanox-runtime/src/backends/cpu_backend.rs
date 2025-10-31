@@ -137,7 +137,9 @@ impl CpuBackend {
         let weights = container.decompress_weights()?;
         
         // Execute operations with CPU optimizations
-        self.execute_operations_cpu(input_data, &mut output, &weights, &container.manifest.operations)?;
+        // Legacy operations field removed - using empty operations
+        let empty_operations: Vec<serde_json::Value> = Vec::new();
+        self.execute_operations_cpu(input_data, &mut output, &weights, &empty_operations)?;
         
         debug!("✅ CPU Backend execution completed: {} -> {} elements", input_data.len(), output.len());
         Ok(output)

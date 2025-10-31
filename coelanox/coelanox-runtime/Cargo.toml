@@ -9,6 +9,7 @@ repository = "https://github.com/benjamin-morin/coelanox"
 
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
+bincode = "1.3"
 libc = "0.2"
 windows-sys = { version = "0.48", features = ["Win32_System_Memory"] }
 tracing = "0.1"

@@ -475,8 +475,7 @@ impl OptimizationHint {
 /// This is a standalone result of optimization, not a wrapper around the original IR.
 /// It contains only the optimized operations and metadata needed for code generation.
 /// Uses the same high-performance ID-based architecture as UniversalIR.
-/// Note: This struct does not implement Serialize/Deserialize due to Arc<Vec<WeightTensor>>.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizedIR {
     /// Hardware target
     pub target: HardwareTarget,
@@ -488,7 +487,8 @@ pub struct OptimizedIR {
     pub optimization_metadata: HashMap<String, String>,
     /// Reference to original model metadata (lightweight)
     pub original_model_name: String,
-    /// Shared weight data (using Arc for memory efficiency)
+    /// Shared weight data (serialized as Vec for storage)
+    #[serde(skip)]
     pub shared_weights: std::sync::Arc<Vec<WeightTensor>>,
 }
 
@@ -520,6 +520,25 @@ impl OptimizedIR {
             optimization_metadata: HashMap::new(),
             original_model_name,
             shared_weights,
+        }
+    }
+    
+    /// Create OptimizedIR from deserialized data (reconstructs Arc)
+    pub fn from_deserialized(
+        target: HardwareTarget,
+        optimized_nodes: Vec<GraphNode>,
+        intermediate_tensors: Vec<IntermediateTensor>,
+        optimization_metadata: HashMap<String, String>,
+        original_model_name: String,
+        weight_tensors: Vec<WeightTensor>,
+    ) -> Self {
+        Self {
+            target,
+            optimized_nodes,
+            intermediate_tensors,
+            optimization_metadata,
+            original_model_name,
+            shared_weights: std::sync::Arc::new(weight_tensors),
         }
     }
     

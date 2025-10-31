@@ -1280,33 +1280,91 @@ impl CoelanoxRuntime {
     
     /// Execute machine code with weights
     fn execute_machine_code_with_weights(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+        // Load IR from container
+        use bincode;
+        use coelanox_core::ir::{GraphNode, IntermediateTensor, WeightTensor};
+        use std::collections::HashMap;
+        use coelanox_core::format::HardwareTarget;
+        
+        // Deserialize into temporary struct
+        #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+        struct SerializableIR {
+            target: HardwareTarget,
+            optimized_nodes: Vec<GraphNode>,
+            intermediate_tensors: Vec<IntermediateTensor>,
+            optimization_metadata: HashMap<String, String>,
+            original_model_name: String,
+            weight_tensors: Vec<WeightTensor>,
+        }
+        
+        let serialized: SerializableIR = bincode::deserialize(&container.ir_data)
+            .map_err(|e| CoelanoxError::Runtime(format!("Failed to deserialize IR: {}", e)))?;
+        
+        // Reconstruct OptimizedIR with Arc
+        let ir = coelanox_core::ir::OptimizedIR::from_deserialized(
+            serialized.target,
+            serialized.optimized_nodes,
+            serialized.intermediate_tensors,
+            serialized.optimization_metadata,
+            serialized.original_model_name,
+            serialized.weight_tensors,
+        );
+        
         // Load weights from container
         let weights = container.decompress_weights()?;
         
-        // Calculate output size
-        let output_size: usize = container.manifest.output_shapes.iter()
-            .map(|shape| shape.iter().product::<usize>())
-            .sum();
+        // Execute operations from IR
+        let mut current_data = input_data.to_vec();
         
-        let mut output = vec![0.0f32; output_size];
-        
-        // Execute operations with real weights
-        for operation_json in &container.manifest.operations {
-            // Convert JSON to Operation struct
-            let operation: Operation = serde_json::from_value(operation_json.clone())
-                .map_err(|e| CoelanoxError::format(&format!("Failed to deserialize operation: {}", e)))?;
+        // Iterate through operations in the optimized IR
+        for node in &ir.optimized_nodes {
+            // Create operation from node (simplified version for OptimizedIR)
+            let mut operation = Operation::new(node.op_type.clone());
             
-            let op_output = self.execute_operation_with_weights(&operation, input_data, &weights)?;
-            
-            // Copy operation output to final output
-            for (i, &val) in op_output.iter().enumerate() {
-                if i < output.len() {
-                    output[i] = val;
-                }
+            // Convert tensor IDs to names for inputs
+            for tensor_id in &node.input_tensors {
+                let tensor_name = if tensor_id.is_weight() {
+                    if let Some(tensor) = ir.shared_weights.get(tensor_id.index()) {
+                        tensor.name.clone()
+                    } else {
+                        format!("weight_{}", tensor_id.index())
+                    }
+                } else {
+                    if let Some(tensor) = ir.intermediate_tensors.get(tensor_id.index()) {
+                        tensor.name.clone()
+                    } else {
+                        format!("intermediate_{}", tensor_id.index())
+                    }
+                };
+                operation.add_input(tensor_name);
             }
+            
+            // Convert tensor IDs to names for outputs
+            for tensor_id in &node.output_tensors {
+                let tensor_name = if tensor_id.is_weight() {
+                    if let Some(tensor) = ir.shared_weights.get(tensor_id.index()) {
+                        tensor.name.clone()
+                    } else {
+                        format!("weight_{}", tensor_id.index())
+                    }
+                } else {
+                    if let Some(tensor) = ir.intermediate_tensors.get(tensor_id.index()) {
+                        tensor.name.clone()
+                    } else {
+                        format!("intermediate_{}", tensor_id.index())
+                    }
+                };
+                operation.add_output(tensor_name);
+            }
+            
+            // Copy attributes
+            operation.attributes = node.attributes.clone();
+            
+            // Execute operation using existing fallback methods
+            current_data = self.execute_operation_with_weights(&operation, &current_data, &weights)?;
         }
         
-        Ok(output)
+        Ok(current_data)
     }
     
     /// Execute a single operation with weights
@@ -1710,8 +1768,10 @@ impl CoelanoxRuntime {
             }
         };
         
-        // Process each operation in the container
-        for operation_json in &container.manifest.operations {
+        // TODO: Legacy operations field removed - use IR operations instead
+        // Process each operation in the container (legacy code removed)
+        let _empty_operations: Vec<serde_json::Value> = Vec::new();
+        for operation_json in &_empty_operations {
             // Convert JSON to Operation struct
             let operation: Operation = match serde_json::from_value(operation_json.clone()) {
                 Ok(op) => op,

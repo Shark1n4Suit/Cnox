@@ -63,6 +63,37 @@ impl BackendTranslatorCodeGenerator {
         }
     }
     
+    /// Defuse fused operations before passing to vendor translators (removes vendor pressure!)
+    fn defuse_operations(&self, operations: &[Operation]) -> Vec<Operation> {
+        let mut defused_ops = Vec::new();
+        
+        for operation in operations {
+            match &operation.op_type {
+                OpType::Custom(ref name) => {
+                    // Defuse fused ops so vendors only see primitives
+                    match name.as_str() {
+                        "ConvReLU" => {
+                            defused_ops.push(Operation::new(OpType::Convolution));
+                            defused_ops.push(Operation::new(OpType::Activation));
+                        }
+                        "MatMulAdd" => {
+                            defused_ops.push(Operation::new(OpType::MatMul));
+                            defused_ops.push(Operation::new(OpType::Add));
+                        }
+                        "EdgeConvReLU" => {
+                            defused_ops.push(Operation::new(OpType::Convolution));
+                            defused_ops.push(Operation::new(OpType::Activation));
+                        }
+                        _ => defused_ops.push(operation.clone()), // Vendor experimental primitives pass through
+                    }
+                }
+                _ => defused_ops.push(operation.clone()), // Primitive ops pass through
+            }
+        }
+        
+        defused_ops
+    }
+    
     /// Generate code using backend translators
     fn generate_backend_translator_code(&self, operations: &[Operation]) -> CoelanoxResult<Vec<u8>> {
         let mut machine_code = Vec::new();
@@ -70,8 +101,11 @@ impl BackendTranslatorCodeGenerator {
         // Generate function prologue
         machine_code.extend_from_slice(&self.generate_prologue());
         
+        // Defuse fused ops BEFORE sending to vendors (vendors only see primitives!)
+        let defused_ops = self.defuse_operations(operations);
+        
         // Generate code for each operation using backend translators
-        for operation in operations {
+        for operation in &defused_ops {
             let coelanox_operation = self.convert_to_coelanox_operation(operation)?;
             let coelanox_params = self.convert_to_coelanox_params(operation)?;
             

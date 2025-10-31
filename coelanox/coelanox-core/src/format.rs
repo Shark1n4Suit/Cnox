@@ -250,8 +250,6 @@ pub struct CoelanoxManifest {
     pub description: Option<String>,
     /// Model tags
     pub tags: Vec<String>,
-    /// Operations in the model (placeholder for now)
-    pub operations: Vec<serde_json::Value>,
     /// Model metadata
     pub metadata: std::collections::HashMap<String, String>,
 }
@@ -277,7 +275,6 @@ impl CoelanoxManifest {
             modified_at: now,
             description: None,
             tags: Vec::new(),
-            operations: Vec::new(),
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -385,6 +382,8 @@ pub struct CoelanoxContainer {
     pub compressed_weights: Vec<u8>,
     /// Compression type used for weights
     pub compression_type: CompressionType,
+    /// IR data (serialized OptimizedIR using bincode)
+    pub ir_data: Vec<u8>,
     /// Backend hints
     pub backend_hints: Option<BackendHints>,
     /// Security metadata
@@ -393,11 +392,12 @@ pub struct CoelanoxContainer {
 
 impl CoelanoxContainer {
     /// Create a new COELANOX container
-    pub fn new(manifest: CoelanoxManifest, optimized_code: Vec<u8>, compressed_weights: Vec<u8>, compression_type: CompressionType) -> Self {
+    pub fn new(manifest: CoelanoxManifest, optimized_code: Vec<u8>, compressed_weights: Vec<u8>, compression_type: CompressionType, ir_data: Vec<u8>) -> Self {
         let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
         let code_offset = COELANOX_HEADER_SIZE as u64 + manifest_size as u64;
         let weights_offset = code_offset + optimized_code.len() as u64;
-        let total_size = weights_offset + compressed_weights.len() as u64;
+        let ir_offset = weights_offset + compressed_weights.len() as u64;
+        let total_size = ir_offset + ir_data.len() as u64;
         
         Self {
             header: CoelanoxHeader::new(total_size, COELANOX_HEADER_SIZE as u64, code_offset),
@@ -405,6 +405,7 @@ impl CoelanoxContainer {
             optimized_code,
             compressed_weights,
             compression_type,
+            ir_data,
             backend_hints: None,
             security: None,
         }
@@ -510,6 +511,10 @@ impl CoelanoxContainer {
         // Write compressed weights
         writer.write_all(&self.compressed_weights)?;
         
+        // Write IR data with length prefix
+        writer.write_all(&(self.ir_data.len() as u32).to_le_bytes())?;
+        writer.write_all(&self.ir_data)?;
+        
         // TODO: Write backend hints and security metadata if present
         
         Ok(())
@@ -535,14 +540,28 @@ impl CoelanoxContainer {
         let mut optimized_code = vec![0u8; manifest.model_size];
         reader.read_exact(&mut optimized_code)?;
         
+        // Read compressed weights
+        let mut compressed_weights = Vec::new();
+        reader.read_to_end(&mut compressed_weights)?;
+        
+        // Read IR data length
+        let mut ir_len_bytes = [0u8; 4];
+        reader.read_exact(&mut ir_len_bytes)?;
+        let ir_len = u32::from_le_bytes(ir_len_bytes) as usize;
+        
+        // Read IR data
+        let mut ir_data = vec![0u8; ir_len];
+        reader.read_exact(&mut ir_data)?;
+        
         // TODO: Read backend hints and security metadata if present
         
         Ok(Self {
             header,
             manifest,
             optimized_code,
-            compressed_weights: Vec::new(),
+            compressed_weights,
             compression_type: CompressionType::None,
+            ir_data,
             backend_hints: None,
             security: None,
         })

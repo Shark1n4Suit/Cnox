@@ -446,28 +446,31 @@ impl NpuBackend {
         // Load weights from container
         let weights = container.decompress_weights()?;
         
+        // Legacy operations field removed - using empty operations
+        let empty_operations: Vec<serde_json::Value> = Vec::new();
+        
         // Execute operations with NPU acceleration
         match self.preferred_npu {
             NpuType::ArmNpu => {
-                self.execute_operations_arm_npu(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_arm_npu(input_data, &mut output, &weights, &empty_operations)?;
             }
             NpuType::HexagonDsp => {
-                self.execute_operations_hexagon_dsp(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_hexagon_dsp(input_data, &mut output, &weights, &empty_operations)?;
             }
             NpuType::AppleNeuralEngine => {
-                self.execute_operations_apple_neural_engine(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_apple_neural_engine(input_data, &mut output, &weights, &empty_operations)?;
             }
             NpuType::MovidiusMyriad => {
-                self.execute_operations_movidius_myriad(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_movidius_myriad(input_data, &mut output, &weights, &empty_operations)?;
             }
             NpuType::EdgeTpu => {
-                self.execute_operations_edge_tpu(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_edge_tpu(input_data, &mut output, &weights, &empty_operations)?;
             }
             NpuType::GenericNpu => {
-                self.execute_operations_generic_npu(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_generic_npu(input_data, &mut output, &weights, &empty_operations)?;
             }
             NpuType::CpuFallback => {
-                self.execute_operations_cpu_fallback(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_cpu_fallback(input_data, &mut output, &weights, &empty_operations)?;
             }
         }
         

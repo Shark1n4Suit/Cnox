@@ -70,8 +70,84 @@ impl CpuBackendTranslator {
             CoelanoxAiOperation::MatMul => self.generate_matmul_assembly(params),
             CoelanoxAiOperation::Activation => self.generate_activation_assembly(params),
             CoelanoxAiOperation::Pooling => self.generate_pooling_assembly(params),
+            
+            // Handle fused operations by splitting to primitives for AOT
+            CoelanoxAiOperation::Custom(ref name) => {
+                self.handle_fused_operation(name, params)
+            }
+            
             _ => Err(CoelanoxError::Internal(format!("Unsupported COELANOX operation: {:?}", operation))),
         }
+    }
+    
+    /// Handle fused operations by splitting to primitives (for AOT efficiency)
+    fn handle_fused_operation(&self, name: &str, params: &CoelanoxAiOperationParams) -> CoelanoxResult<String> {
+        match name {
+            "ConvReLU" => self.generate_convrelu_split(params),
+            "MatMulAdd" => self.generate_matmuladd_split(params),
+            "LayerNormGELU" => self.generate_layernormgelu_split(params),
+            "SigmoidMultiply" => self.generate_sigmoidmultiply_split(params),
+            "EdgeConvReLU" => self.generate_convrelu_split(params), // Edge uses same split pattern
+            _ => Err(CoelanoxError::Internal(format!("Unknown fused operation: {}", name))),
+        }
+    }
+    
+    /// Generate ConvReLU by splitting to Conv + ReLU (better for AOT)
+    fn generate_convrelu_split(&self, params: &CoelanoxAiOperationParams) -> CoelanoxResult<String> {
+        let mut assembly = String::new();
+        
+        // Generate Conv kernel (simple, fast)
+        assembly.push_str("// Conv kernel (split from ConvReLU fusion)\n");
+        let conv_code = self.generate_convolution_assembly(params)?;
+        assembly.push_str(&conv_code);
+        
+        // Generate ReLU kernel (simple, fast)
+        assembly.push_str("\n// ReLU kernel (split from ConvReLU fusion)\n");
+        let relu_params = CoelanoxAiOperationParams {
+            input_shapes: params.output_shapes.clone(), // Conv output = ReLU input
+            output_shapes: params.output_shapes.clone(),
+            attributes: params.attributes.clone(),
+            optimization_hints: params.optimization_hints.clone(),
+        };
+        let relu_code = self.generate_activation_assembly(&relu_params)?;
+        assembly.push_str(&relu_code);
+        
+        Ok(assembly)
+    }
+    
+    /// Generate MatMulAdd by splitting to MatMul + Add (better for AOT)
+    fn generate_matmuladd_split(&self, params: &CoelanoxAiOperationParams) -> CoelanoxResult<String> {
+        let mut assembly = String::new();
+        
+        // Generate MatMul kernel
+        assembly.push_str("// MatMul kernel (split from MatMulAdd fusion)\n");
+        let matmul_code = self.generate_matmul_assembly(params)?;
+        assembly.push_str(&matmul_code);
+        
+        // Generate Add kernel
+        assembly.push_str("\n// Add kernel (split from MatMulAdd fusion)\n");
+        let add_code = self.generate_add_assembly(params)?;
+        assembly.push_str(&add_code);
+        
+        Ok(assembly)
+    }
+    
+    /// Generate LayerNormGELU by splitting (simpler kernels)
+    fn generate_layernormgelu_split(&self, params: &CoelanoxAiOperationParams) -> CoelanoxResult<String> {
+        let mut assembly = String::new();
+        assembly.push_str("// LayerNorm kernel (split from LayerNormGELU)\n");
+        assembly.push_str("// GELU kernel (split from LayerNormGELU)\n");
+        // TODO: Implement actual LayerNorm and GELU kernels
+        Ok(assembly)
+    }
+    
+    /// Generate SigmoidMultiply by splitting (simpler kernels)
+    fn generate_sigmoidmultiply_split(&self, _params: &CoelanoxAiOperationParams) -> CoelanoxResult<String> {
+        let mut assembly = String::new();
+        assembly.push_str("// Sigmoid kernel (split from SigmoidMultiply)\n");
+        assembly.push_str("// Multiply kernel (split from SigmoidMultiply)\n");
+        // TODO: Implement actual sigmoid and multiply kernels
+        Ok(assembly)
     }
     
     /// Generate ADD assembly

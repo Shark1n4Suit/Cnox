@@ -1,0 +1,47 @@
+[package]
+name = "coelanox-sdk"
+version = "0.1.0"
+edition = "2021"
+authors = ["Benjamin Morin"]
+description = "COELANOX SDK - Universal AI deployment platform development tools"
+license = "PROPRIETARY"
+repository = "https://github.com/coelanox/coelanox-sdk"
+
+[workspace]
+members = [
+    ".",
+    "translators",
+    "backends",
+    "examples",
+    "tools"
+]
+
+[dependencies]
+coelanox-core = { path = "../coelanox/coelanox-core" }
+coelanox-packager = { path = "../coelanox/coelanox-packager" }
+coelanox-runtime = { path = "../coelanox/coelanox-runtime" }
+
+# SDK Development
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[features]
+default = ["translators", "backends"]
+translators = []
+backends = []
+
+[[example]]
+name = "translate-model"
+path = "examples/translate-model.rs"
+
+[[example]]
+name = "custom-backend"
+path = "examples/custom-backend.rs"
+

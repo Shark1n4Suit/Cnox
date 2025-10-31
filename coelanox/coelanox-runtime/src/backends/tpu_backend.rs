@@ -417,25 +417,28 @@ impl TpuBackend {
         // Load weights from container
         let weights = container.decompress_weights()?;
         
+        // Legacy operations field removed - using empty operations
+        let empty_operations: Vec<serde_json::Value> = Vec::new();
+        
         // Execute operations with TPU acceleration
         match self.preferred_tpu {
             TpuType::CloudTpuV4 => {
-                self.execute_operations_cloud_tpu_v4(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_cloud_tpu_v4(input_data, &mut output, &weights, &empty_operations)?;
             }
             TpuType::CloudTpuV3 => {
-                self.execute_operations_cloud_tpu_v3(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_cloud_tpu_v3(input_data, &mut output, &weights, &empty_operations)?;
             }
             TpuType::CloudTpuV2 => {
-                self.execute_operations_cloud_tpu_v2(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_cloud_tpu_v2(input_data, &mut output, &weights, &empty_operations)?;
             }
             TpuType::EdgeTpu => {
-                self.execute_operations_edge_tpu(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_edge_tpu(input_data, &mut output, &weights, &empty_operations)?;
             }
             TpuType::GenericTpu => {
-                self.execute_operations_generic_tpu(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_generic_tpu(input_data, &mut output, &weights, &empty_operations)?;
             }
             TpuType::CpuFallback => {
-                self.execute_operations_cpu_fallback(input_data, &mut output, &weights, &container.manifest.operations)?;
+                self.execute_operations_cpu_fallback(input_data, &mut output, &weights, &empty_operations)?;
             }
         }
         

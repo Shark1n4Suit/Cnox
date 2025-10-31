@@ -16,8 +16,8 @@ mod backend_tests {
 
     /// Create a test container with various operations
     fn create_test_container() -> CoelanoxContainer {
-        // Create a simple test container with basic operations
-        let operations = vec![
+        // Create a simple test container (legacy operations removed)
+        let _operations = vec![
             json!({
                 "op_type": "Add",
                 "inputs": ["input1", "input2"],
@@ -85,7 +85,6 @@ mod backend_tests {
                 modified_at: 0,
                 description: Some("Test model".to_string()),
                 tags: vec!["test".to_string()],
-                operations,
                 metadata: std::collections::HashMap::new(),
             },
             optimized_code: vec![0x90; 1024], // NOP instructions for testing

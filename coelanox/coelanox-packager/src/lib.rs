@@ -5,10 +5,23 @@
 
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::{HardwareTarget, OptimizationLevel, CoelanoxContainer, CoelanoxManifest, CompressionType}};
 use coelanox_core::utils::SystemEnvironment;
-use coelanox_core::ir::UniversalIR;
+use coelanox_core::ir::{UniversalIR, GraphNode, IntermediateTensor, WeightTensor};
 use crate::generators::CodeGenerator;
 use crate::optimizers::HardwareOptimizer;
 use std::path::Path;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Serializable version of OptimizedIR (without Arc)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializedOptimizedIR {
+    target: HardwareTarget,
+    optimized_nodes: Vec<GraphNode>,
+    intermediate_tensors: Vec<IntermediateTensor>,
+    optimization_metadata: HashMap<String, String>,
+    original_model_name: String,
+    weight_tensors: Vec<WeightTensor>,
+}
 
 pub mod plugins;
 pub mod optimizers;
@@ -240,11 +253,26 @@ impl CoelanoxPackager {
         // Compress weights
         let (compressed_weights, compression_type) = self.compress_weights(&weights)?;
         
+        // For serialization, we need to create a copy without Arc
+        // Create a serializable version with flattened weights
+        let serializable_ir = SerializedOptimizedIR {
+            target: optimized_ir.target.clone(),
+            optimized_nodes: optimized_ir.optimized_nodes.clone(),
+            intermediate_tensors: optimized_ir.intermediate_tensors.clone(),
+            optimization_metadata: optimized_ir.optimization_metadata.clone(),
+            original_model_name: optimized_ir.original_model_name.clone(),
+            weight_tensors: optimized_ir.shared_weights.as_ref().clone(),
+        };
+        
+        // Serialize IR for runtime use
+        let ir_data = bincode::serialize(&serializable_ir)
+            .map_err(|e| CoelanoxError::Runtime(format!("Failed to serialize IR: {}", e)))?;
+        
         // Create manifest
         let manifest = self.create_manifest(&ir, machine_code.len())?;
         
-        // Create container with weights
-        let container = CoelanoxContainer::new(manifest, machine_code, compressed_weights, compression_type);
+        // Create container with weights and IR data
+        let container = CoelanoxContainer::new(manifest, machine_code, compressed_weights, compression_type, ir_data);
         
         Ok(container)
     }
