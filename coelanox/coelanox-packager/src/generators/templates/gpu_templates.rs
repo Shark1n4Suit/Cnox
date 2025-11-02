@@ -247,7 +247,7 @@ impl super::HardwareTemplate for GpuTemplates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::Attribute;
+    use coelanox_core::ir::Attribute;
 
     #[test]
     fn test_gpu_template_placeholder() {

@@ -20,8 +20,16 @@ pub trait TranslatorPlugin: Send + Sync + 'static {
     /// Translate model from file path (supports sharded models)
     fn translate_from_path(&self, input_path: &Path) -> CoelanoxResult<UniversalIR> {
         // Default implementation: read file and use regular translate
+        // Use a safer approach for large files
+        println!("📖 Reading model file: {}...", input_path.display());
+        let file_size = std::fs::metadata(input_path)
+            .map_err(|e| CoelanoxError::format(&format!("Failed to read metadata for {}: {}", input_path.display(), e)))?
+            .len();
+        println!("📊 File size: {}MB", file_size / (1024 * 1024));
+        
         let data = std::fs::read(input_path)
             .map_err(|e| CoelanoxError::format(&format!("Failed to read file {}: {}", input_path.display(), e)))?;
+        println!("✅ File read successfully, translating...");
         self.translate(&data)
     }
     

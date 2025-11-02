@@ -12,6 +12,8 @@ use coelanox_core::ir::UniversalIR;
 
 // Import the ONNX translator from the translators directory
 use onnx_translator::OnnxTranslator;
+// Import the BERT translator from the translators directory
+use bert_translator::BertTranslator;
 
 /// Plugin manager for loading and managing translator plugins
 pub struct PluginManager {
@@ -57,18 +59,77 @@ impl PluginManager {
         let onnx_translator = Box::new(OnnxTranslator::new());
         self.register_plugin_with_validation("onnx_translator".to_string(), onnx_translator)?;
         
-        println!("✅ Plugin manager loaded with ONNX translator");
+        // Register BERT translator from the translators directory
+        let bert_translator = Box::new(BertTranslator::new());
+        self.register_plugin_with_validation("bert_translator".to_string(), bert_translator)?;
+        
+        println!("✅ Plugin manager loaded with ONNX translator and BERT translator");
         Ok(())
     }
     
     /// Find a plugin for the given model format
     pub fn find_plugin(&self, format: ModelFormat) -> Option<&dyn TranslatorPlugin> {
-        // Search through all plugins to find one that supports this format
-        for plugin in self.plugins.values() {
-            if plugin.supported_formats().contains(&format) {
+        self.find_plugin_with_preference(format, None)
+    }
+    
+    /// Find a plugin for the given model format with optional demo/custom translator preference
+    /// 
+    /// - If `use_demo_translator` is Some(true), prefer specialized translators (e.g., bert_translator for NLP)
+    /// - If `use_demo_translator` is None or Some(false), prefer general translators (e.g., onnx_translator)
+    pub fn find_plugin_with_preference(&self, format: ModelFormat, use_demo_translator: Option<bool>) -> Option<&dyn TranslatorPlugin> {
+        println!("🔍 Searching for plugin supporting format: {:?}", format);
+        println!("📋 Available plugins: {:?}", self.plugins.keys().collect::<Vec<_>>());
+        
+        let prefer_demo = use_demo_translator.unwrap_or(false);
+        
+        if prefer_demo {
+            println!("🎯 Demo mode: Preferring specialized translators");
+            
+            // For demo mode, prefer specialized translators (bert_translator) over general ones
+            // Try specialized translators first
+            let specialized_plugins = vec!["bert_translator"];
+            
+            for plugin_name in specialized_plugins {
+                if let Some(plugin) = self.plugins.get(plugin_name) {
+                    let supported = plugin.supported_formats();
+                    println!("   Checking specialized plugin '{}' (supports: {:?})", plugin_name, supported);
+                    if supported.contains(&format) {
+                        println!("✅ Found specialized plugin: {} (demo mode)", plugin_name);
+                        return Some(plugin.as_ref());
+                    }
+                }
+            }
+            
+            println!("⚠️  No specialized plugin available, falling back to general translator");
+        } else {
+            println!("⚙️  Standard mode: Preferring general translators");
+        }
+        
+        // Default/preferred behavior: prefer general translators (onnx_translator)
+        // This ensures we get the full ONNX translator by default
+        let general_plugins = vec!["onnx_translator"];
+        
+        for plugin_name in general_plugins {
+            if let Some(plugin) = self.plugins.get(plugin_name) {
+                let supported = plugin.supported_formats();
+                println!("   Checking general plugin '{}' (supports: {:?})", plugin_name, supported);
+                if supported.contains(&format) {
+                    println!("✅ Found general plugin: {} (default)", plugin_name);
+                    return Some(plugin.as_ref());
+                }
+            }
+        }
+        
+        // Fallback: Search through all plugins to find one that supports this format
+        for (name, plugin) in &self.plugins {
+            let supported = plugin.supported_formats();
+            println!("   Plugin '{}' supports: {:?}", name, supported);
+            if supported.contains(&format) {
+                println!("✅ Found matching plugin: {}", name);
                 return Some(plugin.as_ref());
             }
         }
+        println!("❌ No plugin found for format: {:?}", format);
         None
     }
     

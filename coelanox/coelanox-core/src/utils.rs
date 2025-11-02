@@ -156,19 +156,29 @@ impl SystemEnvironment {
     fn detect_cpu_vendor() -> CoelanoxResult<String> {
         #[cfg(target_arch = "x86_64")]
         {
-            // Use CPUID to detect vendor
+            // Use CPUID to detect vendor (function 0)
+            // Note: rbx is reserved by LLVM, so we use r10 and move the value
             let vendor = unsafe {
-                let mut vendor = [0u32; 3];
-                asm!("cpuid", 
-                     in("eax") 0,
-                     out("r10") vendor[0],
-                     out("edx") vendor[1],
-                     out("ecx") vendor[2],
-                     options(nomem, nostack));
+                let mut r10_result = 0u64; // Temporary for ebx
+                let mut edx = 0u32;
+                let mut ecx = 0u32;
                 
-                let vendor_bytes = vendor.iter()
-                    .flat_map(|&x| x.to_le_bytes())
-                    .collect::<Vec<u8>>();
+                asm!("push rbx; cpuid; mov {result}, rbx; pop rbx", 
+                     in("eax") 0u32,
+                     out("edx") edx,
+                     out("ecx") ecx,
+                     result = out(reg) r10_result,
+                     lateout("rax") _,
+                     options(nomem, preserves_flags));
+                
+                let ebx = (r10_result & 0xFFFFFFFF) as u32;
+                
+                // Vendor string is in EBX, EDX, ECX (in that order)
+                let vendor_bytes = [
+                    ebx.to_le_bytes(),
+                    edx.to_le_bytes(),
+                    ecx.to_le_bytes(),
+                ].concat();
                 
                 String::from_utf8_lossy(&vendor_bytes).to_string()
             };
@@ -306,25 +316,46 @@ impl SystemEnvironment {
         {
             // Use CPUID to detect SIMD capabilities
             unsafe {
-                // Check for SSE
-                let mut eax = 1;
-                asm!("cpuid", 
+                // Check for SSE/AVX capabilities (CPUID function 1)
+                let mut eax = 1u32;
+                let mut ecx = 0u32;
+                let mut edx = 0u32;
+                
+                // CPUID modifies rbx, but we don't need it - just preserve it
+                asm!("push rbx; cpuid; pop rbx", 
                      inout("eax") eax,
-                     out("r10") _,
-                     out("ecx") _,
-                     out("edx") _,
-                     options(nomem, nostack));
+                     out("ecx") ecx,
+                     out("edx") edx,
+                     options(nomem, preserves_flags));
                 
-                let edx = eax; // Actually checking EDX register
-                
+                // Check EDX register flags (SSE, SSE2, etc.)
                 if (edx >> 25) & 1 != 0 { capabilities.push(SimdCapability::SSE); }
                 if (edx >> 26) & 1 != 0 { capabilities.push(SimdCapability::SSE2); }
-                if (edx >> 0) & 1 != 0 { capabilities.push(SimdCapability::SSE3); }
-                if (edx >> 19) & 1 != 0 { capabilities.push(SimdCapability::SSE41); }
-                if (edx >> 20) & 1 != 0 { capabilities.push(SimdCapability::SSE42); }
-                if (edx >> 28) & 1 != 0 { capabilities.push(SimdCapability::AVX); }
-                if (edx >> 5) & 1 != 0 { capabilities.push(SimdCapability::AVX2); }
-                if (edx >> 16) & 1 != 0 { capabilities.push(SimdCapability::AVX512); }
+                
+                // Check ECX register flags (SSE3, SSE4, AVX, etc.)
+                if (ecx >> 0) & 1 != 0 { capabilities.push(SimdCapability::SSE3); }
+                if (ecx >> 19) & 1 != 0 { capabilities.push(SimdCapability::SSE41); }
+                if (ecx >> 20) & 1 != 0 { capabilities.push(SimdCapability::SSE42); }
+                if (ecx >> 28) & 1 != 0 { capabilities.push(SimdCapability::AVX); }
+                
+                // Check for AVX2 (CPUID function 7, sub-leaf 0)
+                // Note: rbx is reserved by LLVM, so we use r10 and move the value
+                let mut eax7 = 7u32;
+                let mut ecx_in = 0u32; // Sub-leaf (input)
+                let mut r10_result = 0u64; // Temporary register for ebx
+                let mut ecx7 = 0u32;
+                let mut edx7 = 0u32;
+                
+                asm!("push rbx; cpuid; mov {result}, rbx; pop rbx", 
+                     inout("eax") eax7,
+                     inout("ecx") ecx_in => ecx7,
+                     out("edx") edx7,
+                     result = out(reg) r10_result,
+                     options(nomem, preserves_flags));
+                
+                let ebx7 = (r10_result & 0xFFFFFFFF) as u32;
+                if (ebx7 >> 5) & 1 != 0 { capabilities.push(SimdCapability::AVX2); }
+                if (ebx7 >> 16) & 1 != 0 { capabilities.push(SimdCapability::AVX512); }
             }
         }
         

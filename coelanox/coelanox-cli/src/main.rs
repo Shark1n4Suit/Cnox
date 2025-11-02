@@ -83,6 +83,10 @@ enum Commands {
         /// Optimization level (none, basic, advanced, maximum)
         #[arg(long, default_value = "advanced")]
         optimization: String,
+        
+        /// Use demo/custom translator instead of general translator (e.g., bert-translator for NLP)
+        #[arg(long)]
+        use_demo_translator: bool,
     },
     
     /// Validate a COELANOX container
@@ -140,8 +144,8 @@ fn main() -> CoelanoxResult<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization } => {
-            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization)
+        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator } => {
+            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator)
         }
         Commands::Validate { file } => {
             validate_command(&file)
@@ -161,7 +165,7 @@ fn main() -> CoelanoxResult<()> {
     }
 }
 
-fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str) -> CoelanoxResult<()> {
+fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool) -> CoelanoxResult<()> {
     info!("Packaging model: {} -> {}", input, output);
     info!("Model type: {}", model_type);
     
@@ -209,10 +213,14 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     }
     
     // Create packager with environment detection
+    eprintln!("🔧 Creating packager...");
     let packager = CoelanoxPackager::new()?;
+    eprintln!("✅ Packager created successfully");
     
     // Get environment info
+    eprintln!("🔍 Getting environment info...");
     let env = packager.get_environment();
+    eprintln!("✅ Environment info retrieved");
     info!("Detected environment:");
     info!("  OS: {}", env.os);
     info!("  Architecture: {}", env.architecture);
@@ -242,7 +250,13 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     info!("Target hardware: {:?}", hardware_target);
     
     // Package the model
-    let container = packager.package(std::path::Path::new(input), hardware_target, model_type, input_shapes, output_shapes)?;
+    eprintln!("🚀 About to call packager.package()...");
+    eprintln!("   Input: {}", input);
+    eprintln!("   Target: {:?}", hardware_target);
+    eprintln!("   Model type: {}", model_type);
+    
+    let container = packager.package(std::path::Path::new(input), hardware_target, model_type, input_shapes, output_shapes, use_demo_translator)?;
+    eprintln!("✅ packager.package() returned successfully");
     
     // Save container to binary file using the proper output path
     container.write_binary_file(&final_output_path)?;

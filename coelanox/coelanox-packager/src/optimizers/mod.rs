@@ -119,176 +119,22 @@ impl CpuOptimizer {
         node
     }
     
-    /// Apply operator fusion optimizations
-    fn apply_fusion_optimizations(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
-        let mut processed_nodes = std::collections::HashSet::new();
-        
+    /// Add nodes from IR to optimized IR (no fusion - keep operations separate)
+    fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
+        // Keep operations separate - no fusion
+        // Simply copy all nodes from IR to optimized IR
         for node in &ir.nodes {
-            if processed_nodes.contains(&node.id) {
-                continue; // Skip already processed nodes
-            }
-            
-            // Pattern 1: Conv + ReLU fusion
-            if node.op_type == OpType::Convolution && ir.has_single_consumer(node) {
-                let consumer_ids: Vec<_> = node.output_tensors.iter()
-                    .flat_map(|tensor_id| ir.get_consumer_nodes(*tensor_id))
-                    .collect();
-                
-                if let Some(consumer_id) = consumer_ids.first() {
-                    if let Some(consumer) = ir.nodes.get(consumer_id.0) {
-                        if consumer.op_type == OpType::Relu && ir.can_fuse_nodes(node, consumer) {
-                            // Create fused ConvReLU node
-                            let mut fused_node = node.clone();
-                            fused_node.op_type = OpType::Custom("ConvReLU".to_string());
-                            fused_node.add_attribute("fused_conv_relu".to_string(), Attribute::Bool(true));
-                            fused_node.add_attribute("cpu_optimized".to_string(), Attribute::Bool(true));
-                            
-                            // Use the ReLU's output tensor as the fused node's output
-                            fused_node.output_tensors = consumer.output_tensors.clone();
-                            
-                            optimized_ir.add_optimized_node(fused_node);
-                            
-                            // Mark both nodes as processed
-                            processed_nodes.insert(node.id);
-                            processed_nodes.insert(consumer.id);
-                            continue;
-                        }
-                    }
-                }
-            }
-            
-            // Pattern 2: MatMul + Add fusion (common in linear layers)
-            if node.op_type == OpType::MatMul && ir.has_single_consumer(node) {
-                let consumer_ids: Vec<_> = node.output_tensors.iter()
-                    .flat_map(|tensor_id| ir.get_consumer_nodes(*tensor_id))
-                    .collect();
-                
-                if let Some(consumer_id) = consumer_ids.first() {
-                    if let Some(consumer) = ir.nodes.get(consumer_id.0) {
-                        if consumer.op_type == OpType::Add && ir.can_fuse_nodes(node, consumer) {
-                            // Create fused MatMulAdd node
-                            let mut fused_node = node.clone();
-                            fused_node.op_type = OpType::Custom("MatMulAdd".to_string());
-                            fused_node.add_attribute("fused_matmul_add".to_string(), Attribute::Bool(true));
-                            fused_node.add_attribute("cpu_optimized".to_string(), Attribute::Bool(true));
-                            fused_node.add_attribute("gemm_bias".to_string(), Attribute::Bool(true));
-                            
-                            // Use the Add's output tensor as the fused node's output
-                            fused_node.output_tensors = consumer.output_tensors.clone();
-                            
-                            optimized_ir.add_optimized_node(fused_node);
-                            
-                            // Mark both nodes as processed
-                            processed_nodes.insert(node.id);
-                            processed_nodes.insert(consumer.id);
-                            continue;
-                        }
-                    }
-                }
-            }
-            
-            // Pattern 4: LayerNorm + GELU fusion (common in transformers)
-            if node.op_type == OpType::LayerNorm && ir.has_single_consumer(node) {
-                let consumer_ids: Vec<_> = node.output_tensors.iter()
-                    .flat_map(|tensor_id| ir.get_consumer_nodes(*tensor_id))
-                    .collect();
-                
-                if let Some(consumer_id) = consumer_ids.first() {
-                    if let Some(consumer) = ir.nodes.get(consumer_id.0) {
-                        if consumer.op_type == OpType::Gelu && ir.can_fuse_nodes(node, consumer) {
-                            // Create fused LayerNormGELU node
-                            let mut fused_node = node.clone();
-                            fused_node.op_type = OpType::Custom("LayerNormGELU".to_string());
-                            fused_node.add_attribute("fused_layernorm_gelu".to_string(), Attribute::Bool(true));
-                            fused_node.add_attribute("cpu_optimized".to_string(), Attribute::Bool(true));
-                            fused_node.add_attribute("transformer_optimized".to_string(), Attribute::Bool(true));
-                            
-                            // Use the GELU's output tensor as the fused node's output
-                            fused_node.output_tensors = consumer.output_tensors.clone();
-                            
-                            optimized_ir.add_optimized_node(fused_node);
-                            
-                            // Mark both nodes as processed
-                            processed_nodes.insert(node.id);
-                            processed_nodes.insert(consumer.id);
-                            continue;
-                        }
-                    }
-                }
-            }
-            
-            // Pattern 5: Sigmoid + Multiply fusion (common in attention mechanisms)
-            if node.op_type == OpType::Sigmoid && ir.has_single_consumer(node) {
-                let consumer_ids: Vec<_> = node.output_tensors.iter()
-                    .flat_map(|tensor_id| ir.get_consumer_nodes(*tensor_id))
-                    .collect();
-                
-                if let Some(consumer_id) = consumer_ids.first() {
-                    if let Some(consumer) = ir.nodes.get(consumer_id.0) {
-                        if consumer.op_type == OpType::Multiply && ir.can_fuse_nodes(node, consumer) {
-                            // Create fused SigmoidMultiply node (attention gate)
-                            let mut fused_node = node.clone();
-                            fused_node.op_type = OpType::Custom("SigmoidMultiply".to_string());
-                            fused_node.add_attribute("fused_sigmoid_multiply".to_string(), Attribute::Bool(true));
-                            fused_node.add_attribute("cpu_optimized".to_string(), Attribute::Bool(true));
-                            fused_node.add_attribute("attention_gate".to_string(), Attribute::Bool(true));
-                            
-                            // Use the Multiply's output tensor as the fused node's output
-                            fused_node.output_tensors = consumer.output_tensors.clone();
-                            
-                            optimized_ir.add_optimized_node(fused_node);
-                            
-                            // Mark both nodes as processed
-                            processed_nodes.insert(node.id);
-                            processed_nodes.insert(consumer.id);
-                            continue;
-                        }
-                    }
-                }
-            }
-            
-            // Add the original node if not fused
             optimized_ir.add_optimized_node(node.clone());
         }
         
         Ok(())
     }
     
-    /// Add optimized intermediate tensors (for operator fusion results)
-    fn add_optimized_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
-        // Add intermediate tensors for fused operations
-        let fused_node_ids: Vec<_> = optimized_ir.optimized_nodes.iter()
-            .filter(|node| {
-                matches!(node.op_type, 
-                    OpType::Custom(ref name) if name == "ConvReLU" || 
-                                               name == "MatMulAdd" || 
-                                               name == "AddReLU" ||
-                                               name == "LayerNormGELU" ||
-                                               name == "SigmoidMultiply")
-            })
-            .map(|node| node.id.0)
-            .collect();
-            
-        for node_id in fused_node_ids {
-            // Find the fused node to get its operation type and input tensors
-            if let Some(fused_node) = optimized_ir.optimized_nodes.iter()
-                .find(|node| node.id.0 == node_id) {
-                
-                let fused_op_name = match &fused_node.op_type {
-                    OpType::Custom(name) => name.as_str(),
-                    _ => continue,
-                };
-                
-                // Infer the output shape using shape inference
-                if let Some(output_shape) = ir.infer_fused_output_shape(fused_op_name, &fused_node.input_tensors) {
-                    let fused_tensor = IntermediateTensor {
-                        name: format!("{}_fused_intermediate", node_id),
-                        shape: output_shape,
-                        data_type: DataType::Float32,
-                    };
-                    optimized_ir.add_intermediate_tensor(fused_tensor);
-                }
-            }
+    /// Add intermediate tensors from IR (no fusion-specific logic needed)
+    fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
+        // Copy intermediate tensors from original IR
+        for tensor in &ir.intermediate_tensors {
+            optimized_ir.add_intermediate_tensor(tensor.clone());
         }
     }
 }
@@ -298,30 +144,29 @@ impl HardwareOptimizer for CpuOptimizer {
         // Create optimized IR efficiently sharing weights
         let mut optimized_ir = OptimizedIR::new(ir, target);
         
-        // === REAL GRAPH TRANSFORMATIONS ===
+        // === PRIMITIVES-ONLY OPTIMIZATIONS (NO FUSION) ===
         
-        // Pass 1: Apply operator fusion optimizations (Conv+ReLU, MatMul+Add, etc.)
-        self.apply_fusion_optimizations(ir, &mut optimized_ir)?;
+        // Pass 1: Add all nodes from IR to optimized IR (keep operations separate)
+        self.add_nodes_without_fusion(ir, &mut optimized_ir)?;
         
-        // Pass 2: Apply individual optimizations to ALL nodes currently in the optimized graph
+        // Pass 2: Apply individual optimizations to each primitive operation
         let mut final_nodes = Vec::with_capacity(optimized_ir.optimized_nodes.len());
         
-        // Take ownership of the nodes added by the fusion pass
+        // Apply optimizations to each node (keeping them separate)
         for mut node in optimized_ir.optimized_nodes {
-            // Apply the attribute-setting passes to every node (fused or not)
+            // Apply individual primitive optimizations
             node = self.replace_with_cpu_optimized_ops(node);
             node = self.apply_cpu_optimizations(node, ir);
             node = self.optimize_memory_layout(node, ir);
             node = self.add_simd_hints(node);
-            final_nodes.push(node); // Add the fully processed node to the final list
+            final_nodes.push(node);
         }
         
-        // Replace the potentially partially processed nodes with the fully processed ones
+        // Replace with optimized nodes
         optimized_ir.optimized_nodes = final_nodes;
         
-        // Add any new intermediate tensors created during optimization
-        // (e.g., from operator fusion)
-        self.add_optimized_intermediate_tensors(&mut optimized_ir, ir);
+        // Add intermediate tensors from original IR
+        self.add_intermediate_tensors(&mut optimized_ir, ir);
         
         Ok(optimized_ir)
     }
@@ -437,66 +282,22 @@ impl GpuOptimizer {
         node
     }
     
-    /// Apply operator fusion optimizations for GPU
-    fn apply_gpu_fusion_optimizations(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
-        // Look for Conv + BatchNorm + ReLU fusion opportunities (common GPU pattern)
-        for (i, node) in ir.nodes.iter().enumerate() {
-            if node.op_type == OpType::Convolution {
-                // Check for Conv -> BatchNorm -> ReLU pattern
-                if let Some(bn_node) = ir.nodes.get(i + 1) {
-                    if bn_node.op_type == OpType::BatchNorm {
-                        if let Some(relu_node) = ir.nodes.get(i + 2) {
-                            if relu_node.op_type == OpType::Relu {
-                                // Create fused ConvBatchNormReLU node
-                                let mut fused_node = node.clone();
-                                fused_node.op_type = OpType::Custom("ConvBatchNormReLU".to_string());
-                                fused_node.add_attribute("fused_conv_bn_relu".to_string(), Attribute::Bool(true));
-                                fused_node.add_attribute("gpu_optimized".to_string(), Attribute::Bool(true));
-                                fused_node.add_attribute("tensor_cores".to_string(), Attribute::Bool(true));
-                                
-                                // Use the ReLU's output tensor as the fused node's output
-                                fused_node.output_tensors = relu_node.output_tensors.clone();
-                                
-                                optimized_ir.add_optimized_node(fused_node);
-                                
-                                // Skip the BatchNorm and ReLU nodes since they're fused
-                                continue;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Add the original node if not fused
+    /// Add nodes from IR to optimized IR (no fusion - keep operations separate)
+    fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
+        // Keep operations separate - no fusion
+        // Simply copy all nodes from IR to optimized IR
+        for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
         
         Ok(())
     }
     
-    /// Add optimized intermediate tensors (for GPU fusion results)
-    fn add_optimized_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
-        // Add intermediate tensors for fused operations
-        let fused_node_ids: Vec<_> = optimized_ir.optimized_nodes.iter()
-            .filter(|node| node.op_type == OpType::Custom("ConvBatchNormReLU".to_string()))
-            .map(|node| node.id.0)
-            .collect();
-            
-        for node_id in fused_node_ids {
-            // Find the fused node to get its operation type and input tensors
-            if let Some(fused_node) = optimized_ir.optimized_nodes.iter()
-                .find(|node| node.id.0 == node_id) {
-                
-                // Infer the output shape using shape inference
-                if let Some(output_shape) = ir.infer_fused_output_shape("ConvBatchNormReLU", &fused_node.input_tensors) {
-                    let fused_tensor = IntermediateTensor {
-                        name: format!("{}_gpu_fused_intermediate", node_id),
-                        shape: output_shape,
-                        data_type: DataType::Float32,
-                    };
-                    optimized_ir.add_intermediate_tensor(fused_tensor);
-                }
-            }
+    /// Add intermediate tensors from IR (no fusion-specific logic needed)
+    fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
+        // Copy intermediate tensors from original IR
+        for tensor in &ir.intermediate_tensors {
+            optimized_ir.add_intermediate_tensor(tensor.clone());
         }
     }
 }
@@ -506,30 +307,29 @@ impl HardwareOptimizer for GpuOptimizer {
         // Create optimized IR efficiently sharing weights
         let mut optimized_ir = OptimizedIR::new(ir, target);
         
-        // === REAL GPU GRAPH TRANSFORMATIONS ===
+        // === PRIMITIVES-ONLY OPTIMIZATIONS (NO FUSION) ===
         
-        // Pass 1: Apply GPU-specific fusion optimizations (Conv+BatchNorm+ReLU, etc.)
-        self.apply_gpu_fusion_optimizations(ir, &mut optimized_ir)?;
+        // Pass 1: Add all nodes from IR to optimized IR (keep operations separate)
+        self.add_nodes_without_fusion(ir, &mut optimized_ir)?;
         
-        // Pass 2: Apply individual optimizations to ALL nodes currently in the optimized graph
+        // Pass 2: Apply individual optimizations to each primitive operation
         let mut final_nodes = Vec::with_capacity(optimized_ir.optimized_nodes.len());
         
-        // Take ownership of the nodes added by the fusion pass
+        // Apply optimizations to each node (keeping them separate)
         for mut node in optimized_ir.optimized_nodes {
-            // Apply the attribute-setting passes to every node (fused or not)
+            // Apply individual primitive optimizations
             node = self.replace_with_gpu_optimized_ops(node);
             node = self.apply_gpu_optimizations(node, ir);
             node = self.optimize_gpu_memory_layout(node, ir);
             node = self.add_cuda_hints(node);
-            final_nodes.push(node); // Add the fully processed node to the final list
+            final_nodes.push(node);
         }
         
-        // Replace the potentially partially processed nodes with the fully processed ones
+        // Replace with optimized nodes
         optimized_ir.optimized_nodes = final_nodes;
         
-        // Add any new intermediate tensors created during optimization
-        // (e.g., from operator fusion)
-        self.add_optimized_intermediate_tensors(&mut optimized_ir, ir);
+        // Add intermediate tensors from original IR
+        self.add_intermediate_tensors(&mut optimized_ir, ir);
         
         Ok(optimized_ir)
     }
@@ -645,63 +445,22 @@ impl EdgeOptimizer {
         node
     }
     
-    /// Apply operator fusion optimizations for Edge devices
-    fn apply_edge_fusion_optimizations(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
-        // Look for quantization-friendly fusion patterns (Conv + ReLU, Add + ReLU)
-        for (i, node) in ir.nodes.iter().enumerate() {
-            if node.op_type == OpType::Convolution {
-                // Check for Conv -> ReLU pattern (common in mobile networks)
-                if let Some(relu_node) = ir.nodes.get(i + 1) {
-                    if relu_node.op_type == OpType::Relu {
-                        // Create fused ConvReLU node optimized for Edge
-                        let mut fused_node = node.clone();
-                        fused_node.op_type = OpType::Custom("EdgeConvReLU".to_string());
-                        fused_node.add_attribute("fused_conv_relu".to_string(), Attribute::Bool(true));
-                        fused_node.add_attribute("edge_optimized".to_string(), Attribute::Bool(true));
-                        fused_node.add_attribute("quantized".to_string(), Attribute::Bool(true));
-                        fused_node.add_attribute("int8_ready".to_string(), Attribute::Bool(true));
-                        
-                        // Use the ReLU's output tensor as the fused node's output
-                        fused_node.output_tensors = relu_node.output_tensors.clone();
-                        
-                        optimized_ir.add_optimized_node(fused_node);
-                        
-                        // Skip the next ReLU node since it's fused
-                        continue;
-                    }
-                }
-            }
-            
-            // Add the original node if not fused
+    /// Add nodes from IR to optimized IR (no fusion - keep operations separate)
+    fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
+        // Keep operations separate - no fusion
+        // Simply copy all nodes from IR to optimized IR
+        for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
         
         Ok(())
     }
     
-    /// Add optimized intermediate tensors (for Edge fusion results)
-    fn add_optimized_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
-        // Add intermediate tensors for fused operations
-        let fused_node_ids: Vec<_> = optimized_ir.optimized_nodes.iter()
-            .filter(|node| node.op_type == OpType::Custom("EdgeConvReLU".to_string()))
-            .map(|node| node.id.0)
-            .collect();
-            
-        for node_id in fused_node_ids {
-            // Find the fused node to get its operation type and input tensors
-            if let Some(fused_node) = optimized_ir.optimized_nodes.iter()
-                .find(|node| node.id.0 == node_id) {
-                
-                // Infer the output shape using shape inference
-                if let Some(output_shape) = ir.infer_fused_output_shape("EdgeConvReLU", &fused_node.input_tensors) {
-                    let fused_tensor = IntermediateTensor {
-                        name: format!("{}_edge_fused_intermediate", node_id),
-                        shape: output_shape,
-                        data_type: DataType::UInt8, // Edge uses quantized data
-                    };
-                    optimized_ir.add_intermediate_tensor(fused_tensor);
-                }
-            }
+    /// Add intermediate tensors from IR (no fusion-specific logic needed)
+    fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
+        // Copy intermediate tensors from original IR
+        for tensor in &ir.intermediate_tensors {
+            optimized_ir.add_intermediate_tensor(tensor.clone());
         }
     }
 }
@@ -711,30 +470,29 @@ impl HardwareOptimizer for EdgeOptimizer {
         // Create optimized IR efficiently sharing weights
         let mut optimized_ir = OptimizedIR::new(ir, target);
         
-        // === REAL EDGE GRAPH TRANSFORMATIONS ===
+        // === PRIMITIVES-ONLY OPTIMIZATIONS (NO FUSION) ===
         
-        // Pass 1: Apply Edge-specific fusion optimizations (quantization-friendly patterns)
-        self.apply_edge_fusion_optimizations(ir, &mut optimized_ir)?;
+        // Pass 1: Add all nodes from IR to optimized IR (keep operations separate)
+        self.add_nodes_without_fusion(ir, &mut optimized_ir)?;
         
-        // Pass 2: Apply individual optimizations to ALL nodes currently in the optimized graph
+        // Pass 2: Apply individual optimizations to each primitive operation
         let mut final_nodes = Vec::with_capacity(optimized_ir.optimized_nodes.len());
         
-        // Take ownership of the nodes added by the fusion pass
+        // Apply optimizations to each node (keeping them separate)
         for mut node in optimized_ir.optimized_nodes {
-            // Apply the attribute-setting passes to every node (fused or not)
+            // Apply individual primitive optimizations
             node = self.replace_with_edge_optimized_ops(node);
             node = self.apply_edge_optimizations(node, ir);
             node = self.optimize_edge_memory_layout(node, ir);
             node = self.add_power_hints(node);
-            final_nodes.push(node); // Add the fully processed node to the final list
+            final_nodes.push(node);
         }
         
-        // Replace the potentially partially processed nodes with the fully processed ones
+        // Replace with optimized nodes
         optimized_ir.optimized_nodes = final_nodes;
         
-        // Add any new intermediate tensors created during optimization
-        // (e.g., from operator fusion)
-        self.add_optimized_intermediate_tensors(&mut optimized_ir, ir);
+        // Add intermediate tensors from original IR
+        self.add_intermediate_tensors(&mut optimized_ir, ir);
         
         Ok(optimized_ir)
     }

@@ -125,7 +125,7 @@ impl Default for TemplateRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::Attribute;
+    use coelanox_core::ir::Attribute;
 
     #[test]
     fn test_template_registry_creation() {

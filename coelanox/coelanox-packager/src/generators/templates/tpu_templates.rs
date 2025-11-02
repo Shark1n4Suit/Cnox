@@ -238,7 +238,7 @@ impl super::HardwareTemplate for TpuTemplates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::Attribute;
+    use coelanox_core::ir::Attribute;
 
     #[test]
     fn test_tpu_template_placeholder() {

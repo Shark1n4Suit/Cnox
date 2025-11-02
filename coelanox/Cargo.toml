@@ -4,7 +4,8 @@ members = [
     "coelanox-packager", 
     "coelanox-runtime",
     "coelanox-cli",
-    "translators/onnx-translator"
+    "translators/onnx-translator",
+    "translators/bert-translator"
 ]
 
 [workspace.dependencies]

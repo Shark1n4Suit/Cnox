@@ -508,7 +508,8 @@ impl CoelanoxContainer {
         // Write optimized code
         writer.write_all(&self.optimized_code)?;
         
-        // Write compressed weights
+        // Write compressed weights with length prefix
+        writer.write_all(&(self.compressed_weights.len() as u32).to_le_bytes())?;
         writer.write_all(&self.compressed_weights)?;
         
         // Write IR data with length prefix
@@ -540,9 +541,14 @@ impl CoelanoxContainer {
         let mut optimized_code = vec![0u8; manifest.model_size];
         reader.read_exact(&mut optimized_code)?;
         
+        // Read compressed weights length
+        let mut weights_len_bytes = [0u8; 4];
+        reader.read_exact(&mut weights_len_bytes)?;
+        let weights_len = u32::from_le_bytes(weights_len_bytes) as usize;
+        
         // Read compressed weights
-        let mut compressed_weights = Vec::new();
-        reader.read_to_end(&mut compressed_weights)?;
+        let mut compressed_weights = vec![0u8; weights_len];
+        reader.read_exact(&mut compressed_weights)?;
         
         // Read IR data length
         let mut ir_len_bytes = [0u8; 4];

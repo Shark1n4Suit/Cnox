@@ -25,6 +25,7 @@ struct SerializedOptimizedIR {
 
 pub mod plugins;
 pub mod optimizers;
+pub mod optimization;
 pub mod generators;
 pub mod utils;
 
@@ -224,19 +225,37 @@ impl CoelanoxPackager {
     }
     
     /// Package a model into a COELANOX container
-    pub fn package(&self, model_path: &Path, target: HardwareTarget, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>) -> CoelanoxResult<CoelanoxContainer> {
-        // Detect model format
-        let model_data = std::fs::read(model_path)
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool) -> CoelanoxResult<CoelanoxContainer> {
+        eprintln!("📦 Starting package for: {}", model_path.display());
+        eprintln!("📦 Model path: {:?}", model_path);
+        
+        // Detect model format (read just first few bytes for format detection)
+        println!("🔍 Detecting model format...");
+        let mut file = std::fs::File::open(model_path)
+            .map_err(|e| CoelanoxError::FileSystem(e))?;
+        let mut magic = [0u8; 4];
+        std::io::Read::read_exact(&mut file, &mut magic)
             .map_err(|e| CoelanoxError::FileSystem(e))?;
         
-        let format = self.detect_format(&model_data)?;
+        let format = self.detect_format(&magic)?;
+        println!("✅ Detected format: {:?}", format);
+        
+        // Re-read full file (we need it later for weight extraction)
+        println!("📖 Reading full model file...");
+        let model_data = std::fs::read(model_path)
+            .map_err(|e| CoelanoxError::FileSystem(e))?;
+        println!("✅ File read successfully ({}MB)", model_data.len() / (1024 * 1024));
         
         // Get appropriate translator
-        let translator = self.plugin_manager.find_plugin(format.clone())
+        println!("🔍 Looking for translator for format: {:?}", format);
+        let translator = self.plugin_manager.find_plugin_with_preference(format.clone(), Some(use_demo_translator))
             .ok_or_else(|| CoelanoxError::UnsupportedModelFormat(format!("No translator for format: {:?}", format)))?;
+        println!("✅ Found translator: {} ({})", translator.name(), if use_demo_translator { "demo/custom translator" } else { "standard translator" });
         
         // Translate model to Universal IR using file path (supports sharded models)
+        println!("🔄 Starting translation from path: {}", model_path.display());
         let ir = translator.translate_from_path(model_path)?;
+        println!("✅ Translation complete");
         
         // Determine optimization level based on environment
         let optimization_level = self.determine_optimization_level(&target);
@@ -280,7 +299,7 @@ impl CoelanoxPackager {
     /// Package with automatic target detection
     pub fn package_auto(&self, model_path: &Path) -> CoelanoxResult<CoelanoxContainer> {
         let recommended_target = self.environment.recommended_target();
-        self.package(model_path, recommended_target, "custom", None, None)
+        self.package(model_path, recommended_target, "custom", None, None, false)
     }
     
     /// Detect model format from data
