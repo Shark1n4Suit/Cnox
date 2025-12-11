@@ -10,7 +10,7 @@ use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
 
 /// COELANOX binary format constants
 pub const COELANOX_BINARY_VERSION: u32 = 0x00010000; // Version 1.0.0
-pub const COELANOX_HEADER_SIZE: usize = 32; // Fixed header size
+pub const COELANOX_HEADER_SIZE: usize = 76; // Fixed header size: 4(magic) + 4(version) + 4(flags) + 8(container_size) + 8(manifest_offset) + 8(code_offset) + 32(security_hash) + 8(reserved) = 76 bytes
 pub const COELANOX_MANIFEST_OFFSET: usize = COELANOX_HEADER_SIZE;
 pub const COELANOX_CODE_OFFSET: usize = COELANOX_MANIFEST_OFFSET + 1024; // Approximate manifest size
 

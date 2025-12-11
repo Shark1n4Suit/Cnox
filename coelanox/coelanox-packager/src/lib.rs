@@ -263,8 +263,8 @@ impl CoelanoxPackager {
         // Optimize IR for target hardware
         let optimized_ir = self.optimize_ir(ir.clone(), &target, optimization_level)?;
         
-        // Generate machine code
-        let machine_code = self.generate_machine_code(&optimized_ir, &target)?;
+        // Generate machine code (pass original IR metadata for input shape information)
+        let machine_code = self.generate_machine_code(&optimized_ir, &target, &ir.metadata.input_shapes)?;
         
         // Extract weights from model
         let weights = self.extract_weights(&model_data, &format)?;
@@ -273,14 +273,24 @@ impl CoelanoxPackager {
         let (compressed_weights, compression_type) = self.compress_weights(&weights)?;
         
         // For serialization, we need to create a copy without Arc
-        // Create a serializable version with flattened weights
+        // Create weight tensors WITHOUT data (weights are already in compressed_weights)
+        // This saves significant space - weights are stored once, compressed
+        let weight_tensors_metadata: Vec<WeightTensor> = optimized_ir.shared_weights.as_ref().iter()
+            .map(|wt| {
+                // Create a new WeightTensor with same metadata but empty data
+                // Runtime will reconstruct weights from compressed_weights
+                WeightTensor::new(wt.name.clone(), wt.shape.clone(), wt.data_type.clone())
+            })
+            .collect();
+        
+        // Create a serializable version with weight metadata only (no data duplication)
         let serializable_ir = SerializedOptimizedIR {
             target: optimized_ir.target.clone(),
             optimized_nodes: optimized_ir.optimized_nodes.clone(),
             intermediate_tensors: optimized_ir.intermediate_tensors.clone(),
             optimization_metadata: optimized_ir.optimization_metadata.clone(),
             original_model_name: optimized_ir.original_model_name.clone(),
-            weight_tensors: optimized_ir.shared_weights.as_ref().clone(),
+            weight_tensors: weight_tensors_metadata,
         };
         
         // Serialize IR for runtime use
@@ -404,10 +414,12 @@ impl CoelanoxPackager {
     }
     
     /// Generate machine code for target hardware
-    fn generate_machine_code(&self, optimized_ir: &coelanox_core::ir::OptimizedIR, target: &HardwareTarget) -> CoelanoxResult<Vec<u8>> {
+    /// 
+    /// Takes input_shapes to determine the number of inputs for proper function signature generation
+    fn generate_machine_code(&self, optimized_ir: &coelanox_core::ir::OptimizedIR, target: &HardwareTarget, input_shapes: &[coelanox_core::ir::Shape]) -> CoelanoxResult<Vec<u8>> {
         match target {
             HardwareTarget::Cpu => {
-                let generator = generators::CpuCodeGenerator::new();
+                let generator = generators::cpu_codegen::CpuCodeGenerator::new();
                 generator.generate(optimized_ir)
             }
             HardwareTarget::Gpu => {
@@ -419,18 +431,18 @@ impl CoelanoxPackager {
                 generator.generate(optimized_ir)
             }
             HardwareTarget::Custom(_) => {
-                // For custom targets, use CPU generator as fallback
-                let generator = generators::CpuCodeGenerator::new();
+                // For custom targets, use GPU generator as fallback
+                let generator = generators::GpuCodeGenerator::new();
                 generator.generate(optimized_ir)
             }
             HardwareTarget::NeuralEngine => {
-                // For Neural Engine, use CPU generator as fallback for now
-                let generator = generators::CpuCodeGenerator::new();
+                // For Neural Engine, use GPU generator as fallback for now
+                let generator = generators::GpuCodeGenerator::new();
                 generator.generate(optimized_ir)
             }
             HardwareTarget::NPU => {
-                // For NPU, use CPU generator as fallback for now
-                let generator = generators::CpuCodeGenerator::new();
+                // For NPU, use GPU generator as fallback for now
+                let generator = generators::GpuCodeGenerator::new();
                 generator.generate(optimized_ir)
             }
         }

@@ -53,6 +53,11 @@ pub struct CoelanoxAiOperationParams {
     pub input_shapes: Vec<Vec<usize>>,
     /// Output tensor shapes
     pub output_shapes: Vec<Vec<usize>>,
+    /// Whether input tensors are contiguous in memory
+    /// False indicates non-contiguous (e.g., from Slice, Transpose) - vendor must handle
+    pub input_is_contiguous: Vec<bool>,
+    /// Whether output tensors should be contiguous in memory
+    pub output_is_contiguous: Vec<bool>,
     /// Operation-specific attributes
     pub attributes: HashMap<String, CoelanoxAttribute>,
     /// Optimization hints for the operation

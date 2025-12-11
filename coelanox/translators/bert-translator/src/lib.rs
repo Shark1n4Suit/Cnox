@@ -562,6 +562,10 @@ impl BertTranslator {
         // Extract input/output shapes from graph
         if let Some(graph) = &onnx_model.graph {
             // Input shapes
+            // FIX: Combine all inputs into a single flattened input shape
+            // This allows the code generator to use a simple single-input signature
+            let mut total_elements = 0;
+            
             for input in &graph.input {
                 // Skip inputs that are weight tensors (from initializers)
                 let is_weight = graph.initializer.iter().any(|init| init.name == input.name);
@@ -595,10 +599,16 @@ impl BertTranslator {
                         };
                         
                         if !dims.is_empty() {
-                            ir.metadata.add_input_shape(Shape::new(dims));
+                            let shape = Shape::new(dims);
+                            total_elements += shape.total_elements();
                         }
                     }
                 }
+            }
+            
+            // Combine all inputs into a single flattened input shape
+            if total_elements > 0 {
+                ir.metadata.add_input_shape(Shape::new(vec![total_elements]));
             }
             
             // Output shapes

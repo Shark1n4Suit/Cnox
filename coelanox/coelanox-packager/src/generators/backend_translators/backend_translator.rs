@@ -13,12 +13,17 @@ use coelanox_core::{CoelanoxResult, CoelanoxError};
 /// 
 /// This trait defines the interface that hardware vendors must implement
 /// to translate COELANOX AI operations to their specific hardware.
+/// 
+/// For AOT codegen, partners generate binary machine code directly (Vec<u8>),
+/// not assembly strings. This allows maximum performance and control.
 pub trait BackendTranslator: Send + Sync {
-    /// Translate COELANOX AI operation to hardware-specific code
-    fn translate_operation(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams) -> CoelanoxResult<String>;
+    /// Translate COELANOX AI operation to hardware-specific binary machine code
+    /// Returns Vec<u8> containing the actual machine code bytes ready for execution
+    fn translate_operation(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams) -> CoelanoxResult<Vec<u8>>;
     
     /// Optimize code for specific hardware
-    fn optimize_code(&self, code: &str, target: HardwareTarget) -> CoelanoxResult<String>;
+    /// Takes binary machine code and returns optimized binary machine code
+    fn optimize_code(&self, code: &[u8], target: HardwareTarget) -> CoelanoxResult<Vec<u8>>;
     
     /// Get supported hardware targets
     fn supported_hardware(&self) -> Vec<HardwareTarget>;
@@ -36,7 +41,8 @@ pub trait BackendTranslator: Send + Sync {
     fn get_performance_estimate(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams) -> CoelanoxResult<CoelanoxPerformanceEstimate>;
     
     /// Apply optimization hints to code
-    fn apply_optimization_hints(&self, code: &str, hints: &[CoelanoxOptimizationHint]) -> CoelanoxResult<String>;
+    /// Takes binary machine code and returns optimized binary machine code
+    fn apply_optimization_hints(&self, code: &[u8], hints: &[CoelanoxOptimizationHint]) -> CoelanoxResult<Vec<u8>>;
     
     /// Validate operation parameters
     fn validate_parameters(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams) -> CoelanoxResult<()>;
@@ -127,15 +133,15 @@ impl BackendTranslatorRegistry {
         self.translators.get(target).map(|t| t.as_ref())
     }
     
-    /// Translate operation to hardware-specific code
-    pub fn translate_operation(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams, target: HardwareTarget) -> CoelanoxResult<String> {
+    /// Translate operation to hardware-specific binary machine code
+    pub fn translate_operation(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams, target: HardwareTarget) -> CoelanoxResult<Vec<u8>> {
         let translator = self.translators.get(&target)
             .ok_or_else(|| CoelanoxError::UnsupportedHardwareTarget(target.clone()))?;
         
         // Validate parameters
         translator.validate_parameters(operation, params)?;
         
-        // Translate operation to hardware-specific code
+        // Translate operation to hardware-specific binary machine code
         let hardware_code = translator.translate_operation(operation, params)?;
         
         // Apply optimization hints

@@ -1,0 +1,14 @@
+[package]
+name = "coelanox-tests"
+version = "0.1.0"
+edition = "2021"
+
+[[test]]
+name = "operation_template_validation"
+path = "operation_template_validation.rs"
+
+[dependencies]
+coelanox-packager = { path = "../coelanox-packager" }
+coelanox-core = { path = "../coelanox-core" }
+libc = "0.2"
+

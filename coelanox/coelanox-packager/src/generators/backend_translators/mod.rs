@@ -7,9 +7,10 @@
 pub mod coelanox_operations;
 pub mod backend_translator;
 pub mod cpu_backend_translator;
-pub mod gpu_backend_translator;
-pub mod npu_backend_translator;
-pub mod tpu_backend_translator;
+// GPU/NPU backends disabled for MVP - vendors will implement their own
+// pub mod gpu_backend_translator;
+// pub mod npu_backend_translator;
+// pub mod tpu_backend_translator;
 
 // Re-export main types
 pub use coelanox_operations::{
@@ -21,9 +22,10 @@ pub use backend_translator::{
     CoelanoxHardwareFeature, CoelanoxDataType, BackendTranslatorRegistry
 };
 pub use cpu_backend_translator::{CpuBackendTranslator, SimdCapability, CpuArchitecture};
-pub use gpu_backend_translator::{GpuBackendTranslator, GpuType};
-pub use npu_backend_translator::{NpuBackendTranslator, NpuType};
-pub use tpu_backend_translator::{TpuBackendTranslator, TpuType};
+// GPU/NPU backends disabled for MVP
+// pub use gpu_backend_translator::{GpuBackendTranslator, GpuType};
+// pub use npu_backend_translator::{NpuBackendTranslator, NpuType};
+// pub use tpu_backend_translator::{TpuBackendTranslator, TpuType};
 
 use coelanox_core::format::HardwareTarget;
 use coelanox_core::{CoelanoxResult, CoelanoxError};
@@ -40,14 +42,15 @@ impl BackendTranslatorFactory {
             HardwareTarget::Cpu => {
                 Ok(Box::new(CpuBackendTranslator::new()))
             }
+            // GPU/NPU backends disabled for MVP - vendors will implement their own
             HardwareTarget::Gpu => {
-                Ok(Box::new(GpuBackendTranslator::new()))
+                Err(CoelanoxError::UnsupportedHardwareTarget(target))
             }
             HardwareTarget::NPU => {
-                Ok(Box::new(NpuBackendTranslator::new()))
+                Err(CoelanoxError::UnsupportedHardwareTarget(target))
             }
             HardwareTarget::Custom(ref name) if name == "TPU" => {
-                Ok(Box::new(TpuBackendTranslator::new()))
+                Err(CoelanoxError::UnsupportedHardwareTarget(target))
             }
             _ => {
                 Err(CoelanoxError::UnsupportedHardwareTarget(target))
@@ -60,28 +63,27 @@ impl BackendTranslatorFactory {
         Box::new(CpuBackendTranslator::new_with_architecture(architecture, simd_capabilities))
     }
     
-    /// Create a GPU translator for specific GPU type
-    pub fn create_gpu_translator(gpu_type: GpuType) -> Box<dyn BackendTranslator> {
-        Box::new(GpuBackendTranslator::new_with_gpu_type(gpu_type))
-    }
+    // GPU/NPU backends disabled for MVP - vendors will implement their own
+    // pub fn create_gpu_translator(gpu_type: GpuType) -> Box<dyn BackendTranslator> {
+    //     Box::new(GpuBackendTranslator::new_with_gpu_type(gpu_type))
+    // }
+    // 
+    // pub fn create_npu_translator(npu_type: NpuType) -> Box<dyn BackendTranslator> {
+    //     Box::new(NpuBackendTranslator::new_with_npu_type(npu_type))
+    // }
+    // 
+    // pub fn create_tpu_translator(tpu_type: TpuType) -> Box<dyn BackendTranslator> {
+    //     Box::new(TpuBackendTranslator::new_with_tpu_type(tpu_type))
+    // }
     
-    /// Create an NPU translator for specific NPU type
-    pub fn create_npu_translator(npu_type: NpuType) -> Box<dyn BackendTranslator> {
-        Box::new(NpuBackendTranslator::new_with_npu_type(npu_type))
-    }
-    
-    /// Create a TPU translator for specific TPU type
-    pub fn create_tpu_translator(tpu_type: TpuType) -> Box<dyn BackendTranslator> {
-        Box::new(TpuBackendTranslator::new_with_tpu_type(tpu_type))
-    }
-    
-    /// Get all supported hardware targets
+    /// Get all supported hardware targets (MVP: CPU only)
     pub fn supported_hardware_targets() -> Vec<HardwareTarget> {
         vec![
             HardwareTarget::Cpu,
-            HardwareTarget::Gpu,
-            HardwareTarget::NPU,
-            HardwareTarget::Custom("TPU".to_string()),
+            // GPU/NPU backends disabled for MVP - vendors will implement their own
+            // HardwareTarget::Gpu,
+            // HardwareTarget::NPU,
+            // HardwareTarget::Custom("TPU".to_string()),
         ]
     }
     
@@ -103,26 +105,27 @@ impl BackendTranslatorManager {
     pub fn new() -> Self {
         let mut registry = BackendTranslatorRegistry::new();
         
-        // Register default translators
+        // Register default translators (MVP: CPU only)
         registry.register_translator(
             HardwareTarget::Cpu,
             BackendTranslatorFactory::create_translator(HardwareTarget::Cpu).unwrap()
         );
         
-        registry.register_translator(
-            HardwareTarget::Gpu,
-            BackendTranslatorFactory::create_translator(HardwareTarget::Gpu).unwrap()
-        );
-        
-        registry.register_translator(
-            HardwareTarget::NPU,
-            BackendTranslatorFactory::create_translator(HardwareTarget::NPU).unwrap()
-        );
-        
-        registry.register_translator(
-            HardwareTarget::Custom("TPU".to_string()),
-            BackendTranslatorFactory::create_translator(HardwareTarget::Custom("TPU".to_string())).unwrap()
-        );
+        // GPU/NPU backends disabled for MVP - vendors will implement their own
+        // registry.register_translator(
+        //     HardwareTarget::Gpu,
+        //     BackendTranslatorFactory::create_translator(HardwareTarget::Gpu).unwrap()
+        // );
+        // 
+        // registry.register_translator(
+        //     HardwareTarget::NPU,
+        //     BackendTranslatorFactory::create_translator(HardwareTarget::NPU).unwrap()
+        // );
+        // 
+        // registry.register_translator(
+        //     HardwareTarget::Custom("TPU".to_string()),
+        //     BackendTranslatorFactory::create_translator(HardwareTarget::Custom("TPU".to_string())).unwrap()
+        // );
         
         Self { registry }
     }
@@ -138,7 +141,7 @@ impl BackendTranslatorManager {
     }
     
     /// Translate operation to hardware-specific code
-    pub fn translate_operation(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams, target: HardwareTarget) -> CoelanoxResult<String> {
+    pub fn translate_operation(&self, operation: &CoelanoxAiOperation, params: &CoelanoxAiOperationParams, target: HardwareTarget) -> CoelanoxResult<Vec<u8>> {
         self.registry.translate_operation(operation, params, target)
     }
     
@@ -194,17 +197,15 @@ mod tests {
         let cpu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::Cpu);
         assert!(cpu_translator.is_ok());
         
-        // Test GPU translator creation
-        let gpu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::Gpu);
-        assert!(gpu_translator.is_ok());
-        
-        // Test NPU translator creation
-        let npu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::NPU);
-        assert!(npu_translator.is_ok());
-        
-        // Test TPU translator creation
-        let tpu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::Custom("TPU".to_string()));
-        assert!(tpu_translator.is_ok());
+        // GPU/NPU backends disabled for MVP
+        // let gpu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::Gpu);
+        // assert!(gpu_translator.is_ok());
+        // 
+        // let npu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::NPU);
+        // assert!(npu_translator.is_ok());
+        // 
+        // let tpu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::Custom("TPU".to_string()));
+        // assert!(tpu_translator.is_ok());
         
         // Test unsupported hardware
         let unsupported = BackendTranslatorFactory::create_translator(HardwareTarget::Custom("UNSUPPORTED".to_string()));
@@ -215,12 +216,13 @@ mod tests {
     fn test_backend_translator_manager() {
         let manager = BackendTranslatorManager::new();
         
-        // Should support multiple hardware targets
+        // MVP: CPU only
         let supported_hardware = manager.list_supported_hardware();
         assert!(supported_hardware.contains(&HardwareTarget::Cpu));
-        assert!(supported_hardware.contains(&HardwareTarget::Gpu));
-        assert!(supported_hardware.contains(&HardwareTarget::NPU));
-        assert!(supported_hardware.contains(&HardwareTarget::Custom("TPU".to_string())));
+        // GPU/NPU backends disabled for MVP
+        // assert!(supported_hardware.contains(&HardwareTarget::Gpu));
+        // assert!(supported_hardware.contains(&HardwareTarget::NPU));
+        // assert!(supported_hardware.contains(&HardwareTarget::Custom("TPU".to_string())));
     }
 
     #[test]
@@ -234,27 +236,25 @@ mod tests {
         assert!(translator.supports_native_coelanox());
     }
 
-    #[test]
-    fn test_gpu_translator_creation() {
-        let translator = BackendTranslatorFactory::create_gpu_translator(GpuType::Nvidia);
-        
-        assert_eq!(translator.name(), "gpu_backend_translator_Nvidia");
-        assert!(!translator.supports_native_coelanox());
-    }
-
-    #[test]
-    fn test_npu_translator_creation() {
-        let translator = BackendTranslatorFactory::create_npu_translator(NpuType::Apple);
-        
-        assert_eq!(translator.name(), "npu_backend_translator_Apple");
-        assert!(!translator.supports_native_coelanox());
-    }
-
-    #[test]
-    fn test_tpu_translator_creation() {
-        let translator = BackendTranslatorFactory::create_tpu_translator(TpuType::Google);
-        
-        assert_eq!(translator.name(), "tpu_backend_translator_Google");
-        assert!(!translator.supports_native_coelanox());
-    }
+    // GPU/NPU backends disabled for MVP
+    // #[test]
+    // fn test_gpu_translator_creation() {
+    //     let translator = BackendTranslatorFactory::create_gpu_translator(GpuType::Nvidia);
+    //     assert_eq!(translator.name(), "gpu_backend_translator_Nvidia");
+    //     assert!(!translator.supports_native_coelanox());
+    // }
+    // 
+    // #[test]
+    // fn test_npu_translator_creation() {
+    //     let translator = BackendTranslatorFactory::create_npu_translator(NpuType::Apple);
+    //     assert_eq!(translator.name(), "npu_backend_translator_Apple");
+    //     assert!(!translator.supports_native_coelanox());
+    // }
+    // 
+    // #[test]
+    // fn test_tpu_translator_creation() {
+    //     let translator = BackendTranslatorFactory::create_tpu_translator(TpuType::Google);
+    //     assert_eq!(translator.name(), "tpu_backend_translator_Google");
+    //     assert!(!translator.supports_native_coelanox());
+    // }
 }

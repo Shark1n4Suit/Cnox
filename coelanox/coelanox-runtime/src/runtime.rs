@@ -23,6 +23,62 @@ use anyhow::{Context, Result as AnyhowResult};
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
+/// Input descriptor for unified multi-input support
+/// This structure allows passing any number of inputs to generated machine code
+/// Using #[repr(C)] ensures C-compatible memory layout for generated code access
+#[repr(C)]
+pub struct InputDescriptor {
+    /// Number of inputs
+    pub num_inputs: usize,
+    /// Array of fat pointers (ptr, len) for each input
+    /// Each element is 16 bytes: 8 bytes ptr + 8 bytes len
+    pub inputs: [FatPtr; 32], // Support up to 32 inputs (can be increased if needed)
+}
+
+/// Fat pointer representation matching Rust slice layout
+/// ptr: *const f32, len: usize
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FatPtr {
+    /// Pointer to the input data
+    pub ptr: *const f32,
+    /// Length of the input data in elements
+    pub len: usize,
+}
+
+impl InputDescriptor {
+    /// Create a new input descriptor from input slices
+    pub fn from_slices(input_slices: &[&[f32]]) -> Self {
+        let mut descriptor = InputDescriptor {
+            num_inputs: input_slices.len().min(32),
+            inputs: [FatPtr { ptr: std::ptr::null(), len: 0 }; 32],
+        };
+        
+        for (i, slice) in input_slices.iter().take(32).enumerate() {
+            descriptor.inputs[i] = FatPtr {
+                ptr: slice.as_ptr(),
+                len: slice.len(),
+            };
+        }
+        
+        descriptor
+    }
+    
+    /// Get the i-th input as a slice (unsafe, but necessary for generated code compatibility)
+    pub unsafe fn get_input(&self, index: usize) -> Option<&[f32]> {
+        if index >= self.num_inputs || index >= 32 {
+            return None;
+        }
+        
+        let fat_ptr = &self.inputs[index];
+        if fat_ptr.ptr.is_null() || fat_ptr.len == 0 {
+            return None;
+        }
+        
+        Some(std::slice::from_raw_parts(fat_ptr.ptr, fat_ptr.len))
+    }
+}
+
 /// Production-ready runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
@@ -226,6 +282,8 @@ pub struct ExecutionState {
     pub max_retries: usize,
     /// Execution timeout
     pub timeout: Duration,
+    /// Output data from execution (stored here for retrieval)
+    pub output: Option<Vec<f32>>,
 }
 
 impl ExecutionState {
@@ -243,6 +301,7 @@ impl ExecutionState {
             retry_count: 0,
             max_retries,
             timeout,
+            output: None,
         }
     }
     
@@ -286,6 +345,14 @@ impl ExecutionState {
     
     pub fn is_expired(&self) -> bool {
         self.start_time.elapsed() > self.timeout
+    }
+    
+    pub fn set_output(&mut self, output: Vec<f32>) {
+        self.output = Some(output);
+    }
+    
+    pub fn get_output(&self) -> Option<Vec<f32>> {
+        self.output.clone()
     }
 }
 
@@ -1004,9 +1071,15 @@ impl CoelanoxRuntime {
         }
         
         // Extract result from execution stage
-        let result = execution_result.metrics.get("result")
-            .and_then(|r| Some(vec![*r as f32])) // Simplified for now
-            .unwrap_or_else(|| vec![0.0]);
+        // The output is stored in execution_state.output, not in metrics
+        let result = if let Some(output) = execution_state.get_output() {
+            output
+        } else {
+            // Fallback: try to get from metrics (legacy code path)
+            execution_result.metrics.get("result")
+                .and_then(|r| Some(vec![*r as f32]))
+                .unwrap_or_else(|| vec![0.0])
+        };
         
         Ok(result)
     }
@@ -1134,6 +1207,9 @@ impl CoelanoxRuntime {
                 let mut metrics = HashMap::new();
                 metrics.insert("output_size".to_string(), output.len() as f64);
                 metrics.insert("execution_time_us".to_string(), stage_start.elapsed().as_micros() as f64);
+                
+                // Store output in execution_state for direct access
+                execution_state.set_output(output.clone());
                 
                 pipeline.advance_stage(StageResult {
                     stage_name: "execution".to_string(),
@@ -1485,6 +1561,7 @@ impl CoelanoxRuntime {
     }
     
     /// Execute machine code from container with proper memory management
+    /// Uses unified descriptor-based calling convention for all models
     fn execute_machine_code(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
         // Calculate output size
         let output_size: usize = container.manifest.output_shapes.iter()
@@ -1494,18 +1571,54 @@ impl CoelanoxRuntime {
         // Create executable memory and run real machine code
         let mut output = vec![0.0f32; output_size];
         
-        // Generate real executable function
-        let executable_func = self.create_executable_function(container, input_data)?;
+        // FIX: Translator now combines all inputs into one flattened input shape
+        // Runtime just passes the flattened input_data directly as a single input
+        // Function signature: fn(&[f32], &mut [f32], &[f32])
+        // Parameters: rdi=input.ptr, rsi=input.len, rdx=output.ptr, rcx=output.len, r8=weights.ptr, r9=weights.len
         
-        // Execute the real machine code
-        executable_func(input_data, &mut output);
+        // Verify input size matches expected (single combined input)
+        let expected_input_size: usize = container.manifest.input_shapes.iter()
+            .map(|shape| shape.iter().product::<usize>())
+            .sum();
+        
+        if input_data.len() != expected_input_size {
+            return Err(CoelanoxError::Runtime(format!(
+                "Input data size mismatch: expected {} elements (combined), got {}",
+                expected_input_size,
+                input_data.len()
+            )));
+        }
+        
+        // Decompress weights
+        let weights = container.decompress_weights()?;
+        
+        // Execute using a raw-ABI compatible signature to guarantee register assignment
+        type CpuFunc = unsafe extern "sysv64" fn(
+            *const f32, usize, // rdi, rsi
+            *mut f32, usize,   // rdx, rcx
+            *const f32, usize  // r8,  r9
+        );
+        let ptr = self.allocate_and_copy_code(container)?;
+        let func: CpuFunc = unsafe { std::mem::transmute(ptr as usize) };
+        info!("🔍 Calling generated CPU native machine code function with {} input elements, {} output elements", 
+              input_data.len(), output.len());
+        info!("✅ Using CPU native execution (no Rust fallback)");
+        unsafe {
+            func(
+                input_data.as_ptr(), input_data.len(),
+                output.as_mut_ptr(), output.len(),
+                weights.as_ptr(), weights.len(),
+            );
+        }
+        info!("✅ CPU native execution completed");
         
         Ok(output)
     }
     
-    /// Create executable function from machine code with proper memory management
-    fn create_executable_function(&self, container: &CoelanoxContainer, _input_data: &[f32]) -> CoelanoxResult<fn(&[f32], &mut [f32])> {
-        // Try to allocate executable memory
+    // Removed create_executable_function: we use raw calling convention above for correctness
+    
+    /// Allocate executable memory and copy machine code
+    fn allocate_and_copy_code(&self, container: &CoelanoxContainer) -> CoelanoxResult<*mut u8> {
         let code_size = container.optimized_code.len();
         let page_size = 4096; // Standard page size
         let aligned_size = ((code_size + page_size - 1) / page_size) * page_size;
@@ -1523,10 +1636,6 @@ impl CoelanoxRuntime {
                     );
                 }
                 
-                // Create function pointer
-                let func_ptr = ptr as usize;
-                let func: fn(&[f32], &mut [f32]) = unsafe { std::mem::transmute(func_ptr) };
-                
                 // Store the memory block for cleanup
                 {
                     let mut executable_memory = self.executable_memory.lock().unwrap();
@@ -1538,8 +1647,8 @@ impl CoelanoxRuntime {
                     metrics.executable_blocks_count = executable_memory.len();
                 }
                 
-                debug!("✅ Created function pointer: 0x{:x}", func_ptr);
-                Ok(func)
+                debug!("✅ Created function pointer: 0x{:x}", ptr as usize);
+                Ok(ptr)
             }
             Err(e) => {
                 error!("❌ Failed to allocate executable memory: {:?}", e);

@@ -3,20 +3,31 @@
 //! This module provides the command line interface for the COELANOX toolchain.
 
 use clap::{Parser, Subcommand};
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
 use coelanox_packager::CoelanoxPackager;
 use coelanox_runtime::CoelanoxRuntime;
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::process::Command;
 
 /// Ensure output directory exists and return proper output path
 fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<PathBuf> {
     let input_path = Path::new(input_path);
     let output_path = Path::new(output_path);
     
-    // If output path is relative, make it relative to models/output/
-    let final_output_path = if output_path.is_relative() {
+    // Normalize the output path to check if it already starts with models/output
+    let normalized_output = output_path
+        .iter()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .collect::<Vec<_>>();
+    
+    // Check if output already starts with "models/output" or "models\\output" (Windows)
+    let already_in_output_dir = normalized_output.len() >= 2 
+        && (normalized_output[0] == "models" && normalized_output[1] == "output");
+    
+    // If output path is relative and doesn't already start with models/output, make it relative to models/output/
+    let final_output_path = if output_path.is_relative() && !already_in_output_dir {
         let mut models_output = PathBuf::from("models/output");
         models_output.push(output_path);
         models_output
@@ -135,6 +146,33 @@ enum Commands {
     
     /// Show system environment information
     Env,
+    
+    /// Debug a COELANOX container with detailed diagnostics
+    Debug {
+        /// COELANOX file to debug
+        #[arg(short, long)]
+        file: String,
+        
+        /// Input data file (JSON)
+        #[arg(short, long)]
+        input: Option<String>,
+        
+        /// Output file for debug logs
+        #[arg(short, long, default_value = "debug_output.json")]
+        output: String,
+        
+        /// Enable GDB-style debugging (requires GDB)
+        #[arg(long)]
+        gdb: bool,
+        
+        /// Dump register state on crash
+        #[arg(long, default_value = "true")]
+        dump_registers: bool,
+        
+        /// Maximum operations to trace before crash
+        #[arg(short, long, default_value = "10")]
+        trace_limit: usize,
+    },
 }
 
 fn main() -> CoelanoxResult<()> {
@@ -161,6 +199,9 @@ fn main() -> CoelanoxResult<()> {
         }
         Commands::Env => {
             env_command()
+        }
+        Commands::Debug { file, input, output, gdb, dump_registers, trace_limit } => {
+            debug_command(&file, input.as_deref(), &output, gdb, dump_registers, trace_limit)
         }
     }
 }
@@ -450,6 +491,272 @@ fn env_command() -> CoelanoxResult<()> {
     println!("Recommended optimization: {:?}", recommended_optimization);
     
     Ok(())
+}
+
+/// Debug command - Run inference with detailed diagnostics and crash analysis
+fn debug_command(
+    file: &str,
+    input: Option<&str>,
+    output: &str,
+    use_gdb: bool,
+    dump_registers: bool,
+    _trace_limit: usize,
+) -> CoelanoxResult<()> {
+    info!("🔍 Debugging COELANOX container: {}", file);
+    
+    if use_gdb {
+        return debug_with_gdb(file, input, output);
+    }
+    
+    // Load runtime
+    let mut runtime = CoelanoxRuntime::new();
+    
+    // Load container
+    info!("📦 Loading container: {}", file);
+    runtime.load_container(file)?;
+    
+    let container_info = runtime.get_container_info(file)?;
+    println!("=== Container Information ===");
+    println!("Model: {}", container_info.manifest.name);
+    println!("Input shapes: {:?}", container_info.manifest.input_shapes);
+    println!("Output shapes: {:?}", container_info.manifest.output_shapes);
+    println!("Machine code size: {} bytes", container_info.optimized_code.len());
+    println!("Compressed weights size: {} bytes", container_info.compressed_weights.len());
+    println!();
+    
+    // Load input data
+    let input_data = if let Some(input_file) = input {
+        info!("📥 Loading input from: {}", input_file);
+        let input_json = fs::read_to_string(input_file)
+            .map_err(|e| CoelanoxError::FileSystem(e))?;
+        let input_vec: Vec<f32> = serde_json::from_str(&input_json)
+            .map_err(|e| CoelanoxError::format(&format!("Failed to parse input JSON: {}", e)))?;
+        println!("Loaded {} input elements", input_vec.len());
+        input_vec
+    } else {
+        // Generate dummy input data
+        let input_size: usize = container_info.manifest.input_shapes.iter()
+            .map(|shape| shape.iter().product::<usize>())
+            .sum();
+        println!("Generating dummy input data: {} elements", input_size);
+        vec![1.0f32; input_size]
+    };
+    
+    // Verify input descriptor setup
+    println!("=== Input Descriptor Setup ===");
+    let mut offset = 0;
+    for (i, shape) in container_info.manifest.input_shapes.iter().enumerate() {
+        let size: usize = shape.iter().product();
+        if offset + size > input_data.len() {
+            error!("Input data too small: need {} elements starting at offset {}, got {} total", size, offset, input_data.len());
+            return Err(CoelanoxError::Runtime(format!(
+                "Input data size mismatch: expected at least {} elements, got {}",
+                offset + size,
+                input_data.len()
+            )));
+        }
+        println!("Input {}: shape {:?}, size {}, offset {} - {} (indices {}-{})", 
+            i, shape, size, offset, offset + size - 1, offset, offset + size - 1);
+        offset += size;
+    }
+    println!();
+    
+    // Set up signal handler for SIGSEGV (Unix only)
+    #[cfg(unix)]
+    if dump_registers {
+        unsafe {
+            libc::signal(libc::SIGSEGV, crash_handler as libc::sighandler_t);
+        }
+    }
+    
+    println!("=== Executing Inference (Debug Mode) ===");
+    println!("⚠️  If a segmentation fault occurs, debug information will be printed");
+    println!();
+    
+    // Execute with error handling
+    match runtime.execute(file, &input_data) {
+        Ok(result) => {
+            println!("✅ Inference completed successfully!");
+            println!("Output size: {} elements", result.len());
+            
+            // Save debug output
+            let debug_info = serde_json::json!({
+                "status": "success",
+                "input_size": input_data.len(),
+                "output_size": result.len(),
+                "container_info": {
+                    "model_name": container_info.manifest.name,
+                    "input_shapes": container_info.manifest.input_shapes,
+                    "output_shapes": container_info.manifest.output_shapes,
+                    "machine_code_size": container_info.optimized_code.len(),
+                    "compressed_weights_size": container_info.compressed_weights.len(),
+                },
+                "output": result,
+            });
+            
+            let output_json = serde_json::to_string_pretty(&debug_info)
+                .map_err(|e| CoelanoxError::format(&format!("Failed to serialize debug output: {}", e)))?;
+            
+            fs::write(output, output_json)
+                .map_err(|e| CoelanoxError::FileSystem(e))?;
+            
+            println!("Debug output saved to: {}", output);
+            Ok(())
+        }
+        Err(e) => {
+            error!("❌ Inference failed: {:?}", e);
+            println!("\n=== Debug Analysis ===");
+            println!("Error: {:?}", e);
+            
+            // Save error debug output
+            let debug_info = serde_json::json!({
+                "status": "error",
+                "error": format!("{:?}", e),
+                "input_size": input_data.len(),
+                "container_info": {
+                    "model_name": container_info.manifest.name,
+                    "input_shapes": container_info.manifest.input_shapes,
+                    "output_shapes": container_info.manifest.output_shapes,
+                    "machine_code_size": container_info.optimized_code.len(),
+                    "compressed_weights_size": container_info.compressed_weights.len(),
+                },
+            });
+            
+            let output_json = serde_json::to_string_pretty(&debug_info)
+                .map_err(|e| CoelanoxError::format(&format!("Failed to serialize debug output: {}", e)))?;
+            
+            fs::write(output, output_json)
+                .map_err(|e| CoelanoxError::FileSystem(e))?;
+            
+            println!("Debug output saved to: {}", output);
+            Err(e)
+        }
+    }
+}
+
+/// Debug using GDB (external debugger)
+fn debug_with_gdb(file: &str, input: Option<&str>, output: &str) -> CoelanoxResult<()> {
+    info!("🐛 Starting GDB debug session");
+    
+    // Get path to current binary
+    let binary_path = std::env::current_exe()
+        .map_err(|e| CoelanoxError::format(&format!("Failed to get binary path: {}", e)))?;
+    
+    // Create GDB script
+    let gdb_script = format!(r#"
+set confirm off
+file {}
+break coelanox_runtime::runtime::CoelanoxRuntime::execute_machine_code
+commands
+    print $rdi
+    print $rsi
+    print $rdx
+    print $rcx
+    print $r8
+    print $r9
+    print $r12
+    print $r13
+    print $r14
+    print $r15
+    print $rsp
+    print $rbp
+    x/16gx $rsp
+    continue
+end
+run run --file {} {}
+continue
+bt
+info registers
+x/16gx $rsp
+quit
+"#, 
+        binary_path.display(),
+        file,
+        input.map(|s| format!("--input {}", s)).unwrap_or_default()
+    );
+    
+    // Write GDB script to temp file
+    let script_path = "/tmp/coelanox_debug.gdb";
+    fs::write(script_path, gdb_script)
+        .map_err(|e| CoelanoxError::FileSystem(e))?;
+    
+    println!("📝 GDB script written to: {}", script_path);
+    println!("🔍 Running GDB...\n");
+    
+    // Run GDB
+    let output_cmd = Command::new("gdb")
+        .arg("-batch")
+        .arg("-x")
+        .arg(script_path)
+        .arg(&binary_path)
+        .output()
+        .map_err(|e| CoelanoxError::format(&format!("Failed to run GDB: {}. Make sure GDB is installed.", e)))?;
+    
+    // Save GDB output
+    let gdb_output = String::from_utf8_lossy(&output_cmd.stdout);
+    let gdb_stderr = String::from_utf8_lossy(&output_cmd.stderr);
+    
+    let debug_info = serde_json::json!({
+        "status": if output_cmd.status.success() { "completed" } else { "crashed" },
+        "exit_code": output_cmd.status.code(),
+        "gdb_stdout": gdb_output,
+        "gdb_stderr": gdb_stderr,
+    });
+    
+    let output_json = serde_json::to_string_pretty(&debug_info)
+        .map_err(|e| CoelanoxError::format(&format!("Failed to serialize debug output: {}", e)))?;
+    
+    fs::write(output, output_json)
+        .map_err(|e| CoelanoxError::FileSystem(e))?;
+    
+    println!("{}", gdb_output);
+    if !gdb_stderr.is_empty() {
+        eprintln!("{}", gdb_stderr);
+    }
+    
+    println!("\n📄 GDB output saved to: {}", output);
+    
+    Ok(())
+}
+
+/// Signal handler for SIGSEGV - dump register state (Unix only)
+#[cfg(unix)]
+extern "C" fn crash_handler(_sig: libc::c_int) {
+    eprintln!("\n💥 SEGMENTATION FAULT DETECTED!");
+    eprintln!("=== Register State (best effort) ===");
+    eprintln!("⚠️  Full register dump requires GDB. Run with --gdb flag for detailed analysis.");
+    eprintln!("\nTo debug:");
+    eprintln!("  1. Run with: coelanox debug --file <file> --gdb");
+    eprintln!("  2. Or attach GDB manually: gdb <binary>");
+    eprintln!();
+    
+    // Print stack trace if available
+    eprintln!("=== Stack Trace ===");
+    #[cfg(backtrace)]
+    {
+        let backtrace = std::backtrace::Backtrace::capture();
+        eprintln!("{:?}", backtrace);
+    }
+    #[cfg(not(backtrace))]
+    {
+        eprintln!("Stack trace disabled. Enable with RUST_BACKTRACE=1");
+    }
+    
+    // Additional debug info
+    eprintln!("\n=== Debug Information ===");
+    eprintln!("Signal: SIGSEGV (segmentation fault)");
+    eprintln!("This usually indicates:");
+    eprintln!("  - Invalid memory access (null pointer, out of bounds)");
+    eprintln!("  - Stack overflow");
+    eprintln!("  - Register corruption");
+    eprintln!("  - Incorrect stack alignment");
+    eprintln!("\nCommon causes in generated code:");
+    eprintln!("  - Operation accessing invalid memory address");
+    eprintln!("  - Weights pointer not correctly loaded from stack");
+    eprintln!("  - Input pointer corrupted by operation");
+    eprintln!("  - Stack frame corrupted (rbp/rsp mismatch)");
+    
+    std::process::exit(139); // SIGSEGV exit code
 }
 
 /// Validate shape format (e.g., "[1,3,224,224],[1,1,28,28]")

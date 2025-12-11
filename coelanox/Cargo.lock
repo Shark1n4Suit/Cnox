@@ -230,6 +230,7 @@ dependencies = [
  "coelanox-core",
  "coelanox-packager",
  "coelanox-runtime",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
@@ -266,8 +267,11 @@ dependencies = [
  "bytes",
  "chrono",
  "coelanox-core",
+ "coelanox-runtime",
  "csv",
  "flate2",
+ "iced-x86",
+ "libc",
  "lz4",
  "memmap2",
  "num_cpus",
@@ -498,6 +502,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "iced-x86"
+version = "1.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c447cff8c7f384a7d4f741cfcff32f75f3ad02b406432e8d6c878d56b1edf6b"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]

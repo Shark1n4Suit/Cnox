@@ -28,6 +28,7 @@ bytes = "1.5"
 zstd = "0.12"
 lz4 = "1.24"
 csv = "1.3"
+iced-x86 = "1.19"
 
 [features]
 default = ["onnx-protobuf"]
@@ -36,3 +37,5 @@ packaging = []
 
 [dev-dependencies]
 tempfile = "3.8"
+libc = "0.2"
+coelanox-runtime = { path = "../coelanox-runtime" }

@@ -56,6 +56,10 @@ pub enum DataType {
     Float32,
     /// 64-bit floating point
     Float64,
+    /// 16-bit floating point (IEEE 754)
+    Float16,
+    /// 16-bit Brain Float (BFloat16) - used by modern AI models (Llama, GPT, etc.)
+    BFloat16,
     /// 32-bit integer
     Int32,
     /// 64-bit integer
@@ -72,6 +76,8 @@ impl DataType {
         match self {
             DataType::Float32 => 4,
             DataType::Float64 => 8,
+            DataType::Float16 => 2,
+            DataType::BFloat16 => 2,
             DataType::Int32 => 4,
             DataType::Int64 => 8,
             DataType::UInt8 => 1,
@@ -125,6 +131,14 @@ pub enum OpType {
     LogSoftmax,
     Gelu,
     Swish,
+    
+    // Mathematical primitives (for RMSNorm, RoPE, etc.)
+    Sqrt,
+    Pow,
+    Cos,
+    Sin,
+    Exp,
+    Log,
     
     // Neural network primitives
     Convolution,
@@ -745,6 +759,12 @@ impl UniversalIR {
         self.optimization_hints.push(hint);
     }
     
+    /// Compute and store topological order for execution
+    pub fn compute_topological_order(&mut self) -> CoelanoxResult<()> {
+        self.topological_order = self.topological_sort()?;
+        Ok(())
+    }
+    
     /// Get node by ID
     pub fn get_node(&self, node_id: NodeId) -> Option<&GraphNode> {
         self.nodes.get(node_id.0)
@@ -1172,6 +1192,8 @@ impl UniversalIR {
                     match (output_dtype, input_dtype) {
                         (DataType::Float32, DataType::Float32) => true,
                         (DataType::Float64, DataType::Float64) => true,
+                        (DataType::Float16, DataType::Float16) => true,
+                        (DataType::BFloat16, DataType::BFloat16) => true,
                         (DataType::UInt8, DataType::UInt8) => true,
                         (DataType::Int32, DataType::Int32) => true,
                         (DataType::Int64, DataType::Int64) => true,
@@ -1179,6 +1201,10 @@ impl UniversalIR {
                         // Allow some conversions for fusion
                         (DataType::Float32, DataType::Float64) => true,
                         (DataType::Float64, DataType::Float32) => true,
+                        (DataType::Float32, DataType::Float16) => true,
+                        (DataType::Float32, DataType::BFloat16) => true,
+                        (DataType::Float16, DataType::Float32) => true,
+                        (DataType::BFloat16, DataType::Float32) => true,
                         (DataType::Int32, DataType::Float32) => true,
                         (DataType::Float32, DataType::Int32) => true,
                         _ => false, // Incompatible types

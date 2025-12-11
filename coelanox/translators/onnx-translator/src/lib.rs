@@ -298,7 +298,14 @@ impl OnnxTranslator {
         ir.metadata.set_data_type(DataType::Float32);
 
         // Add input shapes from graph
+        // FIX: Combine all inputs into a single flattened input shape
+        // This allows the code generator to use a simple single-input signature
+        // Runtime will flatten multiple inputs into one tensor before calling generated code
         if let Some(graph) = &onnx_model.graph {
+            let mut all_input_shapes = Vec::new();
+            let mut total_elements = 0;
+            
+            // Collect all input shapes and calculate total elements
             for input in &graph.input {
                 if let Some(tensor_type) = &input.r#type {
                     if let Some(tensor_shape) = &tensor_type.tensor_type {
@@ -323,11 +330,23 @@ impl OnnxTranslator {
                                 .collect();
                             
                             if !dimensions.is_empty() {
-                                ir.metadata.add_input_shape(Shape::new(dimensions));
+                                let shape = Shape::new(dimensions.clone());
+                                let elements = shape.total_elements();
+                                all_input_shapes.push(shape);
+                                total_elements += elements;
                             }
                         }
                     }
                 }
+            }
+            
+            // Combine all inputs into a single flattened input shape
+            // Total elements = sum of all input elements
+            // Shape = [total_elements] (1D flattened)
+            if total_elements > 0 {
+                // Store original shapes in metadata for runtime to split inputs correctly
+                // But only add ONE combined input shape to IR
+                ir.metadata.add_input_shape(Shape::new(vec![total_elements]));
             }
 
             // Add output shapes from graph
