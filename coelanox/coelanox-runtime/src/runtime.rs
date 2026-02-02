@@ -11,9 +11,12 @@
 //! - Security hardening and validation
 //! - Multi-backend execution support
 
-use coelanox_core::{CoelanoxError, CoelanoxResult};
-use coelanox_core::format::CoelanoxContainer;
-use coelanox_core::ir::{Operation, OpType, Attribute};
+use coelanox_core::{
+    format::CoelanoxContainer,
+    ir::{Attribute, Operation, OpType},
+    memory_hal::{MemoryBackendRegistry, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
+    CoelanoxError, CoelanoxResult,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -473,33 +476,65 @@ pub struct CoelanoxRuntime {
     execution_counter: AtomicU64,
     /// Container warming cache (thread-safe)
     warmed_containers: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Memory HAL registry for executable/storage backends. When a backend is registered
+    /// for executable, allocation uses HAL; otherwise legacy mmap/VirtualAlloc is used.
+    memory_registry: Arc<RwLock<MemoryBackendRegistry>>,
 }
 
-/// Executable memory block for proper cleanup
-#[derive(Debug)]
-struct ExecutableMemoryBlock {
-    ptr: *mut u8,
-    size: usize,
-    allocated_at: Instant,
+/// Executable memory block: either legacy (mmap/VirtualAlloc) or HAL-backed region.
+enum ExecutableMemoryBlock {
+    Legacy {
+        ptr: *mut u8,
+        size: usize,
+        allocated_at: Instant,
+    },
+    Hal {
+        target: MemoryTarget,
+        region: Box<dyn MemoryRegion>,
+        allocated_at: Instant,
+    },
 }
 
 impl ExecutableMemoryBlock {
-    fn new(ptr: *mut u8, size: usize) -> Self {
-        Self {
+    fn new_legacy(ptr: *mut u8, size: usize) -> Self {
+        Self::Legacy {
             ptr,
             size,
             allocated_at: Instant::now(),
         }
     }
-    
-    /// Get memory usage in bytes
-    fn memory_usage(&self) -> usize {
-        self.size
+
+    fn new_hal(target: MemoryTarget, region: Box<dyn MemoryRegion>) -> Self {
+        Self::Hal {
+            target,
+            region,
+            allocated_at: Instant::now(),
+        }
     }
-    
+
+    /// Pointer to executable memory (for calling loaded code).
+    fn as_ptr(&self) -> *mut u8 {
+        match self {
+            Self::Legacy { ptr, .. } => *ptr,
+            Self::Hal { region, .. } => region.as_ptr(),
+        }
+    }
+
+    /// Size in bytes.
+    fn size(&self) -> usize {
+        match self {
+            Self::Legacy { size, .. } => *size,
+            Self::Hal { region, .. } => region.size(),
+        }
+    }
+
     /// Get allocation age in milliseconds
     fn age_ms(&self) -> u64 {
-        self.allocated_at.elapsed().as_millis() as u64
+        let at = match self {
+            Self::Legacy { allocated_at, .. } => allocated_at,
+            Self::Hal { allocated_at, .. } => allocated_at,
+        };
+        at.elapsed().as_millis() as u64
     }
 }
 
@@ -734,7 +769,19 @@ impl CoelanoxRuntime {
             active_executions: Arc::new(RwLock::new(HashMap::new())),
             execution_counter: AtomicU64::new(0),
             warmed_containers: Arc::new(RwLock::new(HashMap::new())),
+            memory_registry: Arc::new(RwLock::new(MemoryBackendRegistry::new())),
         }
+    }
+
+    /// Access the memory HAL registry to register executable/storage backends.
+    /// When a backend is registered for executable, allocation uses HAL.
+    pub fn memory_registry(&self) -> std::sync::RwLockReadGuard<'_, MemoryBackendRegistry> {
+        self.memory_registry.read().unwrap()
+    }
+
+    /// Mutable access to the memory HAL registry (e.g. to register backends).
+    pub fn memory_registry_mut(&self) -> std::sync::RwLockWriteGuard<'_, MemoryBackendRegistry> {
+        self.memory_registry.write().unwrap()
     }
     
     /// Get runtime configuration
@@ -1617,36 +1664,67 @@ impl CoelanoxRuntime {
     
     // Removed create_executable_function: we use raw calling convention above for correctness
     
-    /// Allocate executable memory and copy machine code
+    /// Allocate executable memory and copy machine code. Uses Memory HAL when a backend
+    /// is registered for executable; otherwise uses legacy mmap/VirtualAlloc.
     fn allocate_and_copy_code(&self, container: &CoelanoxContainer) -> CoelanoxResult<*mut u8> {
         let code_size = container.optimized_code.len();
-        let page_size = 4096; // Standard page size
+        let page_size = 4096;
         let aligned_size = ((code_size + page_size - 1) / page_size) * page_size;
-        
+
+        // Prefer Memory HAL when an executable backend is registered
+        let registry = self.memory_registry.read().unwrap();
+        if let Some((target, backend)) = registry.default_for_executable() {
+            let opts = RegionOptions {
+                size: aligned_size,
+                alignment: page_size,
+                tier: MemoryTier::Fast,
+                executable: true,
+            };
+            // Allocate while holding registry (backend is borrowed from it)
+            match backend.allocate_region(aligned_size, page_size, &opts) {
+                Ok(region) => {
+                    let ptr = region.as_ptr();
+                    let size = region.size();
+                    drop(registry);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            container.optimized_code.as_ptr(),
+                            ptr,
+                            code_size,
+                        );
+                    }
+                    let mut executable_memory = self.executable_memory.lock().unwrap();
+                    executable_memory.push(ExecutableMemoryBlock::new_hal(target, region));
+                    let mut metrics = self.metrics.lock().unwrap();
+                    metrics.update_memory_allocation(size);
+                    metrics.executable_blocks_count = executable_memory.len();
+                    debug!("✅ Allocated executable memory via HAL: {} bytes", size);
+                    return Ok(ptr);
+                }
+                Err(e) => {
+                    error!("❌ HAL executable allocation failed: {:?}", e);
+                    return Err(e);
+                }
+            }
+        }
+        drop(registry);
+
+        // Legacy path: mmap / VirtualAlloc
         match self.allocate_executable_memory(aligned_size) {
             Ok((ptr, size)) => {
-                debug!("✅ Successfully allocated executable memory: {} bytes", size);
-                
-                // Copy machine code to executable memory
+                debug!("✅ Successfully allocated executable memory (legacy): {} bytes", size);
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         container.optimized_code.as_ptr(),
                         ptr,
-                        code_size
+                        code_size,
                     );
                 }
-                
-                // Store the memory block for cleanup
-                {
-                    let mut executable_memory = self.executable_memory.lock().unwrap();
-                    executable_memory.push(ExecutableMemoryBlock::new(ptr, size));
-                    
-                    // Update metrics
-                    let mut metrics = self.metrics.lock().unwrap();
-                    metrics.update_memory_allocation(size);
-                    metrics.executable_blocks_count = executable_memory.len();
-                }
-                
+                let mut executable_memory = self.executable_memory.lock().unwrap();
+                executable_memory.push(ExecutableMemoryBlock::new_legacy(ptr, size));
+                let mut metrics = self.metrics.lock().unwrap();
+                metrics.update_memory_allocation(size);
+                metrics.executable_blocks_count = executable_memory.len();
                 debug!("✅ Created function pointer: 0x{:x}", ptr as usize);
                 Ok(ptr)
             }
@@ -1795,7 +1873,7 @@ impl CoelanoxRuntime {
             current_usage: metrics.current_memory_usage,
             peak_usage: metrics.peak_memory_usage,
             executable_blocks: executable_memory.len(),
-            executable_memory_size: executable_memory.iter().map(|b| b.size).sum(),
+            executable_memory_size: executable_memory.iter().map(|b| b.size()).sum(),
         }
     }
     
@@ -2394,54 +2472,52 @@ impl CoelanoxRuntime {
         }
     }
     
-    /// Cleanup executable memory with proper thread safety
+    /// Cleanup executable memory with proper thread safety. Handles both legacy
+    /// (mmap/VirtualAlloc) and HAL-backed blocks.
     pub fn cleanup(&self) {
         let mut executable_memory = self.executable_memory.lock().unwrap();
+        let blocks = std::mem::take(&mut *executable_memory);
+        let block_count = blocks.len();
         let mut total_freed = 0usize;
-        
-        #[cfg(target_os = "linux")]
-        {
-            use libc::munmap;
-            
-            for block in executable_memory.iter() {
-                unsafe {
-                    munmap(block.ptr as *mut std::ffi::c_void, block.size);
+
+        for block in blocks {
+            match block {
+                ExecutableMemoryBlock::Legacy { ptr, size, .. } => {
+                    #[cfg(target_os = "linux")]
+                    unsafe {
+                        use libc::munmap;
+                        munmap(ptr as *mut std::ffi::c_void, size);
+                    }
+                    #[cfg(target_os = "windows")]
+                    unsafe {
+                        use windows_sys::Win32::System::Memory::{VirtualFree, MEM_RELEASE};
+                        VirtualFree(ptr as *mut std::ffi::c_void, 0, MEM_RELEASE);
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+                    {
+                        let _ = ptr;
+                        // Generic: no platform free
+                    }
+                    total_freed += size;
                 }
-                total_freed += block.size;
-            }
-        }
-        
-        #[cfg(target_os = "windows")]
-        {
-            use windows_sys::Win32::System::Memory::VirtualFree;
-            use windows_sys::Win32::System::Memory::MEM_RELEASE;
-            
-            for block in executable_memory.iter() {
-                unsafe {
-                    VirtualFree(block.ptr as *mut std::ffi::c_void, 0, MEM_RELEASE);
+                ExecutableMemoryBlock::Hal { target, region, .. } => {
+                    let size = region.size();
+                    if let Some(backend) = self.memory_registry.read().unwrap().get(&target) {
+                        let _ = backend.deallocate_region(region);
+                    }
+                    total_freed += size;
                 }
-                total_freed += block.size;
             }
         }
-        
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        {
-            // Generic cleanup for other platforms
-            for block in executable_memory.iter() {
-                total_freed += block.size;
-                // Note: Generic memory cleanup would need platform-specific implementation
-            }
-        }
-        
-        // Update metrics
-        {
-            let mut metrics = self.metrics.lock().unwrap();
-            metrics.update_memory_deallocation(total_freed);
-            metrics.executable_blocks_count = 0;
-        }
-        
-        info!("🧹 Cleaned up {} executable memory blocks ({} bytes)", executable_memory.len(), total_freed);
-        executable_memory.clear();
+
+        let mut metrics = self.metrics.lock().unwrap();
+        metrics.update_memory_deallocation(total_freed);
+        metrics.executable_blocks_count = 0;
+
+        info!(
+            "🧹 Cleaned up {} executable memory blocks ({} bytes)",
+            block_count, total_freed
+        );
     }
     
     /// Benchmark a container

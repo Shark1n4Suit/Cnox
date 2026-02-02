@@ -1,13 +1,7 @@
-//! Backend implementations for different hardware targets
+//! Backend management module
 //! 
-//! This module provides backend implementations for CPU, GPU, NPU, and TPU targets.
+//! This module will be used for the backend manager system (Task 1.3).
+//! Hardware-specific backends (GPU, NPU, TPU) will be vendor-provided and loaded dynamically.
+//! The runtime focuses on container management, not hardware-specific execution.
 
-pub mod cpu_backend;
-pub mod gpu_backend;
-pub mod npu_backend;
-pub mod tpu_backend;
-
-pub use cpu_backend::*;
-pub use gpu_backend::*;
-pub use npu_backend::*;
-pub use tpu_backend::*;
+// Backend manager will be implemented in Task 1.3

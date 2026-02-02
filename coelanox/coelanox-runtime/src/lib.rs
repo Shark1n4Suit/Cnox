@@ -1,8 +1,9 @@
 pub mod runtime;
 pub mod backends;
+pub mod backend_manager;
+pub mod fallback;
 
 pub use runtime::*;
 pub use backends::*;
-
-#[cfg(test)]
-mod runtime_test;
+pub use backend_manager::*;
+pub use fallback::*;

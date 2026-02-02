@@ -11,9 +11,9 @@ use coelanox_core::plugins::{TranslatorPlugin, PluginConfig, PluginMetadata, Plu
 use coelanox_core::ir::UniversalIR;
 
 // Import the ONNX translator from the translators directory
-use onnx_translator::OnnxTranslator;
+// use onnx_translator::OnnxTranslator;  // Commented out - onnx-translator not available
 // Import the BERT translator from the translators directory
-use bert_translator::BertTranslator;
+// use bert_translator::BertTranslator;  // Commented out - bert-translator not available
 
 /// Plugin manager for loading and managing translator plugins
 pub struct PluginManager {
@@ -56,14 +56,16 @@ impl PluginManager {
     /// Load default plugins
     pub fn load_default_plugins(&mut self) -> CoelanoxResult<()> {
         // Register ONNX translator from the translators directory
-        let onnx_translator = Box::new(OnnxTranslator::new());
-        self.register_plugin_with_validation("onnx_translator".to_string(), onnx_translator)?;
+        // Commented out - translators not available
+        // let onnx_translator = Box::new(OnnxTranslator::new());
+        // self.register_plugin_with_validation("onnx_translator".to_string(), onnx_translator)?;
         
         // Register BERT translator from the translators directory
-        let bert_translator = Box::new(BertTranslator::new());
-        self.register_plugin_with_validation("bert_translator".to_string(), bert_translator)?;
+        // Commented out - bert-translator not available
+        // let bert_translator = Box::new(BertTranslator::new());
+        // self.register_plugin_with_validation("bert_translator".to_string(), bert_translator)?;
         
-        println!("✅ Plugin manager loaded with ONNX translator and BERT translator");
+        println!("✅ Plugin manager initialized (no translators available)");
         Ok(())
     }
     
@@ -87,7 +89,8 @@ impl PluginManager {
             
             // For demo mode, prefer specialized translators (bert_translator) over general ones
             // Try specialized translators first
-            let specialized_plugins = vec!["bert_translator"];
+            // Note: bert_translator not available, so specialized_plugins is empty for now
+            let specialized_plugins: Vec<&str> = vec![];
             
             for plugin_name in specialized_plugins {
                 if let Some(plugin) = self.plugins.get(plugin_name) {
@@ -107,7 +110,8 @@ impl PluginManager {
         
         // Default/preferred behavior: prefer general translators (onnx_translator)
         // This ensures we get the full ONNX translator by default
-        let general_plugins = vec!["onnx_translator"];
+        // Note: onnx_translator not available, so general_plugins is empty for now
+        let general_plugins: Vec<&str> = vec![];
         
         for plugin_name in general_plugins {
             if let Some(plugin) = self.plugins.get(plugin_name) {

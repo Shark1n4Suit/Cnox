@@ -3,12 +3,45 @@ name = "coelanox-tests"
 version = "0.1.0"
 edition = "2021"
 
+# [[test]]
+# name = "operation_template_validation"
+# path = "operation_template_validation.rs"
+
 [[test]]
-name = "operation_template_validation"
-path = "operation_template_validation.rs"
+name = "test_security_hash"
+path = "test_security_hash.rs"
+
+[[test]]
+name = "test_backend_cleanup"
+path = "test_backend_cleanup.rs"
+
+[[test]]
+name = "test_backend_manager"
+path = "test_backend_manager.rs"
+
+[[test]]
+name = "test_aot_selection"
+path = "test_aot_selection.rs"
+
+[[test]]
+name = "test_integration"
+path = "test_integration.rs"
+
+[[test]]
+name = "test_scalar_fallback"
+path = "test_scalar_fallback.rs"
+
+[[test]]
+name = "test_nvme_allocation"
+path = "test_nvme_allocation.rs"
 
 [dependencies]
 coelanox-packager = { path = "../coelanox-packager" }
 coelanox-core = { path = "../coelanox-core" }
+coelanox-runtime = { path = "../coelanox-runtime" }
 libc = "0.2"
+tempfile = "3.8"
+sha2 = "0.10"
+serde_json = "1.0"
+bincode = "1.3"
 

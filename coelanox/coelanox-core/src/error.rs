@@ -98,6 +98,46 @@ pub enum CoelanoxError {
     /// Unsupported operation (placeholder for now)
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
+    
+    /// Backend library not found
+    #[error("Backend library not found: {0}")]
+    BackendLibraryNotFound(String),
+    
+    /// Backend library loading failed (corrupted, invalid format, missing symbols)
+    #[error("Failed to load backend library {0}: {1}")]
+    BackendLibraryLoadFailed(String, String),
+    
+    /// Backend discovery failed (permission errors, invalid paths)
+    #[error("Backend discovery failed: {0}")]
+    BackendDiscoveryFailed(String),
+    
+    /// Backend not found (requested backend doesn't exist)
+    #[error("Backend not found: {0}")]
+    BackendNotFound(String),
+    
+    /// Backend health check failed
+    #[error("Backend health check failed for {0}: {1}")]
+    BackendHealthCheckFailed(String, String),
+    
+    /// Invalid backend name in AOT selection
+    #[error("Invalid backend name in AOT selection: {0}")]
+    InvalidBackendName(String),
+    
+    /// Device ID out of range
+    #[error("Device ID {0} is out of range (available: 0-{1})")]
+    DeviceIdOutOfRange(usize, usize),
+    
+    /// Backend routing failed (no available backends)
+    #[error("Backend routing failed: {0}")]
+    BackendRoutingFailed(String),
+
+    /// Unsupported memory target (no backend registered for this target)
+    #[error("Unsupported memory target: {0}")]
+    UnsupportedMemoryTarget(String),
+
+    /// Unsupported protection target (no backend registered for this target)
+    #[error("Unsupported protection target: {0}")]
+    UnsupportedProtectionTarget(String),
 }
 
 impl CoelanoxError {

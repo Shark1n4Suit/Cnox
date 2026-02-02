@@ -3,10 +3,17 @@
 //! This module provides the main packaging functionality for COELANOX, including
 //! model translation, optimization, and container creation.
 
-use coelanox_core::{CoelanoxError, CoelanoxResult, format::{HardwareTarget, OptimizationLevel, CoelanoxContainer, CoelanoxManifest, CompressionType}};
-use coelanox_core::utils::SystemEnvironment;
-use coelanox_core::ir::{UniversalIR, GraphNode, IntermediateTensor, WeightTensor};
-use crate::generators::CodeGenerator;
+use coelanox_core::{
+    CoelanoxError, CoelanoxResult,
+    format::{BackendMetadata, BackendSelectionMode, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, OptimizationLevel},
+    ir::{GraphNode, IntermediateTensor, UniversalIR, WeightTensor},
+    memory_hal::MemoryBackendRegistry,
+    optimization::MaxShapeReader,
+    utils::SystemEnvironment,
+};
+use coelanox_runtime::BackendManager;
+use crate::memory::NvmeAllocator;
+// CodeGenerator trait removed - generators folder deleted
 use crate::optimizers::HardwareOptimizer;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
@@ -26,8 +33,9 @@ struct SerializedOptimizedIR {
 pub mod plugins;
 pub mod optimizers;
 pub mod optimization;
-pub mod generators;
+pub mod backend_trait;
 pub mod utils;
+pub mod memory;
 
 /// COELANOX packager for creating containers
 pub struct CoelanoxPackager {
@@ -35,6 +43,11 @@ pub struct CoelanoxPackager {
     plugin_manager: plugins::PluginManager,
     /// Environment information
     environment: SystemEnvironment,
+    /// Backend manager for discovering vendor BackendTranslators
+    backend_manager: BackendManager,
+    /// Memory HAL registry for storage backends (NVMe, SD, OS). When a backend is registered
+    /// for storage, container backing is created via HAL; otherwise NvmeAllocator is used.
+    memory_registry: MemoryBackendRegistry,
 }
 
 impl CoelanoxPackager {
@@ -48,10 +61,29 @@ impl CoelanoxPackager {
         // Detect environment
         let environment = SystemEnvironment::detect()?;
         
+        // Initialize backend manager and discover vendor backends
+        let mut backend_manager = BackendManager::new();
+        let search_paths = BackendManager::default_search_paths();
+        let discovery_result = backend_manager.discover_backends(&search_paths)?;
+        // Log discovery results (failures are tracked but don't stop initialization)
+        if discovery_result.failure_count() > 0 {
+            eprintln!("⚠️  Backend discovery: {} succeeded, {} failed", 
+                discovery_result.success_count(), 
+                discovery_result.failure_count());
+        }
+        
         Ok(Self {
             plugin_manager,
             environment,
+            backend_manager,
+            memory_registry: MemoryBackendRegistry::new(),
         })
+    }
+
+    /// Access the memory HAL registry to register storage backends (e.g. NVMe, SD, OS).
+    /// When `default_for_storage()` returns a backend, container backing is created via HAL.
+    pub fn memory_registry(&mut self) -> &mut MemoryBackendRegistry {
+        &mut self.memory_registry
     }
     
     /// Compress weights using available compression algorithms
@@ -225,7 +257,19 @@ impl CoelanoxPackager {
     }
     
     /// Package a model into a COELANOX container
-    pub fn package(&self, model_path: &Path, target: HardwareTarget, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool) -> CoelanoxResult<CoelanoxContainer> {
+    /// 
+    /// # Arguments
+    /// * `model_path` - Path to input model file
+    /// * `target` - Hardware target for code generation
+    /// * `target_str` - Original target string from CLI (for backend metadata naming)
+    /// * `model_type` - Type of model (cv, nlp, etc.)
+    /// * `custom_input_shapes` - Custom input shapes (optional)
+    /// * `custom_output_shapes` - Custom output shapes (optional)
+    /// * `use_demo_translator` - Use demo/custom translator
+    /// * `fat` - Include all backends (fat container)
+    /// * `auto` - Auto-detect backends
+    /// * `backend_add` - Additional backends to add
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>) -> CoelanoxResult<CoelanoxContainer> {
         eprintln!("📦 Starting package for: {}", model_path.display());
         eprintln!("📦 Model path: {:?}", model_path);
         
@@ -297,11 +341,49 @@ impl CoelanoxPackager {
         let ir_data = bincode::serialize(&serializable_ir)
             .map_err(|e| CoelanoxError::Runtime(format!("Failed to serialize IR: {}", e)))?;
         
-        // Create manifest
-        let manifest = self.create_manifest(&ir, machine_code.len())?;
+        // Determine AOT backend selection
+        let backend_metadata = self.determine_backend_selection(
+            &target,
+            target_str,
+            backend_add,
+            fat,
+            auto,
+        )?;
         
-        // Create container with weights and IR data
-        let container = CoelanoxContainer::new(manifest, machine_code, compressed_weights, compression_type, ir_data);
+        // Read max shapes from IR for container backing (stack arena / pre-allocated region)
+        let max_shapes = MaxShapeReader::read_max_shapes(&ir)?;
+        
+        // Create backing via Memory HAL when a storage backend is registered; else NvmeAllocator
+        let nvme_backing_data = if let Some((_, backend)) = self.memory_registry.default_for_storage() {
+            backend.create_backing(&max_shapes)?
+        } else {
+            NvmeAllocator::create_nvme_backing(&max_shapes)?
+        };
+        
+        // Create manifest with backend metadata first (to calculate its size)
+        let mut manifest = self.create_manifest(&ir, machine_code.len(), backend_metadata)?;
+        
+        // Calculate NVMe backing offset (after IR data)
+        // Structure: Header + Manifest + Code + Weights (with 4-byte prefix) + IR (with 4-byte prefix) + NVMe (with 8-byte prefix)
+        let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
+        let code_offset = coelanox_core::format::COELANOX_HEADER_SIZE as u64 + manifest_size as u64;
+        let weights_offset = code_offset + machine_code.len() as u64;
+        let ir_offset = weights_offset + 4 + compressed_weights.len() as u64;
+        let nvme_backing_offset = ir_offset + 4 + ir_data.len() as u64;
+        
+        // Update manifest with NVMe fields
+        manifest.nvme_backing_offset = Some(nvme_backing_offset);
+        manifest.nvme_backing_size = Some(nvme_backing_data.len());
+        
+        // Create container with weights, IR data, and NVMe backing
+        let container = CoelanoxContainer::new_with_nvme(
+            manifest,
+            machine_code,
+            compressed_weights,
+            compression_type,
+            ir_data,
+            Some(nvme_backing_data),
+        );
         
         Ok(container)
     }
@@ -309,7 +391,7 @@ impl CoelanoxPackager {
     /// Package with automatic target detection
     pub fn package_auto(&self, model_path: &Path) -> CoelanoxResult<CoelanoxContainer> {
         let recommended_target = self.environment.recommended_target();
-        self.package(model_path, recommended_target, "custom", None, None, false)
+        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None)
     }
     
     /// Detect model format from data
@@ -417,40 +499,20 @@ impl CoelanoxPackager {
     /// 
     /// Takes input_shapes to determine the number of inputs for proper function signature generation
     fn generate_machine_code(&self, optimized_ir: &coelanox_core::ir::OptimizedIR, target: &HardwareTarget, input_shapes: &[coelanox_core::ir::Shape]) -> CoelanoxResult<Vec<u8>> {
+        // All code generators have been removed - only the BackendTranslator trait remains
+        // All targets return empty code to force runtime scalar fallback
+        // Vendors must provide BackendTranslator implementations via dynamic library loading
         match target {
-            HardwareTarget::Cpu => {
-                let generator = generators::cpu_codegen::CpuCodeGenerator::new();
-                generator.generate(optimized_ir)
-            }
-            HardwareTarget::Gpu => {
-                let generator = generators::GpuCodeGenerator::new();
-                generator.generate(optimized_ir)
-            }
-            HardwareTarget::Edge => {
-                let generator = generators::EdgeCodeGenerator::new();
-                generator.generate(optimized_ir)
-            }
-            HardwareTarget::Custom(_) => {
-                // For custom targets, use GPU generator as fallback
-                let generator = generators::GpuCodeGenerator::new();
-                generator.generate(optimized_ir)
-            }
-            HardwareTarget::NeuralEngine => {
-                // For Neural Engine, use GPU generator as fallback for now
-                let generator = generators::GpuCodeGenerator::new();
-                generator.generate(optimized_ir)
-            }
-            HardwareTarget::NPU => {
-                // For NPU, use GPU generator as fallback for now
-                let generator = generators::GpuCodeGenerator::new();
-                generator.generate(optimized_ir)
+            _ => {
+                // Return empty code to force runtime scalar fallback
+                Ok(Vec::new())
             }
         }
     }
     
     /// Create manifest from IR
-    fn create_manifest(&self, ir: &UniversalIR, machine_code_size: usize) -> CoelanoxResult<CoelanoxManifest> {
-        let manifest = CoelanoxManifest::new(
+    fn create_manifest(&self, ir: &UniversalIR, machine_code_size: usize, backend_metadata: Option<BackendMetadata>) -> CoelanoxResult<CoelanoxManifest> {
+        let mut manifest = CoelanoxManifest::new(
             ir.metadata.name.clone(),
             coelanox_core::format::ModelFormat::Onnx, // TODO: Get from IR
             ir.metadata.input_shapes.iter().map(|s| s.dimensions.clone()).collect(),
@@ -458,7 +520,118 @@ impl CoelanoxPackager {
             machine_code_size,
         );
         
+        // Set backend metadata
+        manifest.backend_metadata = backend_metadata;
+        
         Ok(manifest)
+    }
+    
+    /// Determine AOT backend selection based on CLI flags
+    /// 
+    /// Returns BackendMetadata describing which backends were selected and how they map to device IDs.
+    /// 
+    /// # Arguments
+    /// * `target` - Hardware target for code generation
+    /// * `target_str` - Original target string from CLI (for backend naming)
+    /// * `backend_add` - Additional backends to add (comma-separated)
+    /// * `fat` - Include all available backends
+    /// * `auto` - Auto-detect and select backends
+    fn determine_backend_selection(
+        &self,
+        target: &HardwareTarget,
+        target_str: &str,
+        backend_add: Option<&str>,
+        fat: bool,
+        auto: bool,
+    ) -> CoelanoxResult<Option<BackendMetadata>> {
+        // Fat mode: validate all available backends
+        if fat {
+            let all_backends = self.backend_manager.list_backends()
+                .iter()
+                .map(|b| b.name.clone())
+                .collect::<Vec<_>>();
+            
+            if all_backends.is_empty() {
+                return Err(CoelanoxError::BackendNotFound(
+                    "No backends available for fat container".to_string()
+                ));
+            }
+            
+            return Ok(Some(BackendMetadata::new_fat(all_backends)));
+        }
+        
+        // Auto mode: validate detected backends
+        if auto {
+            let recommended = self.environment.recommended_target();
+            let detected_name = format!("{:?}", recommended).to_lowercase();
+            
+            // Validate detected backend exists
+            if self.backend_manager.get_backend(&detected_name).is_none() {
+                // Fallback to CPU if detected backend not available
+                if self.backend_manager.get_backend("cpu").is_none() {
+                    return Err(CoelanoxError::BackendNotFound(
+                        format!("Auto-detected backend '{}' not available, and CPU fallback not found", detected_name)
+                    ));
+                }
+                let detected_backends = vec!["cpu".to_string()];
+                return Ok(Some(BackendMetadata::new_auto(detected_backends)));
+            }
+            
+            let detected_backends = vec![detected_name];
+            return Ok(Some(BackendMetadata::new_auto(detected_backends)));
+        }
+        
+        // Slim mode: validate primary and additional backends
+        let primary = if matches!(target_str.to_lowercase().as_str(), "cpu" | "gpu" | "edge" | "auto") {
+            target_str.to_lowercase()
+        } else {
+            target_str.to_lowercase()
+        };
+        
+        // Validate primary backend exists (if not generic CPU)
+        if primary != "cpu" {
+            if self.backend_manager.get_backend(&primary).is_none() {
+                let available: Vec<String> = self.backend_manager.list_backends()
+                    .iter()
+                    .map(|b| b.name.clone())
+                    .collect();
+                return Err(CoelanoxError::BackendNotFound(
+                    format!("Primary backend '{}' not found. Available backends: {}", 
+                        primary,
+                        if available.is_empty() {
+                            "none".to_string()
+                        } else {
+                            available.join(", ")
+                        }
+                    )
+                ));
+            }
+        }
+        
+        let additional = if let Some(add_str) = backend_add {
+            let additional_list: Vec<String> = add_str.split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            
+            // Validate all additional backends exist
+            if let Err(e) = self.backend_manager.validate_backends(&additional_list) {
+                return Err(CoelanoxError::InvalidBackendName(
+                    format!("Invalid backend in --backend-add: {}", e)
+                ));
+            }
+            
+            additional_list
+        } else {
+            Vec::new()
+        };
+        
+        // Only create metadata if we have hardware-specific target or additional backends
+        // (for backward compatibility, generic cpu/gpu/edge without --backend-add returns None)
+        if matches!(target, HardwareTarget::Custom(_)) || !additional.is_empty() {
+            Ok(Some(BackendMetadata::new_slim(primary, additional)))
+        } else {
+            Ok(None)
+        }
     }
     
     /// Get environment information

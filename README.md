@@ -343,9 +343,9 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ### **Core Documentation**
 - **[Architecture Guide](docs/ARCHITECTURE.md)** - System design and components
-- **[Performance Guide](docs/PERFORMANCE.md)** - Optimization and benchmarking
 - **[Security Guide](docs/SECURITY.md)** - Security features and compliance
-- **[API Reference](docs/API.md)** - Complete API documentation
+- **[COELANOX Reference](COELANOX_REFERENCE.md)** - Quick reference guide
+- **[Production MVP Roadmap](roadmaps/PRODUCTION_MVP_ROADMAP.md)** - Development roadmap
 
 ### **User Guides**
 - **[Quick Start Guide](QUICKSTART.md)** - Get started in under 5 minutes

@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
+use std::path::Path;
+use sha2::{Sha256, Digest};
 use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
 
 /// COELANOX binary format constants
@@ -45,7 +47,7 @@ impl CoelanoxHeader {
             container_size,
             manifest_offset,
             code_offset,
-            security_hash: [0; 32], // TODO: Calculate actual hash
+            security_hash: [0; 32], // Set to [0; 32] during creation, calculated during write_binary_file()
             reserved: [0; 8],
         }
     }
@@ -229,6 +231,120 @@ pub struct UsageLimits {
     pub rate_limit: Option<u64>,
 }
 
+/// Backend selection mode for AOT binary selection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BackendSelectionMode {
+    /// Slim mode: Selected backends only
+    Slim {
+        /// Primary backend name
+        primary: String,
+        /// Additional backend names
+        additional: Vec<String>,
+    },
+    /// Fat mode: All available backends
+    Fat,
+    /// Auto mode: Auto-detected backends
+    Auto,
+}
+
+/// Backend metadata for AOT binary selection
+/// 
+/// This metadata stores information about which backends were selected at package time
+/// and how they are mapped to device IDs for runtime selection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendMetadata {
+    /// Primary backend (device ID 0)
+    pub primary_backend: String,
+    /// Additional backends (device IDs 1, 2, 3...)
+    pub additional_backends: Vec<String>,
+    /// Device ID mapping (device_id -> backend_name)
+    pub device_id_mapping: std::collections::HashMap<usize, String>,
+    /// Backend selection mode (slim, fat, auto)
+    pub selection_mode: BackendSelectionMode,
+}
+
+impl BackendMetadata {
+    /// Create new BackendMetadata for slim mode
+    pub fn new_slim(primary: String, additional: Vec<String>) -> Self {
+        let mut device_id_mapping = std::collections::HashMap::new();
+        device_id_mapping.insert(0, primary.clone());
+        
+        for (idx, backend_name) in additional.iter().enumerate() {
+            device_id_mapping.insert(idx + 1, backend_name.clone());
+        }
+        
+        Self {
+            primary_backend: primary.clone(),
+            additional_backends: additional.clone(),
+            device_id_mapping,
+            selection_mode: BackendSelectionMode::Slim {
+                primary,
+                additional,
+            },
+        }
+    }
+    
+    /// Create new BackendMetadata for fat mode
+    pub fn new_fat(all_backends: Vec<String>) -> Self {
+        let mut device_id_mapping = std::collections::HashMap::new();
+        let primary = all_backends.first().cloned().unwrap_or_else(|| "cpu".to_string());
+        let additional = all_backends.iter().skip(1).cloned().collect();
+        
+        device_id_mapping.insert(0, primary.clone());
+        for (idx, backend_name) in all_backends.iter().skip(1).enumerate() {
+            device_id_mapping.insert(idx + 1, backend_name.clone());
+        }
+        
+        Self {
+            primary_backend: primary,
+            additional_backends: additional,
+            device_id_mapping,
+            selection_mode: BackendSelectionMode::Fat,
+        }
+    }
+    
+    /// Create new BackendMetadata for auto mode
+    pub fn new_auto(detected_backends: Vec<String>) -> Self {
+        let mut device_id_mapping = std::collections::HashMap::new();
+        let primary = detected_backends.first().cloned().unwrap_or_else(|| "cpu".to_string());
+        let additional = detected_backends.iter().skip(1).cloned().collect();
+        
+        device_id_mapping.insert(0, primary.clone());
+        for (idx, backend_name) in detected_backends.iter().skip(1).enumerate() {
+            device_id_mapping.insert(idx + 1, backend_name.clone());
+        }
+        
+        Self {
+            primary_backend: primary,
+            additional_backends: additional,
+            device_id_mapping,
+            selection_mode: BackendSelectionMode::Auto,
+        }
+    }
+    
+    /// Get backend name for a device ID
+    pub fn get_backend_for_device(&self, device_id: usize) -> Option<&String> {
+        self.device_id_mapping.get(&device_id)
+    }
+    
+    /// Validate device ID is in range
+    pub fn validate_device_id(&self, device_id: usize) -> CoelanoxResult<()> {
+        let max_id = self.device_id_mapping.keys().max().copied().unwrap_or(0);
+        if device_id > max_id {
+            return Err(CoelanoxError::DeviceIdOutOfRange(device_id, max_id));
+        }
+        Ok(())
+    }
+    
+    /// Get backend for device ID with validation
+    pub fn get_backend_for_device_checked(&self, device_id: usize) -> CoelanoxResult<&String> {
+        self.validate_device_id(device_id)?;
+        self.device_id_mapping.get(&device_id)
+            .ok_or_else(|| CoelanoxError::DeviceIdOutOfRange(device_id, 
+                self.device_id_mapping.keys().max().copied().unwrap_or(0)))
+    }
+}
+
 /// COELANOX manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoelanoxManifest {
@@ -252,6 +368,12 @@ pub struct CoelanoxManifest {
     pub tags: Vec<String>,
     /// Model metadata
     pub metadata: std::collections::HashMap<String, String>,
+    /// Backend metadata (AOT selection)
+    pub backend_metadata: Option<BackendMetadata>,
+    /// NVMe backing data offset in container (for unified file approach)
+    pub nvme_backing_offset: Option<u64>,
+    /// NVMe backing data size in bytes
+    pub nvme_backing_size: Option<usize>,
 }
 
 impl CoelanoxManifest {
@@ -276,6 +398,9 @@ impl CoelanoxManifest {
             description: None,
             tags: Vec::new(),
             metadata: std::collections::HashMap::new(),
+            backend_metadata: None,
+            nvme_backing_offset: None,
+            nvme_backing_size: None,
         }
     }
     
@@ -384,6 +509,8 @@ pub struct CoelanoxContainer {
     pub compression_type: CompressionType,
     /// IR data (serialized OptimizedIR using bincode)
     pub ir_data: Vec<u8>,
+    /// NVMe backing data (pre-allocated memory layout)
+    pub nvme_backing_data: Option<Vec<u8>>,
     /// Backend hints
     pub backend_hints: Option<BackendHints>,
     /// Security metadata
@@ -393,11 +520,38 @@ pub struct CoelanoxContainer {
 impl CoelanoxContainer {
     /// Create a new COELANOX container
     pub fn new(manifest: CoelanoxManifest, optimized_code: Vec<u8>, compressed_weights: Vec<u8>, compression_type: CompressionType, ir_data: Vec<u8>) -> Self {
+        Self::new_with_nvme(manifest, optimized_code, compressed_weights, compression_type, ir_data, None)
+    }
+    
+    /// Create a new COELANOX container with NVMe backing data
+    pub fn new_with_nvme(
+        manifest: CoelanoxManifest,
+        optimized_code: Vec<u8>,
+        compressed_weights: Vec<u8>,
+        compression_type: CompressionType,
+        ir_data: Vec<u8>,
+        nvme_backing_data: Option<Vec<u8>>,
+    ) -> Self {
         let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
         let code_offset = COELANOX_HEADER_SIZE as u64 + manifest_size as u64;
+        
+        // Calculate weights offset (with length prefix: 4 bytes)
         let weights_offset = code_offset + optimized_code.len() as u64;
-        let ir_offset = weights_offset + compressed_weights.len() as u64;
-        let total_size = ir_offset + ir_data.len() as u64;
+        
+        // Calculate IR offset (weights have 4-byte length prefix)
+        let ir_offset = weights_offset + 4 + compressed_weights.len() as u64;
+        
+        // Calculate NVMe backing offset (IR has 4-byte length prefix)
+        let nvme_backing_offset = ir_offset + 4 + ir_data.len() as u64;
+        
+        // Calculate total size including NVMe backing if present
+        let nvme_size = nvme_backing_data.as_ref().map(|d| d.len()).unwrap_or(0) as u64;
+        let total_size = if nvme_size > 0 {
+            // NVMe backing has 8-byte length prefix (u64 for large files)
+            nvme_backing_offset + 8 + nvme_size
+        } else {
+            ir_offset + 4 + ir_data.len() as u64
+        };
         
         Self {
             header: CoelanoxHeader::new(total_size, COELANOX_HEADER_SIZE as u64, code_offset),
@@ -406,6 +560,7 @@ impl CoelanoxContainer {
             compressed_weights,
             compression_type,
             ir_data,
+            nvme_backing_data,
             backend_hints: None,
             security: None,
         }
@@ -490,11 +645,38 @@ impl CoelanoxContainer {
     }
     
     /// Write container to binary file
+    /// 
+    /// This method writes the container to a file and calculates the SHA-256 security hash.
+    /// The hash is calculated on the entire container (after compression) and embedded in the header.
     pub fn write_binary_file(&self, path: &std::path::Path) -> CoelanoxResult<()> {
-        let mut file = std::fs::File::create(path)
+        // Write entire container to in-memory buffer first
+        let mut buffer = Vec::new();
+        {
+            let mut cursor = std::io::Cursor::new(&mut buffer);
+            self.write_binary(&mut cursor)?;
+        }
+        
+        // Calculate SHA-256 hash of entire buffer (entire container as stored)
+        let mut hasher = Sha256::new();
+        hasher.update(&buffer);
+        let calculated_hash: [u8; 32] = hasher.finalize().into();
+        
+        // Update header in buffer with calculated hash
+        // Hash is at offset 36-67 (32 bytes) in the header
+        let hash_offset = 36;
+        if buffer.len() < hash_offset + 32 {
+            return Err(CoelanoxError::Internal(
+                "Buffer too small to contain header with hash".to_string()
+            ));
+        }
+        
+        buffer[hash_offset..hash_offset + 32].copy_from_slice(&calculated_hash);
+        
+        // Write final buffer to file
+        std::fs::write(path, &buffer)
             .map_err(|e| CoelanoxError::FileSystem(e))?;
         
-        self.write_binary(&mut file)
+        Ok(())
     }
     
     /// Write container to binary stream
@@ -515,6 +697,13 @@ impl CoelanoxContainer {
         // Write IR data with length prefix
         writer.write_all(&(self.ir_data.len() as u32).to_le_bytes())?;
         writer.write_all(&self.ir_data)?;
+        
+        // Write NVMe backing data with length prefix (if present)
+        if let Some(ref nvme_backing) = self.nvme_backing_data {
+            // Use u64 for length prefix to support large files
+            writer.write_all(&(nvme_backing.len() as u64).to_le_bytes())?;
+            writer.write_all(nvme_backing)?;
+        }
         
         // TODO: Write backend hints and security metadata if present
         
@@ -559,15 +748,44 @@ impl CoelanoxContainer {
         let mut ir_data = vec![0u8; ir_len];
         reader.read_exact(&mut ir_data)?;
         
+        // Read NVMe backing data if present (check manifest for size)
+        // We read sequentially since we're already at the right position after IR data
+        let nvme_backing_data = if let Some(nvme_size) = manifest.nvme_backing_size {
+            if nvme_size > 0 {
+                // Read NVMe backing length prefix (u64)
+                let mut nvme_len_bytes = [0u8; 8];
+                reader.read_exact(&mut nvme_len_bytes)?;
+                let nvme_len = u64::from_le_bytes(nvme_len_bytes) as usize;
+                
+                // Validate size matches manifest
+                if nvme_len != nvme_size {
+                    return Err(CoelanoxError::PayloadValidation(
+                        format!("NVMe backing size mismatch: manifest says {}, file has {}", nvme_size, nvme_len)
+                    ));
+                }
+                
+                // Read NVMe backing data
+                let mut nvme_backing = vec![0u8; nvme_len];
+                reader.read_exact(&mut nvme_backing)?;
+                Some(nvme_backing)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
         // TODO: Read backend hints and security metadata if present
+        // TODO: Determine compression_type from manifest or metadata
         
         Ok(Self {
             header,
             manifest,
             optimized_code,
             compressed_weights,
-            compression_type: CompressionType::None,
+            compression_type: CompressionType::None, // TODO: Read from manifest metadata
             ir_data,
+            nvme_backing_data,
             backend_hints: None,
             security: None,
         })
@@ -627,4 +845,66 @@ impl CoelanoxValidator {
         // For now, return dummy header
         Ok(CoelanoxHeader::new(0, 0, 0))
     }
+}
+
+/// Verify container security hash (pre-deployment check)
+/// 
+/// This function reads a container file from disk (cold storage), calculates its SHA-256 hash,
+/// and compares it with the hash stored in the container header. This is used for pre-deployment
+/// verification before loading the container into the memory tier.
+/// 
+/// # Arguments
+/// * `container_path` - Path to the container file to verify
+/// 
+/// # Returns
+/// * `Ok(())` if hash matches (container is valid)
+/// * `Err(CoelanoxError::SecurityValidation)` if hash mismatch (container may be tampered)
+/// * `Err(CoelanoxError::FileSystem)` if file cannot be read
+pub fn verify_security_hash(container_path: &Path) -> CoelanoxResult<()> {
+    // Read entire container file from cold storage
+    let container_data = std::fs::read(container_path)
+        .map_err(|e| CoelanoxError::FileSystem(e))?;
+    
+    // Verify minimum size (must be at least header size)
+    if container_data.len() < COELANOX_HEADER_SIZE {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container file too small to contain valid header".to_string()
+        ));
+    }
+    
+    // Extract stored hash from header
+    // Hash is at offset 36-67 (32 bytes) in the header
+    // Header layout: magic(4) + version(4) + flags(4) + container_size(8) + manifest_offset(8) + code_offset(8) + security_hash(32) + reserved(8)
+    let hash_offset = 36; // Start of security_hash field
+    if container_data.len() < hash_offset + 32 {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container file too small to contain security hash".to_string()
+        ));
+    }
+    
+    let stored_hash: [u8; 32] = container_data[hash_offset..hash_offset + 32]
+        .try_into()
+        .map_err(|_| CoelanoxError::SecurityValidation(
+            "Failed to extract security hash from header".to_string()
+        ))?;
+    
+    // Create a copy of container data with hash set to [0; 32] for hash calculation
+    // The stored hash is the hash of the file with hash = [0; 32]
+    let mut data_for_hashing = container_data.to_vec();
+    let zero_hash = [0u8; 32];
+    data_for_hashing[hash_offset..hash_offset + 32].copy_from_slice(&zero_hash);
+    
+    // Calculate SHA-256 hash of file with hash bytes set to zero
+    let mut hasher = Sha256::new();
+    hasher.update(&data_for_hashing);
+    let calculated_hash: [u8; 32] = hasher.finalize().into();
+    
+    // Compare hashes
+    if calculated_hash != stored_hash {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container hash mismatch - file may have been tampered with".to_string()
+        ));
+    }
+    
+    Ok(())
 }

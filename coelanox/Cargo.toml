@@ -1,11 +1,12 @@
 [workspace]
+resolver = "2"
 members = [
     "coelanox-core",
     "coelanox-packager", 
     "coelanox-runtime",
     "coelanox-cli",
-    "translators/onnx-translator",
-    "translators/bert-translator"
+    "tests",
+    # "translators/onnx-translator"  # Commented out - not available
 ]
 
 [workspace.dependencies]

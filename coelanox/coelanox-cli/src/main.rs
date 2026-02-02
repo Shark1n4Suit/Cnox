@@ -87,7 +87,7 @@ enum Commands {
         #[arg(long)]
         output_shapes: Option<String>,
         
-        /// Target hardware (cpu, gpu, edge, auto)
+        /// Target hardware (cpu, gpu, edge, auto, or hardware-specific: h100, a100, amd-gpu, intel-npu, etc.)
         #[arg(short, long, default_value = "auto")]
         target: String,
         
@@ -98,6 +98,18 @@ enum Commands {
         /// Use demo/custom translator instead of general translator (e.g., bert-translator for NLP)
         #[arg(long)]
         use_demo_translator: bool,
+        
+        /// Include all available backends (fat container, mutually exclusive with --target and --auto)
+        #[arg(long)]
+        fat: bool,
+        
+        /// Auto-detect hardware and select backends automatically (mutually exclusive with --target and --fat)
+        #[arg(long)]
+        auto: bool,
+        
+        /// Add additional backends (comma-separated: amd,intel,qualcomm)
+        #[arg(long)]
+        backend_add: Option<String>,
     },
     
     /// Validate a COELANOX container
@@ -105,6 +117,17 @@ enum Commands {
         /// COELANOX file to validate
         #[arg(short, long)]
         file: String,
+    },
+    
+    /// Verify container integrity (pre-deployment check)
+    Verify {
+        /// COELANOX file to verify
+        #[arg(short, long)]
+        file: String,
+        
+        /// Enable verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
     
     /// Show information about a COELANOX container
@@ -182,11 +205,14 @@ fn main() -> CoelanoxResult<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator } => {
-            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator)
+        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add } => {
+            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref())
         }
         Commands::Validate { file } => {
             validate_command(&file)
+        }
+        Commands::Verify { file, verbose } => {
+            verify_command(&file, verbose)
         }
         Commands::Info { file } => {
             info_command(&file)
@@ -206,7 +232,7 @@ fn main() -> CoelanoxResult<()> {
     }
 }
 
-fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool) -> CoelanoxResult<()> {
+fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>) -> CoelanoxResult<()> {
     info!("Packaging model: {} -> {}", input, output);
     info!("Model type: {}", model_type);
     
@@ -272,19 +298,47 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     }
     info!("  SIMD: {:?}", env.simd_capabilities);
     
+    // Validate flag combinations
+    if fat && auto {
+        return Err(CoelanoxError::format("Cannot use both --fat and --auto flags"));
+    }
+    if fat && target != "auto" {
+        return Err(CoelanoxError::format("Cannot use both --fat and --target flags (use --fat alone or --target alone)"));
+    }
+    if auto && target != "auto" {
+        return Err(CoelanoxError::format("Cannot use both --auto and --target flags (use --auto alone or --target alone)"));
+    }
+    
     // Determine target hardware
-    let hardware_target = match target.to_lowercase().as_str() {
-        "cpu" => HardwareTarget::Cpu,
-        "gpu" => HardwareTarget::Gpu,
-        "edge" => HardwareTarget::Edge,
-        "auto" => {
-            let recommended = env.recommended_target();
-            info!("Auto-detected target: {:?}", recommended);
-            recommended
-        }
-        _ => {
-            warn!("Unknown target '{}', using auto-detection", target);
-            env.recommended_target()
+    // If --fat or --auto, we'll handle selection in packager
+    // Otherwise, parse --target (supports both old values and new hardware-specific values)
+    let hardware_target = if fat || auto {
+        // Will be determined in packager based on selection mode
+        env.recommended_target() // Temporary, will be overridden
+    } else {
+        match target.to_lowercase().as_str() {
+            "cpu" => HardwareTarget::Cpu,
+            "gpu" => HardwareTarget::Gpu,
+            "edge" => HardwareTarget::Edge,
+            "auto" => {
+                let recommended = env.recommended_target();
+                info!("Auto-detected target: {:?}", recommended);
+                recommended
+            }
+            // Hardware-specific targets
+            "h100" | "a100" | "v100" => HardwareTarget::Gpu, // NVIDIA GPUs
+            "amd-gpu" | "amd" => HardwareTarget::Gpu, // AMD GPU
+            "intel-npu" | "intel" => HardwareTarget::NPU, // Intel NPU
+            "qualcomm" => HardwareTarget::NPU, // Qualcomm NPU
+            _ => {
+                // Try as custom target
+                if target.contains('-') || target.chars().all(|c| c.is_alphanumeric()) {
+                    HardwareTarget::Custom(target.to_string())
+                } else {
+                    warn!("Unknown target '{}', using auto-detection", target);
+                    env.recommended_target()
+                }
+            }
         }
     };
     
@@ -296,7 +350,18 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     eprintln!("   Target: {:?}", hardware_target);
     eprintln!("   Model type: {}", model_type);
     
-    let container = packager.package(std::path::Path::new(input), hardware_target, model_type, input_shapes, output_shapes, use_demo_translator)?;
+    let container = packager.package(
+        std::path::Path::new(input),
+        hardware_target,
+        target, // Pass original target string for backend metadata naming
+        model_type,
+        input_shapes,
+        output_shapes,
+        use_demo_translator,
+        fat,
+        auto,
+        backend_add,
+    )?;
     eprintln!("✅ packager.package() returned successfully");
     
     // Save container to binary file using the proper output path
@@ -326,6 +391,31 @@ fn validate_command(file: &str) -> CoelanoxResult<()> {
     println!("Size: {} bytes", container.total_size());
     
     Ok(())
+}
+
+fn verify_command(file: &str, verbose: bool) -> CoelanoxResult<()> {
+    if verbose {
+        info!("Verifying container integrity: {}", file);
+    }
+    
+    // Verify security hash (pre-deployment check)
+    // This reads from cold storage and verifies hash without loading into memory tier
+    match coelanox_core::format::verify_security_hash(std::path::Path::new(file)) {
+        Ok(()) => {
+            println!("✅ Container integrity verified");
+            if verbose {
+                println!("Hash verification successful - container is valid and untampered");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("❌ Container integrity verification failed");
+            eprintln!("Error: {}", e);
+            eprintln!("The container file may have been tampered with or corrupted.");
+            eprintln!("Do not load or execute this container.");
+            Err(e)
+        }
+    }
 }
 
 fn info_command(file: &str) -> CoelanoxResult<()> {
@@ -366,10 +456,24 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
 fn run_command(file: &str, input: Option<&str>, output: &str) -> CoelanoxResult<()> {
     info!("Running inference: {} -> {}", input.unwrap_or("auto"), output);
     
+    // Verify security hash first (pre-deployment check)
+    // This ensures container integrity before loading into memory tier
+    info!("Verifying container integrity...");
+    coelanox_core::format::verify_security_hash(std::path::Path::new(file))
+        .map_err(|e| {
+            error!("Container integrity verification failed: {}", e);
+            eprintln!("❌ Container verification failed - refusing to load");
+            eprintln!("Error: {}", e);
+            eprintln!("The container file may have been tampered with or corrupted.");
+            eprintln!("Do not execute this container.");
+            e
+        })?;
+    info!("✅ Container integrity verified");
+    
     // Load runtime
     let mut runtime = CoelanoxRuntime::new();
     
-    // Load container
+    // Load container (now trusted, already verified)
     runtime.load_container(file)?;
     
     // Load input data
