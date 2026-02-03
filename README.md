@@ -11,10 +11,8 @@
 [![License: BSL-1.1](https://img.shields.io/badge/License-BSL--1.1-blue.svg)](https://github.com/coelanox/coelanox/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://rustup.rs/)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://github.com/coelanox/coelanox#platform-support)
-[![Performance](https://img.shields.io/badge/Performance-23μs%20validation-brightgreen.svg)](https://github.com/coelanox/coelanox#performance)
-[![Security](https://img.shields.io/badge/Security-9.3%2F10%20rating-red.svg)](https://github.com/coelanox/coelanox#security)
+[![Security](https://img.shields.io/badge/Security-Hash%20%7C%20Validation-blue.svg)](https://github.com/coelanox/coelanox#security)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](https://github.com/coelanox/coelanox/actions)
-[![Code Coverage](https://img.shields.io/badge/Coverage-95%25-brightgreen.svg)](https://github.com/coelanox/coelanox#testing)
 
 [![GitHub stars](https://img.shields.io/github/stars/coelanox/coelanox?style=social)](https://github.com/coelanox/coelanox)
 [![GitHub forks](https://img.shields.io/github/forks/coelanox/coelanox?style=social)](https://github.com/coelanox/coelanox)
@@ -25,91 +23,80 @@
 
 ---
 
-## 🚀 **Revolutionary AI Container Technology**
+## What is COELANOX?
 
-**COELANOX** is the world's first **universal binary container** for AI models, delivering **100,000x faster** validation than traditional containers with **zero runtime dependencies**.
+**COELANOX** is a **universal binary container** for AI models. It lets you package any model (ONNX, TensorFlow, PyTorch, or custom binary) into a single `.cnox` file, verify its integrity, and run it across different backends with a consistent CLI.
 
-### **🎯 Key Features**
+### What It Does
 
-| Feature | COELANOX | Traditional | Improvement |
-|---------|------|-------------|-------------|
-| **Validation Speed** | **23μs** | 2-5s | **100,000x faster** |
-| **File Overhead** | **21 bytes** | 500MB+ | **25,000,000x smaller** |
-| **Cold Start** | **Instant** | 30-120s | **Infinite improvement** |
-| **Security Rating** | **9.3/10** | 6-7/10 | **33% more secure** |
-| **Platform Support** | **Universal** | Framework-specific | **Cross-platform** |
+- **Package** — Turn a source model into a COELANOX container: translate to a universal IR, optimize for target hardware, compress weights, and embed a security hash.
+- **Validate** — Check a `.cnox` container’s integrity (SHA-256) before deployment or execution, without loading the full model.
+- **Run** — Load and execute a container: verify hash, load into the runtime, and run inference with the chosen backend (CPU, GPU, or fallback).
 
-## 🏗️ **Architecture Overview**
+The design is **format-agnostic** (the container doesn’t depend on a single framework), **security-first** (hash verification at package and run time), and **backend-pluggable** (OpenVINO, TensorRT, and a scalar fallback).
 
-### **Universal Container Design**
+## Architecture Overview
 
-COELANOX uses a revolutionary **universal container** approach:
+### Universal Container Design
+
+COELANOX uses a **universal container** approach: the container format is independent of any single framework. The runtime interprets the payload via pluggable backends.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    COELANOX Universal Architecture              │
+│                    COELANOX Architecture                     │
 ├─────────────────────────────────────────────────────────────┤
-│  📦 Universal Container (Zero Format Knowledge)           │
-│  ├── Header: 8 bytes (Magic: 'COELANOX', Version: 0.1.0.0)  │
-│  ├── Manifest: JSON metadata (Framework: None - universal)│
-│  └── Model Payload: Raw bytes (Any format supported)     │
+│  📦 Universal Container (.cnox)                             │
+│  ├── Header: magic, version, security hash                  │
+│  ├── Manifest: JSON metadata (name, format, hints)          │
+│  └── Payload: IR, machine code, compressed weights          │
 ├─────────────────────────────────────────────────────────────┤
-│  🔧 Backend Interpreters (Full Format Knowledge)         │
-│  ├── OpenVINO Backend: Intel CPU optimization            │
-│  ├── TensorRT Backend: NVIDIA GPU acceleration           │
-│  └── Fallback Backend: Universal dummy inference         │
+│  🔧 Backend System                                           │
+│  ├── OpenVINO Backend: Intel CPU (in development)           │
+│  ├── TensorRT Backend: NVIDIA GPU (in development)          │
+│  └── Fallback Backend: Scalar execution (available)         │
 ├─────────────────────────────────────────────────────────────┤
-│  ⚡ Trust-Based Validation (Linear Performance)           │
-│  ├── Header-only validation (flat-line performance)      │
-│  ├── Trust deployment-ready files (no full validation)   │
-│  └── Sub-50μs regardless of model size                   │
+│  🔒 Security                                                 │
+│  ├── SHA-256 hash computed at package time                  │
+│  ├── Validate command: standalone integrity check           │
+│  └── Run command: verify-then-execute (defense in depth)     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### **Component Architecture**
+### Component Architecture
 
 ```
-COELANOX Core Components:
-├── coelanox-core/          # Core library and format
-├── coelanox-packager/      # Model packaging tool  
-├── coelanox-runner/        # Validation engine
-└── coelanox-inference/     # Inference engine
-
-Backend System:
-├── OpenVINO Backend    # Intel CPU optimization
-├── TensorRT Backend    # NVIDIA GPU acceleration
-└── Fallback Backend    # Universal dummy inference
+coelanox/
+├── coelanox-core/       # Format, IR, security hash, scalar ops
+├── coelanox-packager/   # Package: IR, optimize, compress, hash
+├── coelanox-runtime/    # Backend manager, load & execute
+├── coelanox-cli/        # CLI: package, validate, run
+└── tests/               # Integration tests
 ```
 
-## 🎯 **What Makes COELANOX Revolutionary?**
+## What Coelanox Provides
 
-### **📦 Universal Container**
-- **Format-Agnostic**: Works with ONNX, TensorFlow, PyTorch, and any binary format
-- **Zero Dependencies**: No external runtimes required
-- **Cross-Platform**: Linux, Windows, macOS support
-- **Minimal Overhead**: Only 21 bytes of container overhead
+### Universal Container
+- **Format-agnostic** — Designed to support ONNX, TensorFlow, PyTorch, and custom binary formats via a single container type.
+- **Single file** — One `.cnox` file holds header, manifest, IR, machine code, and compressed weights.
+- **Cross-platform** — Targets Linux, Windows, and macOS.
 
-### **🔧 Backend Interpreter Pattern**
-- **COELANOX Container**: Universal binary container (zero format knowledge)
-- **Backend Interpreters**: Format-specific execution engines
-- **Graceful Degradation**: Falls back to universal dummy inference
-- **Hardware Optimization**: Leverages vendor-specific optimizations
+### Three-Command Flow
+- **Package** — Load a source model, translate to universal IR, optimize for target hardware, compress weights, compute SHA-256, and write a `.cnox` file.
+- **Validate** — Read a `.cnox` file and verify its integrity using the embedded hash (no execution).
+- **Run** — Verify the container, load it into the runtime, and execute with the selected backend.
 
-### **⚡ Trust-Based Linear Performance**
-- **Header-Only Validation**: Validates only magic number and structure
-- **Flat-Line Performance**: Sub-50μs regardless of model size
-- **Trust Deployment**: Assumes deployment-ready files are valid
-- **Marketing Performance**: Optimized for speed over completeness
+### Backend System
+- **Pluggable backends** — OpenVINO (Intel CPU) and TensorRT (NVIDIA GPU) are in development; a scalar fallback backend is available today.
+- **Backend manager** — Runtime selects and manages backends; execution can fall back if a preferred backend is unavailable.
 
-### **🔒 Enterprise Security**
-- **Memory Safety**: Rust ownership system prevents vulnerabilities
-- **Input Validation**: Comprehensive sanitization and bounds checking
-- **Path Traversal Protection**: Blocks malicious file access attempts
-- **Audit Logging**: Detailed security event tracking
+### Security
+- **Security hash** — SHA-256 of the container is stored in the header and checked at validate and run time.
+- **Memory safety** — Implemented in Rust with ownership and bounds checking.
+- **Path and input safety** — Path traversal and input validation to reduce file-system and parsing risks.
 
-## 🚀 **Quick Start**
+## Quick Start
 
-### **Installation**
+### Installation
 
 ```bash
 # Clone the repository
@@ -119,76 +106,34 @@ cd coelanox
 # Build all components
 cargo build --release
 
-# Install (optional)
-cargo install --path crates/coelanox-packager
-cargo install --path crates/coelanox-runner
-cargo install --path crates/coelanox-inference
+# Install the CLI (optional)
+cargo install --path coelanox-cli
 ```
 
-### **Create Your First COELANOX Container**
+### Create Your First COELANOX Container
 
 ```bash
-# Package any model format
-./target/release/coelanox-packager \
-  --model MobileNet-v2.onnx \
-  --name "MobileNet-v2" \
-  --output mobilenet-v2.cnox
+# Package a model (e.g. ONNX) into a .cnox container
+cargo run --release -- package --input model.onnx --output model.cnox --format onnx
 
-# Validate the container (trust-based, linear performance)
-./target/release/coelanox-runner mobilenet-v2.cnox
+# Validate the container (integrity check only)
+cargo run --release -- validate --container model.cnox
 
-# Run inference (with fallback backend)
-./target/release/coelanox-inference mobilenet-v2.cnox --backend fallback
+# Run the container (verify, load, execute)
+cargo run --release -- run --container model.cnox --backend cpu
 ```
 
-### **Universal Model Support**
+### CLI Commands
 
-```bash
-# ONNX models
-coelanox-packager --model model.onnx --name my-model --output model.cnox
+| Command | Purpose |
+|---------|---------|
+| `coelanox package --input <path> --output <path>` | Create a `.cnox` container from a source model. |
+| `coelanox validate --container <path>` | Verify container integrity (SHA-256). |
+| `coelanox run --container <path> [--backend cpu\|gpu]` | Verify, load, and execute a container. |
 
-# TensorFlow models  
-coelanox-packager --model model.pb --name my-model --output model.cnox
+Use `--format onnx` (or `pytorch`, `tensorflow`) with `package` and `--target cpu` (or `gpu`) for optimization target. See `coelanox --help` for full options.
 
-# PyTorch models
-coelanox-packager --model model.pt --name my-model --output model.cnox
-
-# Any binary format
-coelanox-packager --model model.bin --name my-model --output model.cnox
-```
-
-## 📊 **Performance Benchmarks**
-
-### **Trust-Based Linear Performance**
-
-| Model Size | Validation Time | Performance | Status |
-|------------|----------------|-------------|--------|
-| **Small Models** (<1MB) | **23μs** | Flat-line | ✅ **TRUST-BASED** |
-| **Medium Models** (1-10MB) | **23μs** | Flat-line | ✅ **TRUST-BASED** |
-| **Large Models** (>10MB) | **23μs** | Flat-line | ✅ **TRUST-BASED** |
-| **Huge Models** (>1GB) | **23μs** | Flat-line | ✅ **TRUST-BASED** |
-
-### **Performance Philosophy**
-
-```
-COELANOX Trust-Based Validation:
-├── Header validation only (magic number + structure)
-├── Trust deployment-ready files (no full validation)
-├── Flat-line performance regardless of model size
-└── Marketing-optimized for speed over completeness
-```
-
-### **vs Traditional Containers**
-
-| Metric | COELANOX | Docker | Improvement |
-|--------|------|--------|-------------|
-| **Validation Latency** | **23μs** | 2-5s | **100,000x faster** |
-| **File Size Overhead** | **21 bytes** | 500MB+ | **25,000,000x smaller** |
-| **Cold Start Time** | **Instant** | 30-120s | **Infinite improvement** |
-| **Memory Usage** | **Zero-copy** | 100MB+ | **Infinite improvement** |
-| **Performance Scaling** | **Linear** | Exponential | **Flat-line advantage** |
-
-## 🔧 **Platform Support**
+## Platform Support
 
 ### **Operating Systems**
 
@@ -200,12 +145,12 @@ COELANOX Trust-Based Validation:
 
 ### **Hardware Support**
 
-| Hardware | Backend | Status | Performance |
-|----------|---------|--------|-------------|
-| **Intel CPU** | OpenVINO | 🔄 **In Development** | Optimized |
-| **NVIDIA GPU** | TensorRT | 🔄 **In Development** | Accelerated |
-| **ARM CPU** | Fallback | ✅ **Available** | Universal |
-| **Edge Devices** | Fallback | ✅ **Available** | Resource-efficient |
+| Hardware | Backend | Status |
+|----------|---------|--------|
+| **Intel CPU** | OpenVINO | 🔄 In development |
+| **NVIDIA GPU** | TensorRT | 🔄 In development |
+| **ARM CPU** | Fallback | ✅ Available |
+| **Edge / generic** | Fallback | ✅ Available |
 
 ### **Model Formats**
 
@@ -220,48 +165,17 @@ COELANOX Trust-Based Validation:
 
 ### **COELANOX File Format**
 
-```
-COELANOX File Structure (v0.1.0.0):
-┌─────────────┬─────────────┬─────────────┬─────────────┐
-│   Header    │   Length    │  Manifest   │   Payload   │
-│   (8 bytes) │  (4 bytes) │  (JSON)     │  (Binary)   │
-└─────────────┴─────────────┴─────────────┴─────────────┘
+A `.cnox` file contains:
 
-Header Breakdown:
-├── Magic Number: "COELANOX" (4 bytes)
-├── Version: 0.1.0.0 (4 bytes)
-│   ├── Major: 0
-│   ├── Minor: 1
-│   ├── Patch: 0
-│   └── Build: 0
+- **Header** — Magic number, version, and SHA-256 security hash.
+- **Manifest** — JSON metadata (model name, format, optimization hints).
+- **Payload** — Universal IR, optional machine code for target hardware, and compressed weights (e.g. Zstd/LZ4).
 
-Manifest Example:
-{
-  "model_name": "MobileNet-v2",
-  "model_version": null,
-  "framework": null,
-  "input_shape": null,
-  "output_shape": null,
-  "optimization_hints": null
-}
-```
+The security hash is computed over the full container at package time and verified by `validate` and before `run`.
 
 ### **Backend System**
 
-```rust
-// Universal backend trait
-pub trait InferenceBackend: Send + Sync {
-    fn execute(&self, model_payload: &[u8], input_data: &[f32]) -> Result<Vec<f32>, InferenceError>;
-    fn name(&self) -> &str;
-    fn supported_formats(&self) -> Vec<String>;
-    fn hardware_requirements(&self) -> HardwareRequirements;
-}
-
-// Backend implementations
-pub struct OpenVINOBackend;    // Intel CPU optimization
-pub struct TensorRTBackend;    // NVIDIA GPU acceleration  
-pub struct FallbackBackend;    // Universal dummy inference
-```
+The runtime (`coelanox-runtime`) manages pluggable backends. Each backend can load a container, execute it, and report capabilities. The backend manager selects an appropriate backend (e.g. OpenVINO for CPU, TensorRT for GPU) and falls back to the scalar backend when needed.
 
 ## 🔒 **Security Features**
 
@@ -304,10 +218,7 @@ Security Layers:
 ### **Building from Source**
 
 ```bash
-# Prerequisites
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
+# Prerequisites: Rust (rustup.rs)
 # Clone and build
 git clone https://github.com/coelanox/coelanox.git
 cd coelanox
@@ -315,47 +226,31 @@ cargo build --release
 
 # Run tests
 cargo test
-
-# Run benchmarks
-cargo bench
 ```
 
 ### **Project Structure**
 
 ```
 coelanox/
-├── crates/
-│   ├── coelanox-core/          # Core library and format
-│   ├── coelanox-packager/      # Model packaging tool
-│   ├── coelanox-runner/        # Validation engine
-│   └── coelanox-inference/     # Inference engine
-├── docs/                   # Documentation
-├── assets/                 # Logos and images
-├── tests/                  # Integration tests
-└── examples/               # Usage examples
+├── coelanox-core/       # Format, IR, security hash, scalar ops
+├── coelanox-packager/   # Package: IR, optimize, compress, hash
+├── coelanox-runtime/    # Backend manager, load & execute
+├── coelanox-cli/        # CLI: package, validate, run
+├── tests/               # Integration tests
+├── docs/                # Documentation
+└── assets/              # Logos and images
 ```
 
 ### **Contributing**
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+Contributions are welcome. Open an issue or pull request to discuss changes.
 
-## 📚 **Documentation**
+## Documentation
 
-### **Core Documentation**
-- **[Architecture Guide](docs/ARCHITECTURE.md)** - System design and components
-- **[Security Guide](docs/SECURITY.md)** - Security features and compliance
-- **[COELANOX Reference](COELANOX_REFERENCE.md)** - Quick reference guide
-- **[Production MVP Roadmap](roadmaps/PRODUCTION_MVP_ROADMAP.md)** - Development roadmap
-
-### **User Guides**
-- **[Quick Start Guide](QUICKSTART.md)** - Get started in under 5 minutes
-- **[Installation Guide](INSTALL.md)** - Detailed setup instructions
-- **[Examples](examples/)** - Usage examples and tutorials
-
-### **Development**
-- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to COELANOX
-- **[Roadmap](ROADMAP.md)** - Development roadmap and future plans
-- **[Testing Guide](docs/TESTING.md)** - Testing and quality assurance
+- **[Architecture](docs/ARCHITECTURE.md)** — System design, three-command flow, security hash, backend manager
+- **[Security](docs/SECURITY.md)** — Security features and validation
+- **[COELANOX Reference](COELANOX_REFERENCE.md)** — Quick reference
+- **[Production MVP Roadmap](roadmaps/PRODUCTION_MVP_ROADMAP.md)** — Roadmap
 
 ## 🤝 **Community**
 

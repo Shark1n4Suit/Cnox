@@ -6,7 +6,7 @@
 //! - BackendMetadata structures work correctly
 //! - Device ID mapping is correct
 
-use coelanox_runtime::{BackendManager, BackendInfo, BackendSelectionStrategy, DiscoveryResult};
+use coelanox_runtime::{BackendManager, BackendInfo, BackendKind, BackendSelectionStrategy, DiscoveryResult};
 use coelanox_core::format::{BackendMetadata, BackendSelectionMode};
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use tempfile::TempDir;
@@ -201,6 +201,7 @@ fn test_backend_manager_validation() {
         version: "1.0.0".to_string(),
         library_path: std::path::PathBuf::from("test"),
         supported_targets: vec![],
+        kind: BackendKind::Translator,
     };
     manager.register_backend(backend_info);
     
@@ -267,12 +268,14 @@ fn test_backend_selection_strategy() {
         version: "1.0.0".to_string(),
         library_path: std::path::PathBuf::from("primary"),
         supported_targets: vec![],
+        kind: BackendKind::Translator,
     };
     let backend2 = BackendInfo {
         name: "fallback".to_string(),
         version: "1.0.0".to_string(),
         library_path: std::path::PathBuf::from("fallback"),
         supported_targets: vec![],
+        kind: BackendKind::Translator,
     };
     manager.register_backend(backend1);
     manager.register_backend(backend2);

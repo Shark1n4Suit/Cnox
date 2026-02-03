@@ -13,17 +13,28 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
+/// Backend kind: translator (.so) or CLF (sealed kernel pack). CLF reader is implemented separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BackendKind {
+    /// Dynamic library implementing BackendTranslator
+    Translator,
+    /// CLF (Coelanox Library File): sealed vendor kernel pack; packager uses CLF reader when present
+    Clf,
+}
+
 /// Information about a discovered backend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendInfo {
-    /// Backend name (e.g., "nvidia-h100", "amd-gpu")
+    /// Backend name (e.g., "nvidia-h100", "amd-gpu", or CLF stem "intel_gen4")
     pub name: String,
     /// Backend version
     pub version: String,
-    /// Path to the dynamic library
+    /// Path to the dynamic library or .clf file
     pub library_path: PathBuf,
     /// Hardware targets supported by this backend
     pub supported_targets: Vec<HardwareTarget>,
+    /// Whether this backend is a translator (.so) or CLF (.clf)
+    pub kind: BackendKind,
 }
 
 impl BackendInfo {
@@ -173,11 +184,52 @@ impl BackendManager {
                             ));
                         }
                     }
+                } else if Self::is_clf_file(&path) {
+                    match self.load_clf_backend(&path) {
+                        Ok(backend_info) => {
+                            result.discovered.push(backend_info.clone());
+                            self.register_backend(backend_info);
+                        }
+                        Err(e) => {
+                            result.failures.push((
+                                path.clone(),
+                                format!("Failed to load CLF backend: {}", e)
+                            ));
+                        }
+                    }
                 }
             }
         }
         
         Ok(result)
+    }
+    
+    /// Check if a file is a CLF (Coelanox Library File)
+    fn is_clf_file(path: &Path) -> bool {
+        path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase() == "clf")
+            .unwrap_or(false)
+    }
+    
+    /// Register a .clf file as a backend. CLF reader (extract blobs by op_id) is implemented separately.
+    fn load_clf_backend(&self, path: &Path) -> CoelanoxResult<BackendInfo> {
+        if !path.exists() {
+            return Err(CoelanoxError::BackendLibraryNotFound(
+                path.display().to_string()
+            ));
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("clf")
+            .to_string();
+        Ok(BackendInfo {
+            name,
+            version: "1.0".to_string(),
+            library_path: path.to_path_buf(),
+            supported_targets: vec![HardwareTarget::Gpu],
+            kind: BackendKind::Clf,
+        })
     }
     
     /// Check if a file is a dynamic library

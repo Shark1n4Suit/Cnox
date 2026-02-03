@@ -11,7 +11,7 @@ use coelanox_core::{
     optimization::MaxShapeReader,
     utils::SystemEnvironment,
 };
-use coelanox_runtime::BackendManager;
+use coelanox_runtime::{BackendManager, BackendKind};
 use crate::memory::NvmeAllocator;
 // CodeGenerator trait removed - generators folder deleted
 use crate::optimizers::HardwareOptimizer;
@@ -496,18 +496,19 @@ impl CoelanoxPackager {
     }
     
     /// Generate machine code for target hardware
-    /// 
-    /// Takes input_shapes to determine the number of inputs for proper function signature generation
+    ///
+    /// Uses CLF when backend for target is Clf (CLF reader to be implemented); else BackendTranslator or empty.
     fn generate_machine_code(&self, optimized_ir: &coelanox_core::ir::OptimizedIR, target: &HardwareTarget, input_shapes: &[coelanox_core::ir::Shape]) -> CoelanoxResult<Vec<u8>> {
-        // All code generators have been removed - only the BackendTranslator trait remains
-        // All targets return empty code to force runtime scalar fallback
-        // Vendors must provide BackendTranslator implementations via dynamic library loading
-        match target {
-            _ => {
-                // Return empty code to force runtime scalar fallback
-                Ok(Vec::new())
+        // CLF integration: when backend for this target is a CLF file, extract blobs by op_id in IR order (CLF reader TBD)
+        if let Some(backend_info) = self.backend_manager.find_backend_for_target(target) {
+            if backend_info.kind == BackendKind::Clf {
+                // TODO: open backend_info.library_path as CLF, for each node get op_id (op_type_to_clf_id), get_blob(op_id), append
+                let _ = (optimized_ir, &backend_info.library_path);
+                return Ok(Vec::new());
             }
         }
+        // BackendTranslator path when load_backend_library is implemented; else empty (scalar fallback)
+        Ok(Vec::new())
     }
     
     /// Create manifest from IR
