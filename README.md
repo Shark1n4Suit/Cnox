@@ -25,40 +25,48 @@
 
 ## What is COELANOX?
 
-**COELANOX** is a **universal binary container** for AI models. It lets you package any model (ONNX, TensorFlow, PyTorch, or custom binary) into a single `.cnox` file, verify its integrity, and run it across different backends with a consistent CLI.
+**COELANOX** is a **universal binary container** for AI models. You package a source model into a single `.cnox` file (universal IR, optimized code, compressed weights, SHA-256 hash), verify its integrity with a standalone command, and run inference via the CLI. The runtime executes using a scalar fallback backend (pure Rust, from `coelanox-core`); vendor backends for packaging are discovered at package time via the BackendManager.
 
-### What It Does
+### What the CLI Does (from `coelanox-cli`)
 
-- **Package** — Turn a source model into a COELANOX container: translate to a universal IR, optimize for target hardware, compress weights, and embed a security hash.
-- **Validate** — Check a `.cnox` container’s integrity (SHA-256) before deployment or execution, without loading the full model.
-- **Run** — Load and execute a container: verify hash, load into the runtime, and run inference with the chosen backend (CPU, GPU, or fallback).
-
-The design is **format-agnostic** (the container doesn’t depend on a single framework), **security-first** (hash verification at package and run time), and **backend-pluggable** (OpenVINO, TensorRT, and a scalar fallback).
+- **package** — `--input`, `--output`, `--model-type` (cv, nlp, audio, tabular, custom), `--target` (cpu, gpu, edge, auto, or hardware-specific), `--optimization`, `--fat` / `--auto` / `--backend-add`. Requires a translator plugin for the detected format (e.g. ONNX); default plugins do not register translators (see `coelanox-packager` plugins).
+- **validate** — `--file <path>`: read a `.cnox` file and check structure/manifest validity.
+- **verify** — `--file <path>` [--verbose]: verify SHA-256 integrity (standalone, no execution).
+- **run** — `--file`, `--output`, optional `--input` (JSON): verify hash, load container, run inference (scalar fallback), write output JSON.
+- **info** — `--file`: print container manifest and metadata.
+- **benchmark** — `--file`, `--iterations`: run repeated inference and report timing.
+- **env** — print system environment (CPU, GPU, memory, SIMD, recommended target).
+- **debug** — `--file`, optional `--input`/`--output`, `--gdb`, `--dump-registers`, `--trace-limit`: run with diagnostics and optional GDB.
 
 ## Architecture Overview
 
 ### Universal Container Design
 
-COELANOX uses a **universal container** approach: the container format is independent of any single framework. The runtime interprets the payload via pluggable backends.
+The `.cnox` format is framework-agnostic: one file holds header, manifest, IR, machine code, and compressed weights. The packager translates source models (via translator plugins) to universal IR, optimizes for a target, compresses weights (Zstd/LZ4 when enabled), and writes a SHA-256 hash in the header. The runtime loads and executes using the scalar fallback (no vendor runtime backends in-tree).
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    COELANOX Architecture                     │
 ├─────────────────────────────────────────────────────────────┤
-│  📦 Universal Container (.cnox)                             │
-│  ├── Header: magic, version, security hash                  │
-│  ├── Manifest: JSON metadata (name, format, hints)          │
+│  📦 Container (.cnox) — coelanox-core/format.rs             │
+│  ├── Header: 76 bytes (magic COEL, version, security_hash)  │
+│  ├── Manifest: JSON (name, format, shapes, backend_metadata)│
 │  └── Payload: IR, machine code, compressed weights          │
 ├─────────────────────────────────────────────────────────────┤
-│  🔧 Backend System                                           │
-│  ├── OpenVINO Backend: Intel CPU (in development)           │
-│  ├── TensorRT Backend: NVIDIA GPU (in development)          │
-│  └── Fallback Backend: Scalar execution (available)         │
+│  🔧 Package time (coelanox-packager)                         │
+│  ├── Translator plugins → Universal IR (ONNX target; no      │
+│  │   default translator registered in-tree)                 │
+│  ├── BackendManager: discover vendor BackendTranslators     │
+│  │   (.so / .clf) for code generation                        │
+│  └── Optimize IR, generate code, compress, hash, write     │
 ├─────────────────────────────────────────────────────────────┤
-│  🔒 Security                                                 │
-│  ├── SHA-256 hash computed at package time                  │
-│  ├── Validate command: standalone integrity check           │
-│  └── Run command: verify-then-execute (defense in depth)     │
+│  ▶ Runtime (coelanox-runtime)                                │
+│  └── Scalar fallback (coelanox-core scalar ops) — available  │
+├─────────────────────────────────────────────────────────────┤
+│  🔒 Security (coelanox-core format.rs, runtime path check)  │
+│  ├── SHA-256 over full container at package; verify_security_hash() │
+│  ├── verify command: standalone integrity check             │
+│  └── run: verify then load then execute                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -76,23 +84,25 @@ coelanox/
 ## What Coelanox Provides
 
 ### Universal Container
-- **Format-agnostic** — Designed to support ONNX, TensorFlow, PyTorch, and custom binary formats via a single container type.
-- **Single file** — One `.cnox` file holds header, manifest, IR, machine code, and compressed weights.
+- **Single file** — One `.cnox` file holds a 76-byte header (magic `COEL`, version, security hash), JSON manifest (name, format, input/output shapes, backend metadata), and payload (IR, machine code, compressed weights). See `coelanox-core/src/format.rs`.
+- **Format target** — Packager is built for ONNX (format detection and weight extraction); translator plugins are pluggable. No ONNX translator is registered by default (see `coelanox-packager/src/plugins/mod.rs`). TensorFlow/PyTorch detection was removed; focus is ONNX.
 - **Cross-platform** — Targets Linux, Windows, and macOS.
 
-### Three-Command Flow
-- **Package** — Load a source model, translate to universal IR, optimize for target hardware, compress weights, compute SHA-256, and write a `.cnox` file.
-- **Validate** — Read a `.cnox` file and verify its integrity using the embedded hash (no execution).
-- **Run** — Verify the container, load it into the runtime, and execute with the selected backend.
+### Commands (from `coelanox-cli` main.rs)
+- **package** — Requires a translator plugin for the detected format. Translates to universal IR, optimizes for target (cpu/gpu/edge/auto or hardware-specific), compresses weights, computes SHA-256, writes `.cnox`.
+- **validate** — Reads `.cnox` and checks structure/manifest validity (no hash check; use **verify** for that).
+- **verify** — Standalone SHA-256 integrity check (`coelanox-core::format::verify_security_hash`).
+- **run** — Verifies hash, loads container, runs inference with scalar fallback, writes output JSON.
+- **info** / **benchmark** / **env** / **debug** — Inspect container, benchmark, show environment, or run with diagnostics.
 
 ### Backend System
-- **Pluggable backends** — OpenVINO (Intel CPU) and TensorRT (NVIDIA GPU) are in development; a scalar fallback backend is available today.
-- **Backend manager** — Runtime selects and manages backends; execution can fall back if a preferred backend is unavailable.
+- **Package time** — `coelanox-runtime/backend_manager.rs`: discovers vendor BackendTranslators (dynamic libs or CLF) for code generation. No vendor translators are shipped in-tree.
+- **Runtime** — Execution uses the scalar fallback in `coelanox-runtime/fallback` (delegates to `coelanox-core::scalar::execute_scalar_op`). No OpenVINO/TensorRT runtime in the repo.
 
 ### Security
-- **Security hash** — SHA-256 of the container is stored in the header and checked at validate and run time.
-- **Memory safety** — Implemented in Rust with ownership and bounds checking.
-- **Path and input safety** — Path traversal and input validation to reduce file-system and parsing risks.
+- **Security hash** — SHA-256 over full container; stored in header; verified by `verify` and before `run` (see `coelanox-core/src/format.rs` and `docs/SECURITY.md`).
+- **Path validation** — `coelanox_core::utils::validate_path` and runtime `validate_container_path` (path traversal protection).
+- **Memory safety** — Rust; bounds checking; safe usage of unsafe where needed.
 
 ## Quick Start
 
@@ -103,117 +113,55 @@ coelanox/
 git clone https://github.com/coelanox/coelanox.git
 cd coelanox
 
-# Build all components
+# Build all components (from repo root; coelanox/ is the workspace)
 cargo build --release
 
-# Install the CLI (optional)
+# Install the CLI (optional; run from workspace root, e.g. coelanox/)
 cargo install --path coelanox-cli
 ```
 
-### Create Your First COELANOX Container
+### CLI Commands (from `coelanox-cli` main.rs)
 
-```bash
-# Package a model (e.g. ONNX) into a .cnox container
-cargo run --release -- package --input model.onnx --output model.cnox --format onnx
+| Command | Flags | Purpose |
+|---------|-------|---------|
+| **package** | `--input`, `--output`, `--model-type` (cv, nlp, audio, tabular, custom), `--target` (cpu, gpu, edge, auto, or h100, a100, amd-gpu, intel-npu, etc.), `--optimization`, `--fat` / `--auto` / `--backend-add` | Create a `.cnox` from a source model. Requires a translator plugin for the detected format; default plugins do not register any translator. |
+| **validate** | `--file <path>` | Read `.cnox` and check structure/manifest validity. |
+| **verify** | `--file <path>` [--verbose] | Standalone SHA-256 integrity check. |
+| **run** | `--file <path>`, `--output <path>`, optional `--input` (JSON), `--backend` (default cpu) | Verify hash, load container, run inference, write output JSON. |
+| **info** | `--file <path>` | Print container manifest and metadata. |
+| **benchmark** | `--file <path>`, `--iterations` (default 100) | Run repeated inference and report timing. |
+| **env** | (none) | Print system environment and recommended target. |
+| **debug** | `--file`, optional `--input`/`--output`, `--gdb`, `--dump-registers`, `--trace-limit` | Run with diagnostics or GDB. |
 
-# Validate the container (integrity check only)
-cargo run --release -- validate --container model.cnox
-
-# Run the container (verify, load, execute)
-cargo run --release -- run --container model.cnox --backend cpu
-```
-
-### CLI Commands
-
-| Command | Purpose |
-|---------|---------|
-| `coelanox package --input <path> --output <path>` | Create a `.cnox` container from a source model. |
-| `coelanox validate --container <path>` | Verify container integrity (SHA-256). |
-| `coelanox run --container <path> [--backend cpu\|gpu]` | Verify, load, and execute a container. |
-
-Use `--format onnx` (or `pytorch`, `tensorflow`) with `package` and `--target cpu` (or `gpu`) for optimization target. See `coelanox --help` for full options.
+Run from the workspace root: `cargo run --release -- <command> ...` or after `cargo install`: `coelanox <command> ...`. Use `coelanox --help` and `coelanox <command> --help` for full options.
 
 ## Platform Support
 
-### **Operating Systems**
+- **Operating systems** — Linux, Windows, macOS (Rust targets).
+- **Runtime execution** — Scalar fallback only (in-tree). No OpenVINO/TensorRT runtime; vendor BackendTranslators are for package-time code generation and are discovered by BackendManager (`.so` / `.clf`), not shipped in-tree.
+- **Model format** — Packager targets ONNX (format detection and weight extraction in `coelanox-packager`). Translator plugins are pluggable; **no ONNX translator is registered by default** (`coelanox-packager/src/plugins/mod.rs`). TensorFlow/PyTorch detection was removed in the codebase.
 
-| Platform | Status | Notes |
-|----------|--------|-------|
-| **Linux** | ✅ **Full Support** | Primary development platform |
-| **Windows** | ✅ **Full Support** | Native Windows builds |
-| **macOS** | ✅ **Full Support** | Universal binary support |
+## Technical Architecture
 
-### **Hardware Support**
+### COELANOX File Format (`coelanox-core/src/format.rs`)
 
-| Hardware | Backend | Status |
-|----------|---------|--------|
-| **Intel CPU** | OpenVINO | 🔄 In development |
-| **NVIDIA GPU** | TensorRT | 🔄 In development |
-| **ARM CPU** | Fallback | ✅ Available |
-| **Edge / generic** | Fallback | ✅ Available |
+- **Header** — 76 bytes: magic `COEL` (4), version (4), flags (4), container_size (8), manifest_offset (8), code_offset (8), security_hash (32), reserved (8). Hash is computed over full container in `write_binary_file` and verified by `verify_security_hash(path)`.
+- **Manifest** — JSON: name, format, input_shapes, output_shapes, model_size, timestamps, backend_metadata, etc. Written with length prefix.
+- **Payload** — Machine code, compressed weights (Zstd/LZ4 when packaging feature enabled), IR data.
 
-### **Model Formats**
+### Backend System
 
-| Format | Status | Backend Support |
-|--------|--------|-----------------|
-| **ONNX** | ✅ **Supported** | OpenVINO, TensorRT, Fallback |
-| **TensorFlow** | ✅ **Supported** | OpenVINO, Fallback |
-| **PyTorch** | ✅ **Supported** | OpenVINO, Fallback |
-| **Custom Binary** | ✅ **Supported** | Fallback (universal) |
+- **Package time** — `coelanox-runtime/backend_manager.rs`: discovers BackendTranslators (dynamic libs or CLF) for code generation. No in-tree vendor implementations.
+- **Runtime** — `coelanox-runtime` loads containers and executes via scalar fallback (`fallback/mod.rs` → `coelanox_core::scalar::execute_scalar_op`). No other execution backends in the repo.
 
-## 🏗️ **Technical Architecture**
+## Security
 
-### **COELANOX File Format**
+- **Integrity** — SHA-256 over full container at package time; verified by `verify` and before `run` (`coelanox-core/src/format.rs`, `verify_security_hash()`). See `docs/SECURITY.md`.
+- **Path validation** — `coelanox_core::utils::validate_path` (path traversal); runtime `validate_container_path` when loading containers (`coelanox-runtime/src/runtime.rs`).
+- **Format** — Magic `COEL`, version check, manifest parsing in `format.rs`.
+- **Memory safety** — Rust; no unchecked unsafe for user-facing data paths.
 
-A `.cnox` file contains:
-
-- **Header** — Magic number, version, and SHA-256 security hash.
-- **Manifest** — JSON metadata (model name, format, optimization hints).
-- **Payload** — Universal IR, optional machine code for target hardware, and compressed weights (e.g. Zstd/LZ4).
-
-The security hash is computed over the full container at package time and verified by `validate` and before `run`.
-
-### **Backend System**
-
-The runtime (`coelanox-runtime`) manages pluggable backends. Each backend can load a container, execute it, and report capabilities. The backend manager selects an appropriate backend (e.g. OpenVINO for CPU, TensorRT for GPU) and falls back to the scalar backend when needed.
-
-## 🔒 **Security Features**
-
-### **Security Architecture**
-
-COELANOX implements comprehensive security layers:
-
-```
-Security Layers:
-├── File System Security
-│   ├── Path Traversal Protection
-│   ├── Symlink Attack Prevention
-│   ├── File Permission Validation
-│   └── Size Limit Enforcement
-├── Memory Safety
-│   ├── Rust Ownership System
-│   ├── Bounds Checking
-│   ├── Zero-Copy Operations
-│   └── Safe Unsafe Blocks
-└── Format Validation
-    ├── Magic Number Check
-    ├── Version Validation
-    ├── Structure Verification
-    └── Manifest Parsing
-```
-
-### **Security Validations**
-
-| Security Check | Implementation | Protection |
-|----------------|---------------|------------|
-| **Path Traversal** | Blocks `..` patterns | Directory traversal attacks |
-| **Symlink Attacks** | Prevents symlink access | Symbolic link exploits |
-| **File Permissions** | Read-only detection | Unauthorized access |
-| **File Type** | Regular file only | Device/socket mapping |
-| **Size Limits** | 1GB file, 1MB manifest | DoS attacks |
-| **JSON Validation** | UTF-8, size limits | Malicious manifests |
-
-## 🛠️ **Development**
+## Development
 
 ### **Building from Source**
 
