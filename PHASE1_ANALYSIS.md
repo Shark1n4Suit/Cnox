@@ -228,7 +228,7 @@
 
 ## 📚 References
 
-- Roadmap: `/home/shark/Saic/roadmaps/PRODUCTION_MVP_ROADMAP.md`
+- Roadmap: `/home/shark/cnox/roadmaps/PRODUCTION_MVP_ROADMAP.md`
 - Format definition: `coelanox-core/src/format.rs`
 - CLI structure: `coelanox-cli/src/main.rs`
 - Runtime structure: `coelanox-runtime/src/runtime.rs`

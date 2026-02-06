@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     "coelanox-core",
-    "coelanox-packager", 
+    "coelanox-clf",
+    "coelanox-packager",
     "coelanox-runtime",
     "coelanox-cli",
     "tests",

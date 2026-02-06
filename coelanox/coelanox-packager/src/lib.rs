@@ -6,11 +6,12 @@
 use coelanox_core::{
     CoelanoxError, CoelanoxResult,
     format::{BackendMetadata, BackendSelectionMode, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, OptimizationLevel},
-    ir::{GraphNode, IntermediateTensor, UniversalIR, WeightTensor},
+    ir::{GraphNode, IntermediateTensor, OpType as IrOpType, UniversalIR, WeightTensor},
     memory_hal::MemoryBackendRegistry,
     optimization::MaxShapeReader,
     utils::SystemEnvironment,
 };
+use clf::{ClfReader as ClfFileReader, MissingOpIdPolicy, op_type_to_clf_id as clf_op_type_to_clf_id, OpType as ClfOpType};
 use coelanox_runtime::{BackendManager, BackendKind};
 use crate::memory::NvmeAllocator;
 // CodeGenerator trait removed - generators folder deleted
@@ -18,6 +19,68 @@ use crate::optimizers::HardwareOptimizer;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Map coelanox-core IR OpType to CLF crate OpType for canonical op_id lookup.
+fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
+    use IrOpType as Ir;
+    use ClfOpType as Clf;
+    match op_type {
+        Ir::Add => Clf::Add,
+        Ir::Subtract => Clf::Subtract,
+        Ir::Multiply => Clf::Multiply,
+        Ir::Divide => Clf::Divide,
+        Ir::Relu => Clf::Relu,
+        Ir::Sigmoid => Clf::Sigmoid,
+        Ir::Tanh => Clf::Tanh,
+        Ir::Softmax => Clf::Softmax,
+        Ir::LogSoftmax => Clf::LogSoftmax,
+        Ir::Gelu => Clf::Gelu,
+        Ir::Swish => Clf::Swish,
+        Ir::Sqrt => Clf::Sqrt,
+        Ir::Pow => Clf::Pow,
+        Ir::Cos => Clf::Cos,
+        Ir::Sin => Clf::Sin,
+        Ir::Exp => Clf::Exp,
+        Ir::Log => Clf::Log,
+        Ir::Convolution => Clf::Convolution,
+        Ir::MaxPool => Clf::MaxPool,
+        Ir::AvgPool => Clf::AvgPool,
+        Ir::GlobalMaxPool => Clf::GlobalMaxPool,
+        Ir::GlobalAvgPool => Clf::GlobalAvgPool,
+        Ir::BatchNorm => Clf::BatchNorm,
+        Ir::LayerNorm => Clf::LayerNorm,
+        Ir::Dropout => Clf::Dropout,
+        Ir::Reshape => Clf::Reshape,
+        Ir::Transpose => Clf::Transpose,
+        Ir::Permute => Clf::Permute,
+        Ir::Concatenate => Clf::Concatenate,
+        Ir::Split => Clf::Split,
+        Ir::Slice => Clf::Slice,
+        Ir::Gather => Clf::Gather,
+        Ir::Scatter => Clf::Scatter,
+        Ir::MatMul => Clf::MatMul,
+        Ir::Gemm => Clf::Gemm,
+        Ir::ReduceSum => Clf::ReduceSum,
+        Ir::ReduceMean => Clf::ReduceMean,
+        Ir::ReduceMax => Clf::ReduceMax,
+        Ir::ReduceMin => Clf::ReduceMin,
+        Ir::ReduceProd => Clf::ReduceProd,
+        Ir::Broadcast | Ir::Expand => Clf::Unknown,
+        Ir::Equal => Clf::Equal,
+        Ir::NotEqual => Clf::NotEqual,
+        Ir::Greater => Clf::Greater,
+        Ir::GreaterEqual => Clf::GreaterEqual,
+        Ir::Less => Clf::Less,
+        Ir::LessEqual => Clf::LessEqual,
+        Ir::And => Clf::And,
+        Ir::Or => Clf::Or,
+        Ir::Not => Clf::Not,
+        Ir::Custom(s) => Clf::Custom(s.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32)) % 0xFE + 256),
+        Ir::Pooling => Clf::MaxPool,
+        Ir::Activation => Clf::Relu,
+        Ir::Attention | Ir::MultiHeadAttention | Ir::SelfAttention | Ir::Transformer | Ir::Encoder | Ir::Decoder => Clf::Unknown,
+    }
+}
 
 /// Serializable version of OptimizedIR (without Arc)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,17 +560,26 @@ impl CoelanoxPackager {
     
     /// Generate machine code for target hardware
     ///
-    /// Uses CLF when backend for target is Clf (CLF reader to be implemented); else BackendTranslator or empty.
+    /// Uses CLF when backend for target is Clf: loads the .clf file at backend path and
+    /// builds the code section from IR nodes via build_code_section (canonical op_ids).
+    /// Otherwise uses BackendTranslator or returns empty (scalar fallback).
     fn generate_machine_code(&self, optimized_ir: &coelanox_core::ir::OptimizedIR, target: &HardwareTarget, input_shapes: &[coelanox_core::ir::Shape]) -> CoelanoxResult<Vec<u8>> {
-        // CLF integration: when backend for this target is a CLF file, extract blobs by op_id in IR order (CLF reader TBD)
         if let Some(backend_info) = self.backend_manager.find_backend_for_target(target) {
             if backend_info.kind == BackendKind::Clf {
-                // TODO: open backend_info.library_path as CLF, for each node get op_id (op_type_to_clf_id), get_blob(op_id), append
-                let _ = (optimized_ir, &backend_info.library_path);
-                return Ok(Vec::new());
+                let mut reader = ClfFileReader::open(backend_info.library_path.as_path())
+                    .map_err(|e| CoelanoxError::format(&format!("CLF load failed: {}", e)))?;
+                let op_ids: Vec<u32> = optimized_ir
+                    .optimized_nodes
+                    .iter()
+                    .map(|node| clf_op_type_to_clf_id(ir_op_type_to_clf_op_type(&node.op_type)))
+                    .collect();
+                let code = reader
+                    .build_code_section(&op_ids, MissingOpIdPolicy::Skip)
+                    .map_err(|e| CoelanoxError::format(&format!("CLF build_code_section failed: {}", e)))?;
+                return Ok(code);
             }
         }
-        // BackendTranslator path when load_backend_library is implemented; else empty (scalar fallback)
+        let _ = (optimized_ir, input_shapes);
         Ok(Vec::new())
     }
     

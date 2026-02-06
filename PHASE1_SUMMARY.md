@@ -186,8 +186,8 @@ I've completed a comprehensive analysis of your codebase and Phase 1 roadmap. He
 
 ## 📚 Key Files Reference
 
-- **Analysis Document:** `/home/shark/Saic/PHASE1_ANALYSIS.md`
-- **Roadmap:** `/home/shark/Saic/roadmaps/PRODUCTION_MVP_ROADMAP.md`
+- **Analysis Document:** `/home/shark/cnox/PHASE1_ANALYSIS.md`
+- **Roadmap:** `/home/shark/cnox/roadmaps/PRODUCTION_MVP_ROADMAP.md`
 - **Format Definition:** `coelanox-core/src/format.rs`
 - **Runtime Scalar Ops:** `coelanox-runtime/src/runtime.rs` (lines 1447-2043)
 - **Backend References:** `coelanox-runtime/src/backends.rs`

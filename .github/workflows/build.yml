@@ -1,4 +1,4 @@
-name: Build and Release SAIC
+name: Build and Release CNOX
 
 on:
   push:
@@ -91,38 +91,38 @@ jobs:
     - name: Create Linux release
       run: |
         mkdir -p release/linux
-        cp packager/target/release/saic-packager release/linux/
-        cp runner/target/release/saic-runner release/linux/
+        cp packager/target/release/cnox-packager release/linux/
+        cp runner/target/release/cnox-runner release/linux/
         cp README.md release/linux/
         cp QUICKSTART.md release/linux/
         cp INSTALL.md release/linux/
         cp CHANGELOG.md release/linux/
-        cp mobilenetv2.saic release/linux/
-        cp saic.yaml release/linux/
+        cp mobilenetv2.cnox release/linux/
+        cp cnox.yaml release/linux/
         
         # Create installation script
         cat > release/linux/install.sh << 'EOF'
         #!/bin/bash
-        echo "Installing SAIC on Linux..."
+        echo "Installing CNOX on Linux..."
         sudo mkdir -p /usr/local/bin
-        sudo cp saic-packager /usr/local/bin/
-        sudo cp saic-runner /usr/local/bin/
-        sudo chmod +x /usr/local/bin/saic-packager
-        sudo chmod +x /usr/local/bin/saic-runner
-        echo "SAIC installed successfully!"
+        sudo cp cnox-packager /usr/local/bin/
+        sudo cp cnox-runner /usr/local/bin/
+        sudo chmod +x /usr/local/bin/cnox-packager
+        sudo chmod +x /usr/local/bin/cnox-runner
+        echo "CNOX installed successfully!"
         EOF
         chmod +x release/linux/install.sh
         
         # Create tarball
         cd release
-        tar -czf saic-linux-x86_64.tar.gz linux/
+        tar -czf cnox-linux-x86_64.tar.gz linux/
         cd ..
     
     - name: Upload Linux artifact
       uses: actions/upload-artifact@v3
       with:
-        name: saic-linux-x86_64
-        path: release/saic-linux-x86_64.tar.gz
+        name: cnox-linux-x86_64
+        path: release/cnox-linux-x86_64.tar.gz
 
   build-macos:
     name: Build macOS
@@ -159,38 +159,38 @@ jobs:
     - name: Create macOS release
       run: |
         mkdir -p release/macos
-        cp packager/target/release/saic-packager release/macos/
-        cp runner/target/release/saic-runner release/macos/
+        cp packager/target/release/cnox-packager release/macos/
+        cp runner/target/release/cnox-runner release/macos/
         cp README.md release/macos/
         cp QUICKSTART.md release/macos/
         cp INSTALL.md release/macos/
         cp CHANGELOG.md release/macos/
-        cp mobilenetv2.saic release/macos/
-        cp saic.yaml release/macos/
+        cp mobilenetv2.cnox release/macos/
+        cp cnox.yaml release/macos/
         
         # Create installation script
         cat > release/macos/install.sh << 'EOF'
         #!/bin/bash
-        echo "Installing SAIC on macOS..."
+        echo "Installing CNOX on macOS..."
         sudo mkdir -p /usr/local/bin
-        sudo cp saic-packager /usr/local/bin/
-        sudo cp saic-runner /usr/local/bin/
-        sudo chmod +x /usr/local/bin/saic-packager
-        sudo chmod +x /usr/local/bin/saic-runner
-        echo "SAIC installed successfully!"
+        sudo cp cnox-packager /usr/local/bin/
+        sudo cp cnox-runner /usr/local/bin/
+        sudo chmod +x /usr/local/bin/cnox-packager
+        sudo chmod +x /usr/local/bin/cnox-runner
+        echo "CNOX installed successfully!"
         EOF
         chmod +x release/macos/install.sh
         
         # Create tarball
         cd release
-        tar -czf saic-macos-x86_64.tar.gz macos/
+        tar -czf cnox-macos-x86_64.tar.gz macos/
         cd ..
     
     - name: Upload macOS artifact
       uses: actions/upload-artifact@v3
       with:
-        name: saic-macos-x86_64
-        path: release/saic-macos-x86_64.tar.gz
+        name: cnox-macos-x86_64
+        path: release/cnox-macos-x86_64.tar.gz
 
   build-windows:
     name: Build Windows
@@ -227,37 +227,37 @@ jobs:
     - name: Create Windows release
       run: |
         mkdir -p release/windows
-        cp packager/target/release/saic-packager.exe release/windows/
-        cp runner/target/release/saic-runner.exe release/windows/
+        cp packager/target/release/cnox-packager.exe release/windows/
+        cp runner/target/release/cnox-runner.exe release/windows/
         cp README.md release/windows/
         cp QUICKSTART.md release/windows/
         cp INSTALL.md release/windows/
         cp CHANGELOG.md release/windows/
-        cp mobilenetv2.saic release/windows/
-        cp saic.yaml release/windows/
+        cp mobilenetv2.cnox release/windows/
+        cp cnox.yaml release/windows/
         
         # Create installation script
-        echo 'Write-Host "Installing SAIC on Windows..."' > release/windows/install.ps1
-        echo '$binPath = "C:\Program Files\SAIC"' >> release/windows/install.ps1
+        echo 'Write-Host "Installing CNOX on Windows..."' > release/windows/install.ps1
+        echo '$binPath = "C:\Program Files\CNOX"' >> release/windows/install.ps1
         echo 'New-Item -ItemType Directory -Force -Path $binPath' >> release/windows/install.ps1
-        echo 'Copy-Item "saic-packager.exe" -Destination $binPath' >> release/windows/install.ps1
-        echo 'Copy-Item "saic-runner.exe" -Destination $binPath' >> release/windows/install.ps1
+        echo 'Copy-Item "cnox-packager.exe" -Destination $binPath' >> release/windows/install.ps1
+        echo 'Copy-Item "cnox-runner.exe" -Destination $binPath' >> release/windows/install.ps1
         echo '$currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")' >> release/windows/install.ps1
         echo 'if ($currentPath -notlike "*$binPath*") {' >> release/windows/install.ps1
         echo '    [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$binPath", "Machine")' >> release/windows/install.ps1
         echo '}' >> release/windows/install.ps1
-        echo 'Write-Host "SAIC installed successfully!"' >> release/windows/install.ps1
+        echo 'Write-Host "CNOX installed successfully!"' >> release/windows/install.ps1
         
         # Create ZIP file
         cd release
-        Compress-Archive -Path windows/* -DestinationPath saic-windows-x86_64.zip
+        Compress-Archive -Path windows/* -DestinationPath cnox-windows-x86_64.zip
         cd ..
     
     - name: Upload Windows artifact
       uses: actions/upload-artifact@v3
       with:
-        name: saic-windows-x86_64
-        path: release/saic-windows-x86_64.zip
+        name: cnox-windows-x86_64
+        path: release/cnox-windows-x86_64.zip
 
   release:
     name: Create Release
@@ -275,11 +275,11 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          saic-linux-x86_64/saic-linux-x86_64.tar.gz
-          saic-macos-x86_64/saic-macos-x86_64.tar.gz
-          saic-windows-x86_64/saic-windows-x86_64.zip
+          cnox-linux-x86_64/cnox-linux-x86_64.tar.gz
+          cnox-macos-x86_64/cnox-macos-x86_64.tar.gz
+          cnox-windows-x86_64/cnox-windows-x86_64.zip
         body: |
-          # SAIC v${{ github.ref_name }} Release
+          # CNOX v${{ github.ref_name }} Release
           
           ## What's New
           - Universal binary container format for any AI model
@@ -292,15 +292,15 @@ jobs:
           1. Download the appropriate package for your platform
           2. Extract the archive
           3. Run the installation script
-          4. Try: `saic-runner --help`
+          4. Try: `cnox-runner --help`
           
           ## Quick Start
           ```bash
           # Test with example model
-          saic-runner run mobilenetv2.saic
+          cnox-runner run mobilenetv2.cnox
           
           # Execute inference
-          saic-runner execute mobilenetv2.saic --backend cpu
+          cnox-runner execute mobilenetv2.cnox --backend cpu
           ```
           
           For detailed instructions, see QUICKSTART.md

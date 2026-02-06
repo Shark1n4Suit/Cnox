@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Create a report to help us improve SAIC
+about: Create a report to help us improve CNOX
 title: '[BUG] '
 labels: ['bug']
 assignees: ''
@@ -24,7 +24,7 @@ A clear and concise description of what actually happened.
 
 **Environment (please complete the following information):**
  - OS: [e.g. Ubuntu 20.04, macOS 12.0, Windows 11]
- - SAIC Version: [e.g. v0.5.0-beta]
+ - CNOX Version: [e.g. v0.5.0-beta]
  - Rust Version: [e.g. 1.70.0]
  - Backend: [e.g. CPU (OpenVINO), GPU (TensorRT)]
 
@@ -36,8 +36,8 @@ Add any other context about the problem here, including:
 - Error messages or logs
 
 **Files to attach (if applicable):**
-- SAIC file (if the issue is with a specific model)
-- Configuration file (saic.yaml)
+- CNOX file (if the issue is with a specific model)
+- Configuration file (cnox.yaml)
 - Error logs or output
 
 **Performance Information (if applicable):**
@@ -50,5 +50,5 @@ Add any other context about the problem here, including:
 **Checklist:**
 - [ ] I have searched existing issues to avoid duplicates
 - [ ] I have provided all requested information
-- [ ] I have tested with the example mobilenetv2.saic file
+- [ ] I have tested with the example mobilenetv2.cnox file
 - [ ] I have checked the documentation for known issues 

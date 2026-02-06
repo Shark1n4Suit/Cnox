@@ -12,6 +12,7 @@ pub mod scalar;
 pub mod optimization;
 pub mod memory_hal;
 pub mod protection_hal;
+pub mod hal_mapping;
 
 pub use error::{CoelanoxError, CoelanoxResult};
 pub use memory_hal::{
@@ -22,6 +23,7 @@ pub use protection_hal::{
     ProtectionBackendRegistry, ProtectionCapabilities, ProtectionHAL, ProtectionTarget,
     RegionPermissions,
 };
+pub use hal_mapping::RegionKind;
 
 /// COELANOX magic number for file identification
 pub const COELANOX_MAGIC: [u8; 4] = *b"COEL";
