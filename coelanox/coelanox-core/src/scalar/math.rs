@@ -18,8 +18,11 @@ pub fn sqrt(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar square root
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    for i in 0..len {
+        output[i] = input[i].sqrt();
+    }
+    Ok(())
 }
 
 /// Execute power: output = input^exponent
@@ -31,8 +34,18 @@ pub fn pow(
     output: &mut [f32],
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar power
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let exponent = attributes.get("exponent")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Float(f) => Some(*f),
+            crate::ir::Attribute::Int(i) => Some(*i as f32),
+            _ => None,
+        })
+        .unwrap_or(2.0);
+    let len = input.len().min(output.len());
+    for i in 0..len {
+        output[i] = input[i].powf(exponent);
+    }
+    Ok(())
 }
 
 /// Execute cosine: output = cos(input)
@@ -41,8 +54,11 @@ pub fn cos(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar cosine
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    for i in 0..len {
+        output[i] = input[i].cos();
+    }
+    Ok(())
 }
 
 /// Execute sine: output = sin(input)
@@ -51,8 +67,11 @@ pub fn sin(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar sine
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    for i in 0..len {
+        output[i] = input[i].sin();
+    }
+    Ok(())
 }
 
 /// Execute exponential: output = exp(input)
@@ -61,8 +80,11 @@ pub fn exp(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar exponential
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    for i in 0..len {
+        output[i] = input[i].exp();
+    }
+    Ok(())
 }
 
 /// Execute natural logarithm: output = log(input)
@@ -71,7 +93,10 @@ pub fn log(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar natural logarithm
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    for i in 0..len {
+        output[i] = (input[i] + f32::EPSILON).ln();
+    }
+    Ok(())
 }
 

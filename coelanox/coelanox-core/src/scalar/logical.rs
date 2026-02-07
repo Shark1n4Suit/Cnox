@@ -16,8 +16,11 @@ pub fn and(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar logical AND
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if input_a[i] != 0.0 && input_b[i] != 0.0 { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 
 /// Execute element-wise logical OR: output = (input_a != 0.0 || input_b != 0.0) ? 1.0 : 0.0
@@ -27,8 +30,11 @@ pub fn or(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar logical OR
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if input_a[i] != 0.0 || input_b[i] != 0.0 { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 
 /// Execute element-wise logical NOT: output = (input == 0.0) ? 1.0 : 0.0
@@ -37,7 +43,10 @@ pub fn not(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar logical NOT
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    for i in 0..len {
+        output[i] = if input[i] == 0.0 { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 

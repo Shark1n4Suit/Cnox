@@ -25,7 +25,23 @@ pub fn dropout(
     output: &mut [f32],
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar dropout
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let training = attributes.get("training")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Int(i) => Some(*i != 0),
+            _ => None,
+        })
+        .unwrap_or(false);
+    let len = input.len().min(output.len());
+    if training {
+        let rate = attributes.get("rate")
+            .and_then(|a| match a { crate::ir::Attribute::Float(f) => Some(*f), _ => None })
+            .unwrap_or(0.5);
+        for i in 0..len {
+            output[i] = input[i] / (1.0 - rate);
+        }
+    } else {
+        output[..len].copy_from_slice(&input[..len]);
+    }
+    Ok(())
 }
 

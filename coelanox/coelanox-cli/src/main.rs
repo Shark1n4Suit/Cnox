@@ -218,7 +218,7 @@ fn main() -> CoelanoxResult<()> {
             info_command(&file)
         }
         Commands::Run { file, input, output, backend } => {
-            run_command(&file, input.as_deref(), &output)
+            run_command(&file, input.as_deref(), &output, &backend)
         }
         Commands::Benchmark { file, iterations } => {
             benchmark_command(&file, iterations)
@@ -453,8 +453,8 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
     Ok(())
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str) -> CoelanoxResult<()> {
-    info!("Running inference: {} -> {}", input.unwrap_or("auto"), output);
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str) -> CoelanoxResult<()> {
+    info!("Running inference: {} -> {} (backend: {})", input.unwrap_or("auto"), output, backend);
     
     // Verify security hash first (pre-deployment check)
     // This ensures container integrity before loading into memory tier
@@ -501,8 +501,8 @@ fn run_command(file: &str, input: Option<&str>, output: &str) -> CoelanoxResult<
         vec![1.0f32; input_size]
     };
     
-    // Execute inference
-    let result = runtime.execute(file, &input_data)?;
+    // Execute inference with backend selection (backend manager chooses execution path)
+    let result = runtime.execute_with_backend(file, &input_data, backend)?;
     
     // Save output
     let output_json = serde_json::to_string_pretty(&result)

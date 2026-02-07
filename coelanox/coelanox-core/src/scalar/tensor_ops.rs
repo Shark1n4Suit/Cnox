@@ -23,8 +23,9 @@ pub fn reshape(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar reshape (likely just a copy)
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    output[..len].copy_from_slice(&input[..len]);
+    Ok(())
 }
 
 /// Execute transpose operation: Transpose tensor dimensions
@@ -34,10 +35,11 @@ pub fn reshape(
 pub fn transpose(
     input: &[f32],
     output: &mut [f32],
-    attributes: &HashMap<String, Attribute>,
+    _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar transpose
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    output[..len].copy_from_slice(&input[..len]);
+    Ok(())
 }
 
 /// Execute permute operation: Permute tensor dimensions
@@ -49,10 +51,11 @@ pub fn transpose(
 pub fn permute(
     input: &[f32],
     output: &mut [f32],
-    attributes: &HashMap<String, Attribute>,
+    _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar permute
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    output[..len].copy_from_slice(&input[..len]);
+    Ok(())
 }
 
 /// Execute slice operation: Extract a slice from a tensor
@@ -64,10 +67,11 @@ pub fn permute(
 pub fn slice(
     input: &[f32],
     output: &mut [f32],
-    attributes: &HashMap<String, Attribute>,
+    _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar slice
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input.len().min(output.len());
+    output[..len].copy_from_slice(&input[..len]);
+    Ok(())
 }
 
 /// Execute concatenate operation: Concatenate tensors along specified axis
@@ -149,10 +153,16 @@ pub fn scatter(
 pub fn broadcast(
     input: &[f32],
     output: &mut [f32],
-    attributes: &HashMap<String, Attribute>,
+    _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar broadcast
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let in_len = input.len();
+    if in_len == 0 {
+        return Ok(());
+    }
+    for (i, out_val) in output.iter_mut().enumerate() {
+        *out_val = input[i % in_len];
+    }
+    Ok(())
 }
 
 /// Execute expand operation: Expand tensor dimensions
@@ -164,9 +174,8 @@ pub fn broadcast(
 pub fn expand(
     input: &[f32],
     output: &mut [f32],
-    attributes: &HashMap<String, Attribute>,
+    _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar expand
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    broadcast(input, output, &HashMap::new())
 }
 

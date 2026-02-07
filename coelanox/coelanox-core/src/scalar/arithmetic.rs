@@ -32,9 +32,11 @@ pub fn add(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar addition
-    // Placeholder - will be implemented in next step
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = input_a[i] + input_b[i];
+    }
+    Ok(())
 }
 
 /// Execute element-wise subtraction: output = input_a - input_b
@@ -44,8 +46,11 @@ pub fn subtract(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar subtraction
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = input_a[i] - input_b[i];
+    }
+    Ok(())
 }
 
 /// Execute element-wise multiplication: output = input_a * input_b
@@ -55,8 +60,11 @@ pub fn multiply(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar multiplication
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = input_a[i] * input_b[i];
+    }
+    Ok(())
 }
 
 /// Execute element-wise division: output = input_a / input_b
@@ -66,7 +74,10 @@ pub fn divide(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar division
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = input_a[i] / (input_b[i] + f32::EPSILON);
+    }
+    Ok(())
 }
 

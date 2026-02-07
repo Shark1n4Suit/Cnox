@@ -144,6 +144,55 @@
 
 ---
 
+## 📦 **Self-Contained Container Architecture** (Future Phase)
+
+### **Vision: Container as Self-Contained Unit**
+
+**Container** = IR + weights + code (CLF blobs) + embedded CLFMM + embedded CLFMP. Truly self-contained. No OS dependency for memory or protection.
+
+**Runtime/Orchestrator** = OS-dependent. Manages multiple containers on the same card/server. Does **not** manage memory for containers. Schedules, routes I/O, load-balances.
+
+### **Key Principles**
+
+| Component | Role | OS-Dependent? |
+|-----------|------|---------------|
+| **Container** | Self-contained. Own memory via CLFMM, own protection via CLFMP. Uses CLF blobs (no ELF). | No |
+| **Runtime** | Orchestrator only. Manages multiple containers. Scheduling, I/O routing. Does not allocate for containers. | Yes |
+| **Drone** | No runtime. Container flashed directly. Bootloader/firmware loads container. Runs standalone. | N/A |
+
+### **Changes Required**
+
+1. **Container format** – Add CLFMM and CLFMP sections (embed or reference). Container carries its memory and protection logic.
+2. **Packager** – Embed CLFMM and CLFMP when building. `--clfmm`, `--clfmp` or target-based discovery.
+3. **Runtime** – Remove allocation for containers. Use embedded CLFMM/CLFMP from container. Runtime becomes orchestrator only (multi-container on same card).
+4. **Bootstrap** – Minimal loader or container-as-loadable format so CLFMM blobs are executable before use.
+
+### **Orchestrator Role on Server**
+
+On a server, the runtime/orchestrator handles:
+
+- **Loading containers** – Reads `.cnox` files, validates, caches.
+- **Scheduling** – Decides which container(s) run, when, on which GPU/card.
+- **I/O routing** – Sends inputs to containers, receives outputs.
+- **Lifecycle** – Start/stop containers, cleanup.
+- **Load balancing** – Distributes work across containers and cards.
+- **Resource awareness** – Tracks which cards are busy, which are idle.
+
+It does **not** allocate memory for containers; each container pulls its own via embedded CLFMM.
+
+### **Deployment Targets**
+
+- **Server/Desktop (with OS):** Orchestrator manages multiple containers. Each container uses its own embedded CLFMM/CLFMP.
+- **Drone/Edge (no OS):** Container flashed directly. No orchestrator. Bootloader loads container and runs.
+
+### **Safety Model**
+
+- Backend traits link ops only. AMD/Intel write kernels and pass tests vs scalar reference.
+- Scalar is ground truth. Vendor kernels must match. Same container, different CLF per hardware.
+- Container is Turing-incomplete (DAG, bounded). Safe for constrained environments.
+
+---
+
 ## 🗺️ **Roadmap Phases**
 
 ### **Phase 1: Critical Fixes & Architecture Cleanup (Weeks 1-3)**

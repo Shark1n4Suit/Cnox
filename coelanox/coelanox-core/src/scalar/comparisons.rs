@@ -19,8 +19,11 @@ pub fn equal(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar equality comparison
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if (input_a[i] - input_b[i]).abs() < f32::EPSILON { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 
 /// Execute element-wise inequality: output = (input_a != input_b) ? 1.0 : 0.0
@@ -30,8 +33,11 @@ pub fn not_equal(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar inequality comparison
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if (input_a[i] - input_b[i]).abs() >= f32::EPSILON { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 
 /// Execute element-wise greater-than: output = (input_a > input_b) ? 1.0 : 0.0
@@ -41,8 +47,11 @@ pub fn greater(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar greater-than comparison
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if input_a[i] > input_b[i] { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 
 /// Execute element-wise greater-than-or-equal: output = (input_a >= input_b) ? 1.0 : 0.0
@@ -52,8 +61,11 @@ pub fn greater_equal(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar greater-than-or-equal comparison
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if input_a[i] >= input_b[i] { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 
 /// Execute element-wise less-than: output = (input_a < input_b) ? 1.0 : 0.0
@@ -63,8 +75,11 @@ pub fn less(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar less-than comparison
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if input_a[i] < input_b[i] { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 
 /// Execute element-wise less-than-or-equal: output = (input_a <= input_b) ? 1.0 : 0.0
@@ -74,7 +89,10 @@ pub fn less_equal(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    // TODO: Implement scalar less-than-or-equal comparison
-    Err(CoelanoxError::Internal("Scalar operations not yet implemented".to_string()))
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    for i in 0..len {
+        output[i] = if input_a[i] <= input_b[i] { 1.0 } else { 0.0 };
+    }
+    Ok(())
 }
 

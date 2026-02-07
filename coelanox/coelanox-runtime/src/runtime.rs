@@ -11,10 +11,12 @@
 //! - Security hardening and validation
 //! - Multi-backend execution support
 
+use crate::{RuntimeBackendRegistry, ScalarExecutionBackend};
 use coelanox_core::{
     format::CoelanoxContainer,
     ir::{Attribute, Operation, OpType},
     memory_hal::{MemoryBackendRegistry, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
+    protection_hal::{ProtectionBackendRegistry, RegionPermissions},
     CoelanoxError, CoelanoxResult,
 };
 use std::collections::HashMap;
@@ -479,13 +481,37 @@ pub struct CoelanoxRuntime {
     /// Memory HAL registry for executable/storage backends. When a backend is registered
     /// for executable, allocation uses HAL; otherwise legacy mmap/VirtualAlloc is used.
     memory_registry: Arc<RwLock<MemoryBackendRegistry>>,
+    /// Protection HAL registry for MMU/MPU configuration. When a backend is registered,
+    /// allocate_and_copy_code calls configure_region + enable_protection after loading code.
+    protection_registry: Arc<RwLock<ProtectionBackendRegistry>>,
+    /// Runtime execution backend registry. Holds fallback backends (e.g. scalar-fallback).
+    /// The runtime tries CPU native machine code first, then falls back via this registry.
+    runtime_backend_registry: Arc<RwLock<RuntimeBackendRegistry>>,
 }
+
+/// Simple memory region wrapper for legacy allocations. Implements MemoryRegion for
+/// Protection HAL integration when no Memory HAL backend is used.
+struct SimpleRegion {
+    ptr: *mut u8,
+    size: usize,
+}
+
+impl MemoryRegion for SimpleRegion {
+    fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+    fn size(&self) -> usize {
+        self.size
+    }
+}
+
+unsafe impl Send for SimpleRegion {}
+unsafe impl Sync for SimpleRegion {}
 
 /// Executable memory block: either legacy (mmap/VirtualAlloc) or HAL-backed region.
 enum ExecutableMemoryBlock {
     Legacy {
-        ptr: *mut u8,
-        size: usize,
+        region: SimpleRegion,
         allocated_at: Instant,
     },
     Hal {
@@ -498,9 +524,16 @@ enum ExecutableMemoryBlock {
 impl ExecutableMemoryBlock {
     fn new_legacy(ptr: *mut u8, size: usize) -> Self {
         Self::Legacy {
-            ptr,
-            size,
+            region: SimpleRegion { ptr, size },
             allocated_at: Instant::now(),
+        }
+    }
+
+    /// Get region as &dyn MemoryRegion for Protection HAL.
+    fn as_region_ref(&self) -> &dyn MemoryRegion {
+        match self {
+            Self::Legacy { region, .. } => region,
+            Self::Hal { region, .. } => region.as_ref(),
         }
     }
 
@@ -515,7 +548,7 @@ impl ExecutableMemoryBlock {
     /// Pointer to executable memory (for calling loaded code).
     fn as_ptr(&self) -> *mut u8 {
         match self {
-            Self::Legacy { ptr, .. } => *ptr,
+            Self::Legacy { region, .. } => region.as_ptr(),
             Self::Hal { region, .. } => region.as_ptr(),
         }
     }
@@ -523,16 +556,15 @@ impl ExecutableMemoryBlock {
     /// Size in bytes.
     fn size(&self) -> usize {
         match self {
-            Self::Legacy { size, .. } => *size,
+            Self::Legacy { region, .. } => region.size(),
             Self::Hal { region, .. } => region.size(),
         }
     }
 
-    /// Get allocation age in milliseconds
+    /// Get allocation age in milliseconds.
     fn age_ms(&self) -> u64 {
         let at = match self {
-            Self::Legacy { allocated_at, .. } => allocated_at,
-            Self::Hal { allocated_at, .. } => allocated_at,
+            Self::Legacy { allocated_at, .. } | Self::Hal { allocated_at, .. } => allocated_at,
         };
         at.elapsed().as_millis() as u64
     }
@@ -770,7 +802,34 @@ impl CoelanoxRuntime {
             execution_counter: AtomicU64::new(0),
             warmed_containers: Arc::new(RwLock::new(HashMap::new())),
             memory_registry: Arc::new(RwLock::new(MemoryBackendRegistry::new())),
+            protection_registry: Arc::new(RwLock::new(ProtectionBackendRegistry::new())),
+            runtime_backend_registry: {
+                let mut reg = RuntimeBackendRegistry::new();
+                reg.register("scalar-fallback", Box::new(ScalarExecutionBackend::new()));
+                Arc::new(RwLock::new(reg))
+            },
         }
+    }
+
+    /// Access the runtime backend registry (fallback execution backends).
+    pub fn runtime_backend_registry(&self) -> std::sync::RwLockReadGuard<'_, RuntimeBackendRegistry> {
+        self.runtime_backend_registry.read().unwrap()
+    }
+
+    /// Mutable access to the runtime backend registry.
+    pub fn runtime_backend_registry_mut(&self) -> std::sync::RwLockWriteGuard<'_, RuntimeBackendRegistry> {
+        self.runtime_backend_registry.write().unwrap()
+    }
+
+    /// Access the protection HAL registry. When a backend is registered, it is invoked
+    /// after allocate_and_copy_code to configure region permissions (Load & Lock).
+    pub fn protection_registry(&self) -> std::sync::RwLockReadGuard<'_, ProtectionBackendRegistry> {
+        self.protection_registry.read().unwrap()
+    }
+
+    /// Mutable access to the protection HAL registry.
+    pub fn protection_registry_mut(&self) -> std::sync::RwLockWriteGuard<'_, ProtectionBackendRegistry> {
+        self.protection_registry.write().unwrap()
     }
 
     /// Access the memory HAL registry to register executable/storage backends.
@@ -923,15 +982,12 @@ impl CoelanoxRuntime {
         Ok(())
     }
     
-    /// Execute a COELANOX container by name with comprehensive validation and monitoring
+    /// Execute a COELANOX container by name with comprehensive validation and monitoring.
+    /// Uses "auto" backend selection (backend manager chooses based on detected hardware).
     pub fn execute(&self, container_name: &str, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        let config = self.get_config();
-        let timeout = Duration::from_millis(config.execution_timeout_ms);
-        let max_retries = 3; // Default retry count
-        
-        self.execute_with_retry(container_name, input_data, max_retries, timeout)
+        self.execute_with_backend(container_name, input_data, "auto")
     }
-    
+
     /// Execute a COELANOX container with retry logic and timeout enforcement
     pub fn execute_with_retry(&self, container_name: &str, input_data: &[f32], max_retries: usize, timeout: Duration) -> CoelanoxResult<Vec<f32>> {
         let mut execution_state = ExecutionState::new(
@@ -1237,17 +1293,8 @@ impl CoelanoxRuntime {
             containers.get(&execution_state.container_name).unwrap().clone()
         };
         
-        // Execute the actual computation
-        let result = match self.execute_machine_code(&container, input_data) {
-            Ok(output) => {
-                debug!("✅ Executed using real machine code");
-                Ok(output)
-            }
-            Err(e) => {
-                warn!("⚠️  Machine code execution failed: {:?}, falling back to Rust implementation", e);
-                self.execute_machine_code_with_weights(&container, input_data)
-            }
-        };
+        // Execute using backend selection (auto = backend manager chooses from detected hardware)
+        let result = self.run_backend_execution(&container, input_data, "auto");
         
         match result {
             Ok(output) => {
@@ -1401,212 +1448,6 @@ impl CoelanoxRuntime {
         }
     }
     
-    /// Execute machine code with weights
-    fn execute_machine_code_with_weights(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        // Load IR from container
-        use bincode;
-        use coelanox_core::ir::{GraphNode, IntermediateTensor, WeightTensor};
-        use std::collections::HashMap;
-        use coelanox_core::format::HardwareTarget;
-        
-        // Deserialize into temporary struct
-        #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-        struct SerializableIR {
-            target: HardwareTarget,
-            optimized_nodes: Vec<GraphNode>,
-            intermediate_tensors: Vec<IntermediateTensor>,
-            optimization_metadata: HashMap<String, String>,
-            original_model_name: String,
-            weight_tensors: Vec<WeightTensor>,
-        }
-        
-        let serialized: SerializableIR = bincode::deserialize(&container.ir_data)
-            .map_err(|e| CoelanoxError::Runtime(format!("Failed to deserialize IR: {}", e)))?;
-        
-        // Reconstruct OptimizedIR with Arc
-        let ir = coelanox_core::ir::OptimizedIR::from_deserialized(
-            serialized.target,
-            serialized.optimized_nodes,
-            serialized.intermediate_tensors,
-            serialized.optimization_metadata,
-            serialized.original_model_name,
-            serialized.weight_tensors,
-        );
-        
-        // Load weights from container
-        let weights = container.decompress_weights()?;
-        
-        // Execute operations from IR
-        let mut current_data = input_data.to_vec();
-        
-        // Iterate through operations in the optimized IR
-        for node in &ir.optimized_nodes {
-            // Create operation from node (simplified version for OptimizedIR)
-            let mut operation = Operation::new(node.op_type.clone());
-            
-            // Convert tensor IDs to names for inputs
-            for tensor_id in &node.input_tensors {
-                let tensor_name = if tensor_id.is_weight() {
-                    if let Some(tensor) = ir.shared_weights.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("weight_{}", tensor_id.index())
-                    }
-                } else {
-                    if let Some(tensor) = ir.intermediate_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("intermediate_{}", tensor_id.index())
-                    }
-                };
-                operation.add_input(tensor_name);
-            }
-            
-            // Convert tensor IDs to names for outputs
-            for tensor_id in &node.output_tensors {
-                let tensor_name = if tensor_id.is_weight() {
-                    if let Some(tensor) = ir.shared_weights.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("weight_{}", tensor_id.index())
-                    }
-                } else {
-                    if let Some(tensor) = ir.intermediate_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("intermediate_{}", tensor_id.index())
-                    }
-                };
-                operation.add_output(tensor_name);
-            }
-            
-            // Copy attributes
-            operation.attributes = node.attributes.clone();
-            
-            // Execute operation using existing fallback methods
-            current_data = self.execute_operation_with_weights(&operation, &current_data, &weights)?;
-        }
-        
-        Ok(current_data)
-    }
-    
-    /// Execute a single operation with weights
-    fn execute_operation_with_weights(&self, operation: &Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        match operation.op_type {
-            OpType::Add => {
-                // Real addition with weights
-                let mut output = Vec::new();
-                for (i, &val) in input_data.iter().enumerate() {
-                    if i < weights.len() {
-                        output.push(val + weights[i]);
-                    } else {
-                        output.push(val);
-                    }
-                }
-                Ok(output)
-            }
-            OpType::Multiply => {
-                // Real multiplication with weights
-                let mut output = Vec::new();
-                for (i, &val) in input_data.iter().enumerate() {
-                    if i < weights.len() {
-                        output.push(val * weights[i]);
-                    } else {
-                        output.push(val);
-                    }
-                }
-                Ok(output)
-            }
-            OpType::Convolution => {
-                // Simple convolution implementation
-                self.execute_convolution_with_weights(operation, input_data, weights)
-            }
-            OpType::MatMul => {
-                // Simple matrix multiplication implementation
-                self.execute_matmul_with_weights(operation, input_data, weights)
-            }
-            OpType::Activation => {
-                // ReLU activation
-                let output: Vec<f32> = input_data.iter().map(|&x| if x > 0.0 { x } else { 0.0 }).collect();
-                Ok(output)
-            }
-            _ => {
-                // Fallback: pass through input
-                Ok(input_data.to_vec())
-            }
-        }
-    }
-    
-    /// Execute convolution with weights
-    fn execute_convolution_with_weights(&self, operation: &Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        // Simple convolution implementation
-        let mut output = Vec::new();
-        
-        // Get kernel size from operation attributes
-        let kernel_size = operation.attributes.get("kernel_size")
-            .and_then(|attr| match attr {
-                Attribute::Int(i) => Some(*i as usize),
-                _ => None,
-            })
-            .unwrap_or(3);
-        
-        // Simple 1D convolution
-        for i in 0..input_data.len().saturating_sub(kernel_size - 1) {
-            let mut sum = 0.0;
-            for j in 0..kernel_size {
-                if i + j < input_data.len() && j < weights.len() {
-                    sum += input_data[i + j] * weights[j];
-                }
-            }
-            output.push(sum);
-        }
-        
-        Ok(output)
-    }
-    
-    /// Execute matrix multiplication with weights
-    fn execute_matmul_with_weights(&self, operation: &Operation, input_data: &[f32], weights: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        // Simple matrix multiplication implementation
-        let mut output = Vec::new();
-        
-        // Get matrix dimensions from operation attributes
-        let dims = operation.attributes.get("dimensions")
-            .and_then(|attr| match attr {
-                Attribute::IntArray(dims) => Some(dims.iter().map(|&x| x as i32).collect()),
-                _ => None,
-            })
-            .unwrap_or(vec![input_data.len() as i32, 1]);
-        
-        if dims.len() >= 2 {
-            let rows = dims[0] as usize;
-            let cols = dims[1] as usize;
-            
-            // Simple matrix multiplication: input * weights
-            for i in 0..rows {
-                let mut sum = 0.0;
-                for j in 0..cols {
-                    let input_idx = i * cols + j;
-                    let weight_idx = i * cols + j;
-                    if input_idx < input_data.len() && weight_idx < weights.len() {
-                        sum += input_data[input_idx] * weights[weight_idx];
-                    }
-                }
-                output.push(sum);
-            }
-        } else {
-            // Fallback: element-wise multiplication
-            for (i, &val) in input_data.iter().enumerate() {
-                if i < weights.len() {
-                    output.push(val * weights[i]);
-                } else {
-                    output.push(val);
-                }
-            }
-        }
-        
-        Ok(output)
-    }
-    
     /// Execute machine code from container with proper memory management
     /// Uses unified descriptor-based calling convention for all models
     fn execute_machine_code(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
@@ -1699,6 +1540,18 @@ impl CoelanoxRuntime {
                     metrics.update_memory_allocation(size);
                     metrics.executable_blocks_count = executable_memory.len();
                     debug!("✅ Allocated executable memory via HAL: {} bytes", size);
+                    drop(executable_memory);
+                    // Protection HAL: configure code region as RX when backend is registered
+                    if let Some((_, prot)) = self.protection_registry.read().unwrap().default_backend() {
+                        if let Some(block) = self.executable_memory.lock().unwrap().last() {
+                            let region = block.as_region_ref();
+                            if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
+                                warn!("Protection HAL configure_region failed: {:?}", e);
+                            } else if let Err(e) = prot.enable_protection() {
+                                warn!("Protection HAL enable_protection failed: {:?}", e);
+                            }
+                        }
+                    }
                     return Ok(ptr);
                 }
                 Err(e) => {
@@ -1726,6 +1579,18 @@ impl CoelanoxRuntime {
                 metrics.update_memory_allocation(size);
                 metrics.executable_blocks_count = executable_memory.len();
                 debug!("✅ Created function pointer: 0x{:x}", ptr as usize);
+                drop(executable_memory);
+                // Protection HAL: configure code region as RX when backend is registered
+                if let Some((_, prot)) = self.protection_registry.read().unwrap().default_backend() {
+                    if let Some(block) = self.executable_memory.lock().unwrap().last() {
+                        let region = block.as_region_ref();
+                        if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
+                            warn!("Protection HAL configure_region failed: {:?}", e);
+                        } else if let Err(e) = prot.enable_protection() {
+                            warn!("Protection HAL enable_protection failed: {:?}", e);
+                        }
+                    }
+                }
                 Ok(ptr)
             }
             Err(e) => {
@@ -1796,35 +1661,106 @@ impl CoelanoxRuntime {
         }
     }
     
-    /// Execute with specific backend
+    /// Execute with backend selected by the backend manager (hardware flag from CLI).
+    ///
+    /// The backend manager chooses the execution path based on the backend flag.
+    /// No hardcoded primary - the flag determines what we try first. Scalar is
+    /// always the fallback when the selected backend fails.
     pub fn execute_with_backend(
-        &mut self,
+        &self,
         container_name: &str,
         input_data: &[f32],
         backend: &str,
     ) -> CoelanoxResult<Vec<f32>> {
-        // For now, backend selection is not implemented
-        // In the future, this would select different execution engines
-        match backend {
-            "cpu" => self.execute(container_name, input_data),
-            "gpu" => self.execute_gpu(container_name, input_data),
-            "edge" => self.execute_edge(container_name, input_data),
-            _ => Err(CoelanoxError::Runtime(format!("Unknown backend: {}", backend))),
+        let container = self.get_container_info(container_name)?;
+        self.run_backend_execution(&container, input_data, backend)
+    }
+
+    /// Core backend-driven execution. Used by execute_with_backend and execute_execution_stage.
+    fn run_backend_execution(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        backend: &str,
+    ) -> CoelanoxResult<Vec<f32>> {
+        let backend_normalized = backend.to_lowercase();
+
+        match backend_normalized.as_str() {
+            "cpu" => {
+                self.execute_machine_code(container, input_data).or_else(|e| {
+                    warn!("CPU machine code failed: {:?}, falling back to scalar", e);
+                    self.try_scalar_fallback(container, input_data)
+                })
+            }
+            "gpu" | "npu" | "tpu" | "edge" => {
+                self.try_registry_backend_then_scalar(container, input_data, &backend_normalized)
+            }
+            "scalar" => self.try_scalar_fallback(container, input_data),
+            "auto" => {
+                let detected = self.select_backend_auto();
+                debug!("Auto-detected backend: {}", detected);
+                self.run_backend_execution(container, input_data, &detected)
+            }
+            _ => {
+                warn!("Unknown backend '{}', trying as registered backend then scalar", backend);
+                self.try_registry_backend_then_scalar(container, input_data, &backend_normalized)
+            }
         }
     }
-    
-    /// Execute on GPU (placeholder)
-    fn execute_gpu(&mut self, container_name: &str, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        // TODO: Implement GPU execution
-        // This would use CUDA/OpenCL/other GPU APIs
-        self.execute(container_name, input_data)
+
+    /// Try backend from registry, then scalar fallback.
+    fn try_registry_backend_then_scalar(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        backend: &str,
+    ) -> CoelanoxResult<Vec<f32>> {
+        let result = {
+            let registry = self.runtime_backend_registry.read().unwrap();
+            registry.get(backend).map(|b| b.execute(container, input_data))
+        };
+        if let Some(Ok(out)) = result {
+            return Ok(out);
+        }
+        if let Some(Err(e)) = result {
+            warn!("Backend '{}' failed: {:?}, falling back to scalar", backend, e);
+        } else {
+            debug!("Backend '{}' not registered, using scalar fallback", backend);
+        }
+        self.try_scalar_fallback(container, input_data)
     }
-    
-    /// Execute on Edge device (placeholder)
-    fn execute_edge(&mut self, container_name: &str, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        // TODO: Implement edge execution
-        // This would use ARM NEON, DSP instructions, etc.
-        self.execute(container_name, input_data)
+
+    /// Execute using scalar fallback backend.
+    fn try_scalar_fallback(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+    ) -> CoelanoxResult<Vec<f32>> {
+        let registry = self.runtime_backend_registry.read().unwrap();
+        let backend = registry.scalar_fallback().ok_or_else(|| {
+            CoelanoxError::Runtime(
+                "Scalar fallback backend not registered in runtime backend registry".to_string(),
+            )
+        })?;
+        backend.execute(container, input_data)
+    }
+
+    /// Auto-detect backend from hardware (e.g. env.recommended_target).
+    fn select_backend_auto(&self) -> String {
+        match coelanox_core::utils::SystemEnvironment::detect() {
+            Ok(env) => {
+                let recommended = env.recommended_target();
+                match recommended {
+                    coelanox_core::format::HardwareTarget::Cpu => "cpu".to_string(),
+                    coelanox_core::format::HardwareTarget::Gpu => "gpu".to_string(),
+                    coelanox_core::format::HardwareTarget::Edge => "edge".to_string(),
+                    coelanox_core::format::HardwareTarget::NeuralEngine => "npu".to_string(),
+                    coelanox_core::format::HardwareTarget::NPU => "npu".to_string(),
+                    coelanox_core::format::HardwareTarget::Custom(s) => s.to_lowercase(),
+                }
+            }
+            Err(_) => "cpu".to_string(),
+        }
     }
     
     /// Get container information (thread-safe)
@@ -2482,7 +2418,9 @@ impl CoelanoxRuntime {
 
         for block in blocks {
             match block {
-                ExecutableMemoryBlock::Legacy { ptr, size, .. } => {
+                ExecutableMemoryBlock::Legacy { region, .. } => {
+                    let ptr = region.as_ptr();
+                    let size = region.size();
                     #[cfg(target_os = "linux")]
                     unsafe {
                         use libc::munmap;
