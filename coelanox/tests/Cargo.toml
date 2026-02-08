@@ -38,7 +38,7 @@ path = "test_nvme_allocation.rs"
 [dependencies]
 coelanox-packager = { path = "../coelanox-packager" }
 coelanox-core = { path = "../coelanox-core" }
-coelanox-runtime = { path = "../coelanox-runtime" }
+coelanox-orchestrator = { path = "../coelanox-orchestrator" }
 libc = "0.2"
 tempfile = "3.8"
 sha2 = "0.10"

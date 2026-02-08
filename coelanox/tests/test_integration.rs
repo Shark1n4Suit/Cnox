@@ -10,7 +10,7 @@
 use coelanox_core::format::{verify_security_hash, HardwareTarget, ModelFormat};
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_packager::CoelanoxPackager;
-use coelanox_runtime::CoelanoxRuntime;
+use coelanox_orchestrator::CoelanoxRuntime;
 use tempfile::NamedTempFile;
 use std::fs;
 use std::io::Write;

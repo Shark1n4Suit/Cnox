@@ -1,14 +1,15 @@
 [package]
-name = "coelanox-runtime"
+name = "coelanox-orchestrator"
 version = "0.1.0"
 edition = "2021"
-description = "Coelanox runtime execution engine"
+description = "Coelanox orchestrator - routes input to containers, manages lifecycle"
 authors = ["Benjamin Morin <benjamin.morin@example.com>"]
 license = "MIT"
 repository = "https://github.com/benjamin-morin/coelanox"
 
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
+clf = { path = "../../../CLF" }
 bincode = "1.3"
 libc = "0.2"
 windows-sys = { version = "0.48", features = ["Win32_System_Memory"] }

@@ -5,7 +5,7 @@
 //! - No references to gpu_backend, npu_backend, tpu_backend exist
 //! - Module is empty but valid (placeholder for future use)
 
-use coelanox_runtime::backends;
+use coelanox_orchestrator::backends;
 
 #[test]
 fn test_backends_module_compiles() {

@@ -1,6 +1,8 @@
 pub mod runtime;
 pub mod backends;
 pub mod backend_manager;
+pub mod container_clfmm_backend;
+pub mod container_clfmp_backend;
 pub mod execution_backend;
 pub mod fallback;
 

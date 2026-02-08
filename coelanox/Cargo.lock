@@ -232,8 +232,8 @@ dependencies = [
  "anyhow",
  "clap",
  "coelanox-core",
+ "coelanox-orchestrator",
  "coelanox-packager",
- "coelanox-runtime",
  "libc",
  "serde",
  "serde_json",
@@ -262,6 +262,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "coelanox-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "clf",
+ "coelanox-core",
+ "coelanox-packager",
+ "libc",
+ "num_cpus",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio-test",
+ "tracing",
+ "uuid",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "coelanox-packager"
 version = "0.5.0-beta"
 dependencies = [
@@ -271,7 +292,7 @@ dependencies = [
  "chrono",
  "clf",
  "coelanox-core",
- "coelanox-runtime",
+ "coelanox-orchestrator",
  "csv",
  "flate2",
  "libc",
@@ -290,33 +311,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "coelanox-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "coelanox-core",
- "coelanox-packager",
- "libc",
- "num_cpus",
- "rayon",
- "serde",
- "serde_json",
- "thiserror",
- "tokio-test",
- "tracing",
- "uuid",
- "windows-sys 0.48.0",
-]
-
-[[package]]
 name = "coelanox-tests"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "coelanox-core",
+ "coelanox-orchestrator",
  "coelanox-packager",
- "coelanox-runtime",
  "libc",
  "serde_json",
  "sha2",

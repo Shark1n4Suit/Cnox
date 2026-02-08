@@ -18,6 +18,8 @@ pub enum MemoryTarget {
     Sd,
     /// OS-provided memory (mmap, VirtualAlloc, heap)
     Os,
+    /// Container-embedded CLFMM (memory movement blobs from container; OS-independent)
+    Clfmm,
     /// Custom target (e.g. vendor-specific)
     Custom(String),
 }
@@ -164,9 +166,14 @@ impl MemoryBackendRegistry {
             .map(|(t, b)| (t.clone(), b.as_ref()))
     }
 
-    /// Default for executable allocation. Prefer Os (mmap/VirtualAlloc), then first that supports executable.
+    /// Default for executable allocation. Prefer Clfmm (container-embedded), then Os, then first that supports executable.
     /// Returns owned target so caller can store it for cleanup.
     pub fn default_for_executable(&self) -> Option<(MemoryTarget, &dyn MemoryHAL)> {
+        if let Some(b) = self.get(&MemoryTarget::Clfmm) {
+            if b.get_capabilities().supports_executable {
+                return Some((MemoryTarget::Clfmm, b));
+            }
+        }
         if let Some(b) = self.get(&MemoryTarget::Os) {
             if b.get_capabilities().supports_executable {
                 return Some((MemoryTarget::Os, b));

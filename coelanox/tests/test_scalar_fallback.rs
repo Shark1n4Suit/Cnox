@@ -8,7 +8,7 @@
 
 use coelanox_core::format::{CoelanoxContainer, CoelanoxManifest, CompressionType, ModelFormat};
 use coelanox_core::ir::{OpType, GraphNode, Attribute};
-use coelanox_runtime::CoelanoxRuntime;
+use coelanox_orchestrator::CoelanoxRuntime;
 use tempfile::NamedTempFile;
 use std::path::Path;
 use std::collections::HashMap;

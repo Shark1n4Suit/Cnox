@@ -4,7 +4,7 @@ members = [
     "coelanox-core",
     "coelanox-clf",
     "coelanox-packager",
-    "coelanox-runtime",
+    "coelanox-orchestrator",
     "coelanox-cli",
     "tests",
     # "translators/onnx-translator"  # Commented out - not available

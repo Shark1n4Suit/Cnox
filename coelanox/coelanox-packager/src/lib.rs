@@ -12,7 +12,7 @@ use coelanox_core::{
     utils::SystemEnvironment,
 };
 use clf::{ClfReader as ClfFileReader, MissingOpIdPolicy, op_type_to_clf_id as clf_op_type_to_clf_id, OpType as ClfOpType};
-use coelanox_runtime::{BackendManager, BackendKind};
+use coelanox_orchestrator::{BackendManager, BackendKind};
 use crate::memory::NvmeAllocator;
 // CodeGenerator trait removed - generators folder deleted
 use crate::optimizers::HardwareOptimizer;

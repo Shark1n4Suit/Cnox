@@ -5,7 +5,7 @@
 //! to generate hardware-specific code.
 //! 
 //! **Note:** This is used at package-time by the packager, not at runtime. The location in
-//! `coelanox-runtime` is for organizational purposes (backends are conceptually runtime-related).
+//! `coelanox-orchestrator` - backends for container execution and orchestration.
 
 use coelanox_core::format::HardwareTarget;
 use coelanox_core::{CoelanoxError, CoelanoxResult};

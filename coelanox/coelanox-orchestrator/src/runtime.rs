@@ -11,12 +11,17 @@
 //! - Security hardening and validation
 //! - Multi-backend execution support
 
-use crate::{RuntimeBackendRegistry, ScalarExecutionBackend};
+use crate::{
+    container_clfmm_backend::ContainerClfmmBackend,
+    container_clfmp_backend::ContainerClfmpBackend,
+    RuntimeBackendRegistry,
+    ScalarExecutionBackend,
+};
 use coelanox_core::{
     format::CoelanoxContainer,
     ir::{Attribute, Operation, OpType},
-    memory_hal::{MemoryBackendRegistry, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
-    protection_hal::{ProtectionBackendRegistry, RegionPermissions},
+    memory_hal::{MemoryBackendRegistry, MemoryHAL, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
+    protection_hal::{ProtectionBackendRegistry, ProtectionHAL, RegionPermissions},
     CoelanoxError, CoelanoxResult,
 };
 use std::collections::HashMap;
@@ -508,7 +513,7 @@ impl MemoryRegion for SimpleRegion {
 unsafe impl Send for SimpleRegion {}
 unsafe impl Sync for SimpleRegion {}
 
-/// Executable memory block: either legacy (mmap/VirtualAlloc) or HAL-backed region.
+/// Executable memory block: legacy (mmap/VirtualAlloc), HAL-backed, or container CLFMM.
 enum ExecutableMemoryBlock {
     Legacy {
         region: SimpleRegion,
@@ -517,6 +522,12 @@ enum ExecutableMemoryBlock {
     Hal {
         target: MemoryTarget,
         region: Box<dyn MemoryRegion>,
+        allocated_at: Instant,
+    },
+    /// Container-embedded CLFMM; backend owns deallocation
+    Clfmm {
+        region: Box<dyn MemoryRegion>,
+        backend: std::sync::Arc<ContainerClfmmBackend>,
         allocated_at: Instant,
     },
 }
@@ -533,7 +544,7 @@ impl ExecutableMemoryBlock {
     fn as_region_ref(&self) -> &dyn MemoryRegion {
         match self {
             Self::Legacy { region, .. } => region,
-            Self::Hal { region, .. } => region.as_ref(),
+            Self::Hal { region, .. } | Self::Clfmm { region, .. } => region.as_ref(),
         }
     }
 
@@ -545,11 +556,19 @@ impl ExecutableMemoryBlock {
         }
     }
 
+    fn new_clfmm(region: Box<dyn MemoryRegion>, backend: std::sync::Arc<ContainerClfmmBackend>) -> Self {
+        Self::Clfmm {
+            region,
+            backend,
+            allocated_at: Instant::now(),
+        }
+    }
+
     /// Pointer to executable memory (for calling loaded code).
     fn as_ptr(&self) -> *mut u8 {
         match self {
             Self::Legacy { region, .. } => region.as_ptr(),
-            Self::Hal { region, .. } => region.as_ptr(),
+            Self::Hal { region, .. } | Self::Clfmm { region, .. } => region.as_ptr(),
         }
     }
 
@@ -557,14 +576,14 @@ impl ExecutableMemoryBlock {
     fn size(&self) -> usize {
         match self {
             Self::Legacy { region, .. } => region.size(),
-            Self::Hal { region, .. } => region.size(),
+            Self::Hal { region, .. } | Self::Clfmm { region, .. } => region.size(),
         }
     }
 
     /// Get allocation age in milliseconds.
     fn age_ms(&self) -> u64 {
         let at = match self {
-            Self::Legacy { allocated_at, .. } | Self::Hal { allocated_at, .. } => allocated_at,
+            Self::Legacy { allocated_at, .. } | Self::Hal { allocated_at, .. } | Self::Clfmm { allocated_at, .. } => allocated_at,
         };
         at.elapsed().as_millis() as u64
     }
@@ -790,7 +809,7 @@ impl CoelanoxRuntime {
         let security_validator = Arc::new(SecurityValidator::new(&config));
         
         Self {
-            name: "coelanox_runtime".to_string(),
+            name: "coelanox_orchestrator".to_string(),
             version: "1.0.0".to_string(),
             config: Arc::new(RwLock::new(config)),
             containers: Arc::new(RwLock::new(HashMap::new())),
@@ -1504,15 +1523,75 @@ impl CoelanoxRuntime {
     }
     
     // Removed create_executable_function: we use raw calling convention above for correctness
-    
-    /// Allocate executable memory and copy machine code. Uses Memory HAL when a backend
-    /// is registered for executable; otherwise uses legacy mmap/VirtualAlloc.
+
+    /// Apply protection (configure + enable) to the last allocated executable block.
+    /// Prefers container-embedded CLFMP when present; otherwise uses protection registry.
+    fn apply_protection(&self, container: &CoelanoxContainer, _ptr: *mut u8) -> CoelanoxResult<()> {
+        let guard = self.executable_memory.lock().unwrap();
+        let Some(block) = guard.last() else {
+            return Ok(());
+        };
+        let region = block.as_region_ref();
+        if let Ok(Some(prot)) = ContainerClfmpBackend::from_container(container) {
+            if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
+                warn!("Container CLFMP configure_region failed: {:?}", e);
+            } else if let Err(e) = prot.enable_protection() {
+                warn!("Container CLFMP enable_protection failed: {:?}", e);
+            }
+        } else if let Some((_, prot)) = self.protection_registry.read().unwrap().default_backend() {
+            if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
+                warn!("Protection HAL configure_region failed: {:?}", e);
+            } else if let Err(e) = prot.enable_protection() {
+                warn!("Protection HAL enable_protection failed: {:?}", e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Allocate executable memory and copy machine code. Prefers container-embedded CLFMM,
+    /// then Memory HAL when a backend is registered, then legacy mmap/VirtualAlloc.
     fn allocate_and_copy_code(&self, container: &CoelanoxContainer) -> CoelanoxResult<*mut u8> {
         let code_size = container.optimized_code.len();
         let page_size = 4096;
         let aligned_size = ((code_size + page_size - 1) / page_size) * page_size;
 
-        // Prefer Memory HAL when an executable backend is registered
+        // Prefer container-embedded CLFMM (memory movement delegated to container)
+        if let Ok(Some(backend)) = ContainerClfmmBackend::from_container(container) {
+            let backend = std::sync::Arc::new(backend);
+            let opts = RegionOptions {
+                size: aligned_size,
+                alignment: page_size,
+                tier: MemoryTier::Fast,
+                executable: true,
+            };
+            match backend.allocate_region(aligned_size, page_size, &opts) {
+                Ok(region) => {
+                    let ptr: *mut u8 = region.as_ptr();
+                    let size = region.size();
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            container.optimized_code.as_ptr(),
+                            ptr,
+                            code_size,
+                        );
+                    }
+                    let mut executable_memory = self.executable_memory.lock().unwrap();
+                    executable_memory.push(ExecutableMemoryBlock::new_clfmm(region, backend));
+                    let mut metrics = self.metrics.lock().unwrap();
+                    metrics.update_memory_allocation(size);
+                    metrics.executable_blocks_count = executable_memory.len();
+                    debug!("✅ Allocated executable memory via container CLFMM: {} bytes", size);
+                    drop(executable_memory);
+                    self.apply_protection(container, ptr)?;
+                    return Ok(ptr);
+                }
+                Err(e) => {
+                    warn!("Container CLFMM allocation failed: {:?}, falling back", e);
+                }
+            }
+        }
+
+        // Fallback: Memory HAL when an executable backend is registered
         let registry = self.memory_registry.read().unwrap();
         if let Some((target, backend)) = registry.default_for_executable() {
             let opts = RegionOptions {
@@ -1541,17 +1620,7 @@ impl CoelanoxRuntime {
                     metrics.executable_blocks_count = executable_memory.len();
                     debug!("✅ Allocated executable memory via HAL: {} bytes", size);
                     drop(executable_memory);
-                    // Protection HAL: configure code region as RX when backend is registered
-                    if let Some((_, prot)) = self.protection_registry.read().unwrap().default_backend() {
-                        if let Some(block) = self.executable_memory.lock().unwrap().last() {
-                            let region = block.as_region_ref();
-                            if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
-                                warn!("Protection HAL configure_region failed: {:?}", e);
-                            } else if let Err(e) = prot.enable_protection() {
-                                warn!("Protection HAL enable_protection failed: {:?}", e);
-                            }
-                        }
-                    }
+                    self.apply_protection(container, ptr)?;
                     return Ok(ptr);
                 }
                 Err(e) => {
@@ -1580,17 +1649,7 @@ impl CoelanoxRuntime {
                 metrics.executable_blocks_count = executable_memory.len();
                 debug!("✅ Created function pointer: 0x{:x}", ptr as usize);
                 drop(executable_memory);
-                // Protection HAL: configure code region as RX when backend is registered
-                if let Some((_, prot)) = self.protection_registry.read().unwrap().default_backend() {
-                    if let Some(block) = self.executable_memory.lock().unwrap().last() {
-                        let region = block.as_region_ref();
-                        if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
-                            warn!("Protection HAL configure_region failed: {:?}", e);
-                        } else if let Err(e) = prot.enable_protection() {
-                            warn!("Protection HAL enable_protection failed: {:?}", e);
-                        }
-                    }
-                }
+                self.apply_protection(container, ptr)?;
                 Ok(ptr)
             }
             Err(e) => {
@@ -2442,6 +2501,13 @@ impl CoelanoxRuntime {
                     let size = region.size();
                     if let Some(backend) = self.memory_registry.read().unwrap().get(&target) {
                         let _ = backend.deallocate_region(region);
+                    }
+                    total_freed += size;
+                }
+                ExecutableMemoryBlock::Clfmm { region, backend, .. } => {
+                    let size = region.size();
+                    if let Err(e) = backend.deallocate_region(region) {
+                        warn!("Container CLFMM deallocate failed: {:?}", e);
                     }
                     total_freed += size;
                 }

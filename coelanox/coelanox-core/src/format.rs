@@ -374,6 +374,12 @@ pub struct CoelanoxManifest {
     pub nvme_backing_offset: Option<u64>,
     /// NVMe backing data size in bytes
     pub nvme_backing_size: Option<usize>,
+    /// CLFMM (memory movement) data size in bytes; present when container embeds memory movement
+    #[serde(default)]
+    pub clfmm_size: Option<usize>,
+    /// CLFMP (memory protection) data size in bytes; present when container embeds memory protection
+    #[serde(default)]
+    pub clfmp_size: Option<usize>,
 }
 
 impl CoelanoxManifest {
@@ -401,6 +407,8 @@ impl CoelanoxManifest {
             backend_metadata: None,
             nvme_backing_offset: None,
             nvme_backing_size: None,
+            clfmm_size: None,
+            clfmp_size: None,
         }
     }
     
@@ -511,6 +519,10 @@ pub struct CoelanoxContainer {
     pub ir_data: Vec<u8>,
     /// NVMe backing data (pre-allocated memory layout)
     pub nvme_backing_data: Option<Vec<u8>>,
+    /// CLFMM (memory movement) blobs; container pulls memory via these. OS-independent.
+    pub clfmm_data: Option<Vec<u8>>,
+    /// CLFMP (memory protection) blobs; container configures protection via these.
+    pub clfmp_data: Option<Vec<u8>>,
     /// Backend hints
     pub backend_hints: Option<BackendHints>,
     /// Security metadata
@@ -532,6 +544,20 @@ impl CoelanoxContainer {
         ir_data: Vec<u8>,
         nvme_backing_data: Option<Vec<u8>>,
     ) -> Self {
+        Self::new_with_hal_data(manifest, optimized_code, compressed_weights, compression_type, ir_data, nvme_backing_data, None, None)
+    }
+
+    /// Create a new COELANOX container with NVMe, CLFMM, and CLFMP data
+    pub fn new_with_hal_data(
+        manifest: CoelanoxManifest,
+        optimized_code: Vec<u8>,
+        compressed_weights: Vec<u8>,
+        compression_type: CompressionType,
+        ir_data: Vec<u8>,
+        nvme_backing_data: Option<Vec<u8>>,
+        clfmm_data: Option<Vec<u8>>,
+        clfmp_data: Option<Vec<u8>>,
+    ) -> Self {
         let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
         let code_offset = COELANOX_HEADER_SIZE as u64 + manifest_size as u64;
         
@@ -544,15 +570,24 @@ impl CoelanoxContainer {
         // Calculate NVMe backing offset (IR has 4-byte length prefix)
         let nvme_backing_offset = ir_offset + 4 + ir_data.len() as u64;
         
-        // Calculate total size including NVMe backing if present
+        // Calculate total size including NVMe backing and optional CLFMM/CLFMP
         let nvme_size = nvme_backing_data.as_ref().map(|d| d.len()).unwrap_or(0) as u64;
-        let total_size = if nvme_size > 0 {
-            // NVMe backing has 8-byte length prefix (u64 for large files)
+        let base_after_nvme = if nvme_size > 0 {
             nvme_backing_offset + 8 + nvme_size
         } else {
             ir_offset + 4 + ir_data.len() as u64
         };
-        
+
+        let clfmm_size = clfmm_data.as_ref().map(|d| d.len());
+        let clfmp_size = clfmp_data.as_ref().map(|d| d.len());
+        let mut manifest = manifest;
+        manifest.clfmm_size = clfmm_size;
+        manifest.clfmp_size = clfmp_size;
+
+        let total_size = base_after_nvme
+            + clfmm_data.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0)
+            + clfmp_data.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0);
+
         Self {
             header: CoelanoxHeader::new(total_size, COELANOX_HEADER_SIZE as u64, code_offset),
             manifest,
@@ -561,6 +596,8 @@ impl CoelanoxContainer {
             compression_type,
             ir_data,
             nvme_backing_data,
+            clfmm_data,
+            clfmp_data,
             backend_hints: None,
             security: None,
         }
@@ -700,9 +737,20 @@ impl CoelanoxContainer {
         
         // Write NVMe backing data with length prefix (if present)
         if let Some(ref nvme_backing) = self.nvme_backing_data {
-            // Use u64 for length prefix to support large files
             writer.write_all(&(nvme_backing.len() as u64).to_le_bytes())?;
             writer.write_all(nvme_backing)?;
+        }
+
+        // Write CLFMM data with length prefix (if present)
+        if let Some(ref clfmm) = self.clfmm_data {
+            writer.write_all(&(clfmm.len() as u64).to_le_bytes())?;
+            writer.write_all(clfmm)?;
+        }
+
+        // Write CLFMP data with length prefix (if present)
+        if let Some(ref clfmp) = self.clfmp_data {
+            writer.write_all(&(clfmp.len() as u64).to_le_bytes())?;
+            writer.write_all(clfmp)?;
         }
         
         // TODO: Write backend hints and security metadata if present
@@ -774,6 +822,48 @@ impl CoelanoxContainer {
         } else {
             None
         };
+
+        // Read CLFMM data if present (manifest.clfmm_size)
+        let clfmm_data = if let Some(clfmm_size) = manifest.clfmm_size {
+            if clfmm_size > 0 {
+                let mut len_bytes = [0u8; 8];
+                reader.read_exact(&mut len_bytes)?;
+                let len = u64::from_le_bytes(len_bytes) as usize;
+                if len != clfmm_size {
+                    return Err(CoelanoxError::PayloadValidation(
+                        format!("CLFMM size mismatch: manifest says {}, file has {}", clfmm_size, len)
+                    ));
+                }
+                let mut data = vec![0u8; len];
+                reader.read_exact(&mut data)?;
+                Some(data)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Read CLFMP data if present (manifest.clfmp_size)
+        let clfmp_data = if let Some(clfmp_size) = manifest.clfmp_size {
+            if clfmp_size > 0 {
+                let mut len_bytes = [0u8; 8];
+                reader.read_exact(&mut len_bytes)?;
+                let len = u64::from_le_bytes(len_bytes) as usize;
+                if len != clfmp_size {
+                    return Err(CoelanoxError::PayloadValidation(
+                        format!("CLFMP size mismatch: manifest says {}, file has {}", clfmp_size, len)
+                    ));
+                }
+                let mut data = vec![0u8; len];
+                reader.read_exact(&mut data)?;
+                Some(data)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         
         // TODO: Read backend hints and security metadata if present
         // TODO: Determine compression_type from manifest or metadata
@@ -786,6 +876,8 @@ impl CoelanoxContainer {
             compression_type: CompressionType::None, // TODO: Read from manifest metadata
             ir_data,
             nvme_backing_data,
+            clfmm_data,
+            clfmp_data,
             backend_hints: None,
             security: None,
         })

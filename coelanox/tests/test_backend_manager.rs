@@ -6,7 +6,7 @@
 //! - BackendMetadata structures work correctly
 //! - Device ID mapping is correct
 
-use coelanox_runtime::{BackendManager, BackendInfo, BackendKind, BackendSelectionStrategy, DiscoveryResult};
+use coelanox_orchestrator::{BackendManager, BackendInfo, BackendKind, BackendSelectionStrategy, DiscoveryResult};
 use coelanox_core::format::{BackendMetadata, BackendSelectionMode};
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use tempfile::TempDir;

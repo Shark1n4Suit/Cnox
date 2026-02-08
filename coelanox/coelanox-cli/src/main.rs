@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use tracing::{info, warn, error};
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
 use coelanox_packager::CoelanoxPackager;
-use coelanox_runtime::CoelanoxRuntime;
+use coelanox_orchestrator::CoelanoxRuntime;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::process::Command;
@@ -750,7 +750,7 @@ fn debug_with_gdb(file: &str, input: Option<&str>, output: &str) -> CoelanoxResu
     let gdb_script = format!(r#"
 set confirm off
 file {}
-break coelanox_runtime::runtime::CoelanoxRuntime::execute_machine_code
+break coelanox_orchestrator::runtime::CoelanoxRuntime::execute_machine_code
 commands
     print $rdi
     print $rsi

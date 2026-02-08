@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
 coelanox-packager = { path = "../coelanox-packager" }
-coelanox-runtime = { path = "../coelanox-runtime" }
+coelanox-orchestrator = { path = "../coelanox-orchestrator" }
 clap = { version = "4.4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
