@@ -213,7 +213,8 @@ pub mod memory {
         dealloc(ptr, layout);
     }
     
-    /// Zero-copy slice from memory
+    /// Zero-copy slice from memory. Requires correct alignment for T; ARM will crash
+    /// on unaligned access, while x86 may tolerate it. Always validate alignment.
     pub fn slice_from_memory<T>(data: &[u8], offset: usize, len: usize) -> &[T] {
         let start = offset;
         let end = offset + len * std::mem::size_of::<T>();
@@ -223,11 +224,18 @@ pub mod memory {
         }
         
         let slice = &data[start..end];
+        let ptr = slice.as_ptr() as *const T;
+        let align = std::mem::align_of::<T>();
+        if (ptr as usize) % align != 0 {
+            panic!(
+                "slice_from_memory: misaligned pointer for {} (align {} required, ptr {:p})",
+                std::any::type_name::<T>(),
+                align,
+                ptr
+            );
+        }
         unsafe {
-            std::slice::from_raw_parts(
-                slice.as_ptr() as *const T,
-                len,
-            )
+            std::slice::from_raw_parts(ptr, len)
         }
     }
     

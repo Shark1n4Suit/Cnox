@@ -180,6 +180,17 @@ On a server, the runtime/orchestrator handles:
 
 It does **not** allocate memory for containers; each container pulls its own via embedded CLFMM.
 
+### **Production Implementation Suggestions (Working Product First)**
+
+**Principle:** Avoid unnecessary features. Ship a working product first. Add optimizations only when needed.
+
+| Suggestion | Why | Scope |
+|------------|-----|-------|
+| **Use `Arc<CoelanoxContainer>` in server container cache** | A 70GB container clone on every request would OOM the server. Store `HashMap<String, Arc<CoelanoxContainer>>` instead of `HashMap<String, CoelanoxContainer>`. Each request gets an `Arc` clone (8 bytes) not a full copy. | Server/orchestrator only |
+| **Edge doesn't need Arc** | Edge devices run one container, loaded once. No request routing, no shared cache. | Edge/drone |
+| **Cache eviction when using Arc** | Arc keeps memory until last reference drops. Implement eviction (TTL, LRU, max size) so you don't hold every loaded model forever. | Server |
+| **Prioritize MVP over polish** | Get package → verify → run working end-to-end before adding chunk streaming, tiering, etc. | All |
+
 ### **Deployment Targets**
 
 - **Server/Desktop (with OS):** Orchestrator manages multiple containers. Each container uses its own embedded CLFMM/CLFMP.

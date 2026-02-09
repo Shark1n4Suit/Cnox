@@ -92,8 +92,11 @@ impl InputDescriptor {
 /// Production-ready runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    /// Maximum number of containers to cache
+    /// Maximum number of containers to cache (LRU eviction when exceeded)
     pub max_containers: usize,
+    /// Optional TTL in seconds; containers not used within this period are evicted (None = no TTL)
+    #[serde(default)]
+    pub container_cache_ttl_secs: Option<u64>,
     /// Maximum memory usage in bytes
     pub max_memory_bytes: usize,
     /// Execution timeout in milliseconds
@@ -118,6 +121,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             max_containers: 100,
+            container_cache_ttl_secs: None,
             max_memory_bytes: 1024 * 1024 * 1024, // 1GB
             execution_timeout_ms: 30000, // 30 seconds
             enable_security_validation: true,
@@ -467,8 +471,8 @@ pub struct CoelanoxRuntime {
     version: String,
     /// Runtime configuration
     config: Arc<RwLock<RuntimeConfig>>,
-    /// Loaded containers cache (thread-safe)
-    containers: Arc<RwLock<HashMap<String, CoelanoxContainer>>>,
+    /// Loaded containers cache (thread-safe). Arc avoids cloning; Instant used for TTL eviction.
+    containers: Arc<RwLock<HashMap<String, (Arc<CoelanoxContainer>, Instant)>>>,
     /// Execution statistics (thread-safe)
     stats: Arc<Mutex<RuntimeStats>>,
     /// Executable memory blocks for cleanup (thread-safe)
@@ -512,6 +516,10 @@ impl MemoryRegion for SimpleRegion {
 
 unsafe impl Send for SimpleRegion {}
 unsafe impl Sync for SimpleRegion {}
+
+/// Bootstrapped executable state for a container. The runtime tracks this via `executable_memory`;
+/// the pointer returned from `allocate_and_copy_code` is used to invoke the loaded code.
+/// When the container has CLFMM, allocation is done by the container (self-bootstrap).
 
 /// Executable memory block: legacy (mmap/VirtualAlloc), HAL-backed, or container CLFMM.
 enum ExecutableMemoryBlock {
@@ -812,7 +820,7 @@ impl CoelanoxRuntime {
             name: "coelanox_orchestrator".to_string(),
             version: "1.0.0".to_string(),
             config: Arc::new(RwLock::new(config)),
-            containers: Arc::new(RwLock::new(HashMap::new())),
+            containers: Arc::new(RwLock::new(HashMap::<String, (Arc<CoelanoxContainer>, Instant)>::new())),
             stats: Arc::new(Mutex::new(RuntimeStats::new())),
             executable_memory: Arc::new(Mutex::new(Vec::new())),
             metrics: Arc::new(Mutex::new(PerformanceMetrics::new())),
@@ -939,18 +947,24 @@ impl CoelanoxRuntime {
         let config = self.get_config();
         let mut containers = self.containers.write().unwrap();
         
+        // Evict expired containers when TTL is set
+        if config.container_cache_ttl_secs.is_some() {
+            self.evict_expired_containers_inner(&mut containers, &config);
+        }
         if containers.len() >= config.max_containers {
-            // Remove oldest container (simple LRU)
+            // Remove one arbitrary (first key) when at max
             if let Some(oldest_key) = containers.keys().next().cloned() {
                 containers.remove(&oldest_key);
-                info!("Removed oldest container from cache: {}", oldest_key);
+                info!("Removed container from cache (max_containers): {}", oldest_key);
             }
         }
         
-        // Store in cache
-        containers.insert(path.to_string(), container);
+        // Store in cache with load time for TTL eviction
+        let container = Arc::new(container);
+        let total_size = container.total_size();
+        containers.insert(path.to_string(), (container, Instant::now()));
         
-        info!("Successfully loaded container: {} ({} bytes)", path, containers[path].total_size());
+        info!("Successfully loaded container: {} ({} bytes)", path, total_size);
         
         Ok(())
     }
@@ -985,18 +999,21 @@ impl CoelanoxRuntime {
         let config = self.get_config();
         let mut containers = self.containers.write().unwrap();
         
+        if config.container_cache_ttl_secs.is_some() {
+            self.evict_expired_containers_inner(&mut containers, &config);
+        }
         if containers.len() >= config.max_containers {
-            // Remove oldest container (simple LRU)
             if let Some(oldest_key) = containers.keys().next().cloned() {
                 containers.remove(&oldest_key);
-                info!("Removed oldest container from cache: {}", oldest_key);
+                info!("Removed container from cache (max_containers): {}", oldest_key);
             }
         }
         
-        // Store in cache
-        containers.insert(name.to_string(), container);
+        let container = Arc::new(container);
+        let total_size = container.total_size();
+        containers.insert(name.to_string(), (container, Instant::now()));
         
-        info!("Successfully loaded container from data: {} ({} bytes)", name, containers[name].total_size());
+        info!("Successfully loaded container from data: {} ({} bytes)", name, total_size);
         
         Ok(())
     }
@@ -1210,11 +1227,11 @@ impl CoelanoxRuntime {
     fn execute_validation_stage(&self, execution_state: &mut ExecutionState, input_data: &[f32], pipeline: &mut ExecutionPipeline) -> StageResult {
         let stage_start = Instant::now();
         
-        // Get container from cache
+        // Get container from cache (Arc clone, not full container clone)
         let container = {
             let containers = self.containers.read().unwrap();
             match containers.get(&execution_state.container_name) {
-                Some(container) => container.clone(),
+                Some((container, _)) => Arc::clone(container),
                 None => {
                     return StageResult {
                         stage_name: "validation".to_string(),
@@ -1306,14 +1323,14 @@ impl CoelanoxRuntime {
     fn execute_execution_stage(&self, execution_state: &mut ExecutionState, input_data: &[f32], pipeline: &mut ExecutionPipeline) -> StageResult {
         let stage_start = Instant::now();
         
-        // Get container from cache
+        // Get container from cache (Arc clone, not full container clone)
         let container = {
             let containers = self.containers.read().unwrap();
-            containers.get(&execution_state.container_name).unwrap().clone()
+            Arc::clone(&containers.get(&execution_state.container_name).unwrap().0)
         };
         
         // Execute using backend selection (auto = backend manager chooses from detected hardware)
-        let result = self.run_backend_execution(&container, input_data, "auto");
+        let result = self.run_backend_execution(container.as_ref(), input_data, "auto");
         
         match result {
             Ok(output) => {
@@ -1548,50 +1565,58 @@ impl CoelanoxRuntime {
         Ok(())
     }
 
-    /// Allocate executable memory and copy machine code. Prefers container-embedded CLFMM,
-    /// then Memory HAL when a backend is registered, then legacy mmap/VirtualAlloc.
+    /// Container self-bootstrap: when container has embedded CLFMM, it allocates and we copy code.
+    /// Returns (ptr, block) on success; orchestrator pushes block and applies protection.
+    fn try_container_self_bootstrap(
+        &self,
+        container: &CoelanoxContainer,
+        code_size: usize,
+        aligned_size: usize,
+        page_size: usize,
+    ) -> Option<(*mut u8, ExecutableMemoryBlock)> {
+        let backend = ContainerClfmmBackend::from_container(container).ok().flatten()?;
+        let backend = std::sync::Arc::new(backend);
+        let opts = RegionOptions {
+            size: aligned_size,
+            alignment: page_size,
+            tier: MemoryTier::Fast,
+            executable: true,
+        };
+        let region = backend.allocate_region(aligned_size, page_size, &opts).ok()?;
+        let ptr: *mut u8 = region.as_ptr();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                container.optimized_code.as_ptr(),
+                ptr,
+                code_size,
+            );
+        }
+        let block = ExecutableMemoryBlock::new_clfmm(region, backend);
+        Some((ptr, block))
+    }
+
+    /// Allocate executable memory and copy machine code.
+    /// Container self-manages when it has CLFMM (bootstrap); else orchestrator uses HAL or legacy.
     fn allocate_and_copy_code(&self, container: &CoelanoxContainer) -> CoelanoxResult<*mut u8> {
         let code_size = container.optimized_code.len();
         let page_size = 4096;
         let aligned_size = ((code_size + page_size - 1) / page_size) * page_size;
 
-        // Prefer container-embedded CLFMM (memory movement delegated to container)
-        if let Ok(Some(backend)) = ContainerClfmmBackend::from_container(container) {
-            let backend = std::sync::Arc::new(backend);
-            let opts = RegionOptions {
-                size: aligned_size,
-                alignment: page_size,
-                tier: MemoryTier::Fast,
-                executable: true,
-            };
-            match backend.allocate_region(aligned_size, page_size, &opts) {
-                Ok(region) => {
-                    let ptr: *mut u8 = region.as_ptr();
-                    let size = region.size();
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            container.optimized_code.as_ptr(),
-                            ptr,
-                            code_size,
-                        );
-                    }
-                    let mut executable_memory = self.executable_memory.lock().unwrap();
-                    executable_memory.push(ExecutableMemoryBlock::new_clfmm(region, backend));
-                    let mut metrics = self.metrics.lock().unwrap();
-                    metrics.update_memory_allocation(size);
-                    metrics.executable_blocks_count = executable_memory.len();
-                    debug!("✅ Allocated executable memory via container CLFMM: {} bytes", size);
-                    drop(executable_memory);
-                    self.apply_protection(container, ptr)?;
-                    return Ok(ptr);
-                }
-                Err(e) => {
-                    warn!("Container CLFMM allocation failed: {:?}, falling back", e);
-                }
-            }
+        // 1. Container self-bootstrap via embedded CLFMM (container manages its own memory)
+        if let Some((ptr, block)) = self.try_container_self_bootstrap(container, code_size, aligned_size, page_size) {
+            let size = block.as_region_ref().size();
+            let mut executable_memory = self.executable_memory.lock().unwrap();
+            executable_memory.push(block);
+            let mut metrics = self.metrics.lock().unwrap();
+            metrics.update_memory_allocation(size);
+            metrics.executable_blocks_count = executable_memory.len();
+            drop(executable_memory);
+            debug!("✅ Allocated executable memory via container CLFMM (self-bootstrap): {} bytes", size);
+            self.apply_protection(container, ptr)?;
+            return Ok(ptr);
         }
 
-        // Fallback: Memory HAL when an executable backend is registered
+        // 2. Fallback: Memory HAL when an executable backend is registered
         let registry = self.memory_registry.read().unwrap();
         if let Some((target, backend)) = registry.default_for_executable() {
             let opts = RegionOptions {
@@ -1631,7 +1656,7 @@ impl CoelanoxRuntime {
         }
         drop(registry);
 
-        // Legacy path: mmap / VirtualAlloc
+        // 3. Legacy path: orchestrator allocates via mmap/VirtualAlloc when no CLFMM and no HAL
         match self.allocate_executable_memory(aligned_size) {
             Ok((ptr, size)) => {
                 debug!("✅ Successfully allocated executable memory (legacy): {} bytes", size);
@@ -1732,7 +1757,7 @@ impl CoelanoxRuntime {
         backend: &str,
     ) -> CoelanoxResult<Vec<f32>> {
         let container = self.get_container_info(container_name)?;
-        self.run_backend_execution(&container, input_data, backend)
+        self.run_backend_execution(container.as_ref(), input_data, backend)
     }
 
     /// Core backend-driven execution. Used by execute_with_backend and execute_execution_stage.
@@ -1822,12 +1847,46 @@ impl CoelanoxRuntime {
         }
     }
     
-    /// Get container information (thread-safe)
-    pub fn get_container_info(&self, container_name: &str) -> CoelanoxResult<CoelanoxContainer> {
+    /// Get container information (thread-safe). Returns Arc so callers avoid cloning full container.
+    pub fn get_container_info(&self, container_name: &str) -> CoelanoxResult<Arc<CoelanoxContainer>> {
         let containers = self.containers.read().unwrap();
-        Ok(containers.get(container_name)
-            .ok_or_else(|| CoelanoxError::Runtime(format!("Container not found: {}", container_name)))?
-            .clone())
+        Ok(Arc::clone(&containers.get(container_name)
+            .ok_or_else(|| CoelanoxError::Runtime(format!("Container not found: {}", container_name)))?.0))
+    }
+
+    /// Evict containers that exceed cache TTL (called internally when TTL is set).
+    fn evict_expired_containers_inner(
+        &self,
+        containers: &mut HashMap<String, (Arc<CoelanoxContainer>, Instant)>,
+        config: &RuntimeConfig,
+    ) {
+        let Some(ttl_secs) = config.container_cache_ttl_secs else { return };
+        let ttl = Duration::from_secs(ttl_secs);
+        let now = Instant::now();
+        let expired: Vec<String> = containers
+            .iter()
+            .filter(|(_, (_, loaded_at))| now.duration_since(*loaded_at) > ttl)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for name in expired {
+            containers.remove(&name);
+            info!("Evicted container from cache (TTL): {}", name);
+        }
+    }
+
+    /// Evict containers that have exceeded the configured TTL. No-op if container_cache_ttl_secs is None.
+    pub fn evict_expired_containers(&self) {
+        let config = self.get_config();
+        if config.container_cache_ttl_secs.is_none() {
+            return;
+        }
+        let mut containers = self.containers.write().unwrap();
+        self.evict_expired_containers_inner(&mut containers, &config);
+    }
+
+    /// Evict a specific container from the cache by name.
+    pub fn evict_container(&self, container_name: &str) -> bool {
+        self.containers.write().unwrap().remove(container_name).is_some()
     }
     
     /// List loaded containers (thread-safe)

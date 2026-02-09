@@ -6,6 +6,7 @@ members = [
     "coelanox-packager",
     "coelanox-orchestrator",
     "coelanox-cli",
+    "coelanox-standalone",
     "tests",
     # "translators/onnx-translator"  # Commented out - not available
 ]
