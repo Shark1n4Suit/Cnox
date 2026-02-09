@@ -1,10 +1,7 @@
 //! OpType to Scalar Function Mapping
-//! 
+//!
 //! This module provides a 1:1 mapping between OpType enum variants and scalar functions.
-//! Excludes Custom(String) and deprecated variants.
-//! 
-//! All operations from OpType (excluding Custom and deprecated) have corresponding
-//! scalar implementations in this module.
+//! Custom(String) has no generic implementation and is unsupported.
 
 use crate::ir::OpType;
 use crate::{CoelanoxError, CoelanoxResult};
@@ -51,7 +48,7 @@ use super::{
 /// 
 /// # Returns
 /// * `Ok(())` if operation succeeds
-/// * `Err(CoelanoxError)` if operation fails or OpType is Custom/deprecated
+/// * `Err(CoelanoxError)` if operation fails or OpType is Custom
 pub fn execute_scalar_op(
     op_type: &OpType,
     input_a: &[f32],
@@ -194,16 +191,8 @@ pub fn execute_scalar_op(
         }
         OpType::Not => not(input_a, output, attributes),
         
-        // Custom and deprecated operations are not supported
+        // Custom operations are not supported (no generic implementation)
         OpType::Custom(_) => Err(CoelanoxError::Internal("Custom operations are not supported in scalar backend".to_string())),
-        
-        // Deprecated operations
-        #[allow(deprecated)]
-        OpType::Pooling | OpType::Activation | OpType::Attention | 
-        OpType::MultiHeadAttention | OpType::SelfAttention | 
-        OpType::Transformer | OpType::Encoder | OpType::Decoder => {
-            Err(CoelanoxError::Internal("Deprecated operations are not supported in scalar backend".to_string()))
-        }
     }
 }
 

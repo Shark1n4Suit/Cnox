@@ -182,8 +182,7 @@ impl Shape {
 /// Primitive operation types supported by the Universal IR
 /// 
 /// This enum contains only primitive operations that can be directly executed
-/// on hardware. Complex operations like Transformer, Attention, etc. should
-/// be decomposed into subgraphs of these primitive operations.
+/// on hardware. Complex layers should be decomposed into subgraphs of these primitives.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpType {
     // Basic arithmetic operations
@@ -259,24 +258,6 @@ pub enum OpType {
     
     // Custom primitive operation
     Custom(String),
-    
-    // Legacy compatibility - these should be decomposed into primitives
-    #[deprecated(note = "Use specific pooling operations like MaxPool, AvgPool instead")]
-    Pooling,
-    #[deprecated(note = "Use specific activation operations like Relu, Sigmoid instead")]
-    Activation,
-    #[deprecated(note = "Decompose into primitive operations")]
-    Attention,
-    #[deprecated(note = "Decompose into primitive operations")]
-    MultiHeadAttention,
-    #[deprecated(note = "Decompose into primitive operations")]
-    SelfAttention,
-    #[deprecated(note = "Decompose into primitive operations")]
-    Transformer,
-    #[deprecated(note = "Decompose into primitive operations")]
-    Encoder,
-    #[deprecated(note = "Decompose into primitive operations")]
-    Decoder,
 }
 
 /// Attribute values for operations
@@ -688,58 +669,6 @@ impl OptimizedIR {
     pub fn weight_tensor_count(&self) -> usize {
         self.shared_weights.len()
     }
-    
-    /// Legacy compatibility: Convert optimized nodes to operations
-    /// 
-    /// This method provides backward compatibility for code that expects
-    /// the old operations field. New code should use optimized_nodes directly.
-    pub fn operations(&self) -> Vec<Operation> {
-        self.optimized_nodes.iter().map(|node| {
-            let mut op = Operation::new(node.op_type.clone());
-            
-            // Convert tensor IDs to names (this is lossy but maintains compatibility)
-            for tensor_id in &node.input_tensors {
-                let tensor_name = if tensor_id.is_weight() {
-                    if let Some(tensor) = self.shared_weights.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("weight_{}", tensor_id.index())
-                    }
-                } else {
-                    if let Some(tensor) = self.intermediate_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("intermediate_{}", tensor_id.index())
-                    }
-                };
-                op.add_input(tensor_name);
-            }
-            
-            for tensor_id in &node.output_tensors {
-                let tensor_name = if tensor_id.is_weight() {
-                    if let Some(tensor) = self.shared_weights.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("weight_{}", tensor_id.index())
-                    }
-                } else {
-                    if let Some(tensor) = self.intermediate_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("intermediate_{}", tensor_id.index())
-                    }
-                };
-                op.add_output(tensor_name);
-            }
-            
-            // Copy attributes
-            for (key, value) in &node.attributes {
-                op.add_attribute(key.clone(), value.clone());
-            }
-            
-            op
-        }).collect()
-    }
 }
 
 /// Universal IR - the main intermediate representation with proper graph structure
@@ -1121,68 +1050,6 @@ impl UniversalIR {
         }
     }
     
-    /// Legacy compatibility: Convert nodes to operations
-    /// 
-    /// This method provides backward compatibility for code that expects
-    /// the old operations field. New code should use nodes directly.
-    pub fn operations(&self) -> Vec<Operation> {
-        self.nodes.iter().map(|node| {
-            let mut op = Operation::new(node.op_type.clone());
-            
-            // Convert tensor IDs to names (this is lossy but maintains compatibility)
-            for tensor_id in &node.input_tensors {
-                let tensor_name = if tensor_id.is_weight() {
-                    if let Some(tensor) = self.weight_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("weight_{}", tensor_id.index())
-                    }
-                } else {
-                    if let Some(tensor) = self.intermediate_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("intermediate_{}", tensor_id.index())
-                    }
-                };
-                op.add_input(tensor_name);
-            }
-            
-            for tensor_id in &node.output_tensors {
-                let tensor_name = if tensor_id.is_weight() {
-                    if let Some(tensor) = self.weight_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("weight_{}", tensor_id.index())
-                    }
-                } else {
-                    if let Some(tensor) = self.intermediate_tensors.get(tensor_id.index()) {
-                        tensor.name.clone()
-                    } else {
-                        format!("intermediate_{}", tensor_id.index())
-                    }
-                };
-                op.add_output(tensor_name);
-            }
-            
-            // Copy attributes
-            for (key, value) in &node.attributes {
-                op.add_attribute(key.clone(), value.clone());
-            }
-            
-            op
-        }).collect()
-    }
-    
-    /// Convert all nodes to operations (for backward compatibility with optimizers)
-    pub fn nodes_to_operations(&self) -> Vec<Operation> {
-        let mut operations = Vec::new();
-        for node_id in &self.topological_order {
-            if let Some(node) = self.nodes.get(node_id.0) {
-                operations.push(Operation::from_graph_node(node, self));
-            }
-        }
-        operations
-    }
     /// Get all nodes that produce a specific tensor
     pub fn get_producer_node(&self, tensor_id: TensorId) -> Option<&GraphNode> {
         self.nodes.iter()
@@ -1433,127 +1300,6 @@ pub enum TensorRef<'a> {
     Intermediate(&'a IntermediateTensor),
 }
 
-/// Legacy compatibility wrapper for the old Operation struct
-/// 
-/// This provides backward compatibility for code that expects the old
-/// Operation struct. New code should use GraphNode directly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Operation {
-    /// Operation type
-    pub op_type: OpType,
-    /// Input tensor names (legacy - use tensor IDs instead)
-    pub inputs: Vec<String>,
-    /// Output tensor names (legacy - use tensor IDs instead)
-    pub outputs: Vec<String>,
-    /// Operation attributes
-    pub attributes: HashMap<String, Attribute>,
-}
-
-impl Operation {
-    /// Create a new operation
-    pub fn new(op_type: OpType) -> Self {
-        Self {
-            op_type,
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-            attributes: HashMap::new(),
-        }
-    }
-    
-    /// Convert from GraphNode to Operation (for backward compatibility)
-    pub fn from_graph_node(node: &GraphNode, ir: &UniversalIR) -> Self {
-        let mut operation = Self::new(node.op_type.clone());
-        
-        // Convert tensor IDs to tensor names
-        for tensor_id in &node.input_tensors {
-            if let Some(tensor) = ir.get_tensor(*tensor_id) {
-                match tensor {
-                    TensorRef::Weight(t) => operation.inputs.push(t.name.clone()),
-                    TensorRef::Intermediate(t) => operation.inputs.push(t.name.clone()),
-                }
-            }
-        }
-        
-        for tensor_id in &node.output_tensors {
-            if let Some(tensor) = ir.get_tensor(*tensor_id) {
-                match tensor {
-                    TensorRef::Weight(t) => operation.outputs.push(t.name.clone()),
-                    TensorRef::Intermediate(t) => operation.outputs.push(t.name.clone()),
-                }
-            }
-        }
-        
-        // Copy attributes
-        operation.attributes = node.attributes.clone();
-        
-        operation
-    }
-    
-    /// Add input tensor
-    pub fn add_input(&mut self, input: String) {
-        self.inputs.push(input);
-    }
-    
-    /// Add output tensor
-    pub fn add_output(&mut self, output: String) {
-        self.outputs.push(output);
-    }
-    
-    /// Add attribute
-    pub fn add_attribute(&mut self, key: String, value: Attribute) {
-        self.attributes.insert(key, value);
-    }
-}
-
-/// Legacy compatibility wrapper for the old Tensor struct
-/// 
-/// This provides backward compatibility for code that expects the old
-/// Tensor struct. New code should use WeightTensor or IntermediateTensor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tensor {
-    /// Tensor name
-    pub name: String,
-    /// Tensor shape
-    pub shape: Shape,
-    /// Data type
-    pub data_type: DataType,
-    /// Raw tensor data
-    pub data: Vec<u8>,
-}
-
-impl Tensor {
-    /// Create a new tensor
-    pub fn new(name: String, shape: Shape, data_type: DataType) -> Self {
-        let data_size = shape.total_elements() * data_type.size();
-        Self {
-            name,
-            shape,
-            data_type,
-            data: vec![0; data_size],
-        }
-    }
-    
-    /// Create a tensor with data
-    pub fn with_data(name: String, shape: Shape, data_type: DataType, data: Vec<u8>) -> Self {
-        Self {
-            name,
-            shape,
-            data_type,
-            data,
-        }
-    }
-    
-    /// Get tensor size in bytes
-    pub fn size(&self) -> usize {
-        self.data.len()
-    }
-    
-    /// Get number of elements
-    pub fn elements(&self) -> usize {
-        self.shape.total_elements()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1735,10 +1481,9 @@ mod tests {
         assert_eq!(optimized_ir.intermediate_tensor_count(), 1);
         assert_eq!(optimized_ir.weight_tensor_count(), 1);
         
-        // Test legacy compatibility
-        let legacy_ops = optimized_ir.operations();
-        assert_eq!(legacy_ops.len(), 1);
-        assert_eq!(legacy_ops[0].op_type, OpType::Gemm);
+        // Test optimized nodes (fused MatMul+Bias -> Gemm)
+        assert_eq!(optimized_ir.optimized_nodes.len(), 1);
+        assert_eq!(optimized_ir.optimized_nodes[0].op_type, OpType::Gemm);
         
         // Verify memory efficiency - shared weights should be the same Arc
         let optimized_ir2 = OptimizedIR::new(&UniversalIR::new("test2".to_string()), target);

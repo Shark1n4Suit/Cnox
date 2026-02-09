@@ -35,6 +35,10 @@ path = "test_scalar_fallback.rs"
 name = "test_nvme_allocation"
 path = "test_nvme_allocation.rs"
 
+[[test]]
+name = "test_scalar_ops_correctness"
+path = "test_scalar_ops_correctness.rs"
+
 [dependencies]
 coelanox-packager = { path = "../coelanox-packager" }
 coelanox-core = { path = "../coelanox-core" }

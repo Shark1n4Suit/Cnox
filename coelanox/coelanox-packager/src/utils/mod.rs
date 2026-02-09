@@ -238,14 +238,6 @@ pub mod memory {
             std::slice::from_raw_parts(ptr, len)
         }
     }
-    
-    /// Calculate memory usage
-    pub fn calculate_memory_usage(operations: &[coelanox_core::ir::Operation], tensors: &[coelanox_core::ir::Tensor]) -> usize {
-        let operation_size = operations.len() * std::mem::size_of::<coelanox_core::ir::Operation>();
-        let tensor_size: usize = tensors.iter().map(|t| t.size()).sum();
-        
-        operation_size + tensor_size
-    }
 }
 
 /// Logging utilities

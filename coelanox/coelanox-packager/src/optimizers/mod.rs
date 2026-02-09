@@ -52,11 +52,6 @@ impl CpuOptimizer {
                 node.add_attribute("cpu_matmul_optimized".to_string(), Attribute::Bool(true));
                 node.add_attribute("cpu_matmul_type".to_string(), Attribute::String("blas".to_string()));
             }
-            OpType::Pooling => {
-                // Replace generic pooling with CPU-optimized version
-                node.add_attribute("cpu_pooling_optimized".to_string(), Attribute::Bool(true));
-                node.add_attribute("cpu_pooling_type".to_string(), Attribute::String("vectorized".to_string()));
-            }
             _ => {
                 // Add general CPU optimization marker
                 node.add_attribute("cpu_optimized".to_string(), Attribute::Bool(true));
@@ -215,11 +210,6 @@ impl GpuOptimizer {
                 node.add_attribute("gpu_matmul_optimized".to_string(), Attribute::Bool(true));
                 node.add_attribute("cublas".to_string(), Attribute::Bool(true));
             }
-            OpType::Pooling => {
-                // Replace generic pooling with GPU-optimized version
-                node.add_attribute("gpu_pooling_optimized".to_string(), Attribute::Bool(true));
-                node.add_attribute("cuda_kernel".to_string(), Attribute::Bool(true));
-            }
             _ => {
                 // Add general GPU optimization marker
                 node.add_attribute("gpu_optimized".to_string(), Attribute::Bool(true));
@@ -377,11 +367,6 @@ impl EdgeOptimizer {
                 // Replace generic matmul with Edge-optimized version
                 node.add_attribute("edge_matmul_optimized".to_string(), Attribute::Bool(true));
                 node.add_attribute("int8".to_string(), Attribute::Bool(true));
-            }
-            OpType::Pooling => {
-                // Replace generic pooling with Edge-optimized version
-                node.add_attribute("edge_pooling_optimized".to_string(), Attribute::Bool(true));
-                node.add_attribute("vectorized".to_string(), Attribute::Bool(true));
             }
             _ => {
                 // Add general Edge optimization marker

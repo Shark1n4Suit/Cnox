@@ -21,8 +21,7 @@ pub mod logical;
 pub mod misc;
 pub mod mapping;
 
-// Re-export commonly used operations
-// Note: Operations are placeholders and will be implemented in Task 2.2
+// Re-export scalar operations
 pub use arithmetic::*;
 pub use activations::*;
 pub use math::*;

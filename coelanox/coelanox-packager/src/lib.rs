@@ -76,9 +76,6 @@ fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
         Ir::Or => Clf::Or,
         Ir::Not => Clf::Not,
         Ir::Custom(s) => Clf::Custom(s.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32)) % 0xFE + 256),
-        Ir::Pooling => Clf::MaxPool,
-        Ir::Activation => Clf::Relu,
-        Ir::Attention | Ir::MultiHeadAttention | Ir::SelfAttention | Ir::Transformer | Ir::Encoder | Ir::Decoder => Clf::Unknown,
     }
 }
 

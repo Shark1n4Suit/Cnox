@@ -132,21 +132,11 @@ impl ScalarFallbackBackend {
     /// 
     /// # Returns
     /// * `true` if operation is supported
-    /// * `false` if operation is not supported (Custom or deprecated)
+    /// * `false` if operation is not supported (Custom only)
     pub fn supports_operation(&self, op_type: &OpType) -> bool {
-        // Scalar fallback supports all non-Custom, non-deprecated operations
-        // This matches the 1:1 mapping in coelanox-core::scalar::execute_scalar_op
         match op_type {
             OpType::Custom(_) => false,
-            OpType::Pooling => false, // Deprecated
-            OpType::Activation => false, // Deprecated
-            OpType::Attention => false, // Deprecated
-            OpType::MultiHeadAttention => false, // Deprecated
-            OpType::SelfAttention => false, // Deprecated
-            OpType::Transformer => false, // Deprecated
-            OpType::Encoder => false, // Deprecated
-            OpType::Decoder => false, // Deprecated
-            _ => true, // All other operations are supported
+            _ => true,
         }
     }
     
@@ -155,7 +145,7 @@ impl ScalarFallbackBackend {
     /// Returns a list of all OpType variants that are supported by the scalar fallback.
     /// This matches the 1:1 mapping in `coelanox-core::scalar::execute_scalar_op`.
     pub fn supported_operations(&self) -> Vec<OpType> {
-        // Return all non-Custom, non-deprecated OpType variants
+        // Return all non-Custom OpType variants
         vec![
             // Arithmetic
             OpType::Add,
@@ -467,11 +457,6 @@ mod tests {
         
         // Unsupported operations
         assert!(!backend.supports_operation(&OpType::Custom("test".to_string())));
-        // Note: OpType::Pooling is deprecated, but we test the logic with a deprecated variant
-        #[allow(deprecated)]
-        {
-            assert!(!backend.supports_operation(&OpType::Pooling)); // Deprecated
-        }
     }
     
     #[test]
@@ -484,13 +469,8 @@ mod tests {
         assert!(supported.contains(&OpType::Relu));
         assert!(supported.contains(&OpType::MatMul));
         
-        // Should not include deprecated or custom
+        // Should not include custom
         assert!(!supported.contains(&OpType::Custom("test".to_string())));
-        // Note: OpType::Pooling is deprecated, but we test the logic with a deprecated variant
-        #[allow(deprecated)]
-        {
-            assert!(!supported.contains(&OpType::Pooling));
-        }
     }
     
     #[test]
