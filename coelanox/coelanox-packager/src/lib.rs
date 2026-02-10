@@ -358,8 +358,12 @@ impl CoelanoxPackager {
         
         // Translate model to Universal IR using file path (supports sharded models)
         println!("🔄 Starting translation from path: {}", model_path.display());
-        let ir = translator.translate_from_path(model_path)?;
+        let mut ir = translator.translate_from_path(model_path)?;
         println!("✅ Translation complete");
+
+        // Sort IR into topological (execution) order before optimization
+        ir.sort_nodes_for_execution()
+            .map_err(|e| CoelanoxError::Runtime(format!("IR sort for execution failed: {}", e)))?;
         
         // Determine optimization level based on environment
         let optimization_level = self.determine_optimization_level(&target);

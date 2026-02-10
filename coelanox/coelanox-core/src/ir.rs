@@ -762,7 +762,30 @@ impl UniversalIR {
         self.topological_order = self.topological_sort()?;
         Ok(())
     }
-    
+
+    /// Reorder nodes so that `nodes` is in topological (execution) order.
+    /// Call this before the optimizer so that downstream passes see a linear execution order.
+    /// Preserves the invariant that `nodes[i].id == NodeId(i)`.
+    pub fn sort_nodes_for_execution(&mut self) -> CoelanoxResult<()> {
+        if self.topological_order.is_empty() {
+            self.compute_topological_order()?;
+        }
+        let order = std::mem::take(&mut self.topological_order);
+        let mut new_nodes = Vec::with_capacity(self.nodes.len());
+        for (new_index, &node_id) in order.iter().enumerate() {
+            let mut node = self
+                .nodes
+                .get(node_id.0)
+                .cloned()
+                .ok_or_else(|| CoelanoxError::format("NodeId out of range in topological order"))?;
+            node.id = NodeId(new_index);
+            new_nodes.push(node);
+        }
+        self.nodes = new_nodes;
+        self.topological_order = (0..self.nodes.len()).map(NodeId).collect();
+        Ok(())
+    }
+
     /// Get node by ID
     pub fn get_node(&self, node_id: NodeId) -> Option<&GraphNode> {
         self.nodes.get(node_id.0)
