@@ -5,6 +5,7 @@ pub mod container_clfmm_backend;
 pub mod container_clfmp_backend;
 pub mod execution_backend;
 pub mod fallback;
+pub mod audit;
 
 pub use runtime::*;
 pub use backends::*;

@@ -275,7 +275,52 @@ impl ScalarExecutionBackend {
             .flat_map(|n| n.output_tensors.iter().copied())
             .collect();
 
-        let graph_inputs: Vec<TensorId> = ir
+        // Build execution order: topological sort so every node runs after producers of its input intermediates.
+        let node_order = {
+            let nodes = &ir.optimized_nodes;
+            let mut producer: HashMap<TensorId, usize> = HashMap::new();
+            for (i, node) in nodes.iter().enumerate() {
+                for &tid in &node.output_tensors {
+                    if tid.is_intermediate() {
+                        producer.insert(tid, i);
+                    }
+                }
+            }
+            let mut in_degree: Vec<usize> = vec![0; nodes.len()];
+            let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+            for (i, node) in nodes.iter().enumerate() {
+                for &tid in &node.input_tensors {
+                    if tid.is_intermediate() && produced.contains(&tid) {
+                        if let Some(&p) = producer.get(&tid) {
+                            in_degree[i] += 1;
+                            dependents[p].push(i);
+                        }
+                    }
+                }
+            }
+            let mut queue: std::collections::VecDeque<usize> = (0..nodes.len()).filter(|&i| in_degree[i] == 0).collect();
+            let mut order = Vec::with_capacity(nodes.len());
+            while let Some(i) = queue.pop_front() {
+                order.push(i);
+                for &j in &dependents[i] {
+                    in_degree[j] -= 1;
+                    if in_degree[j] == 0 {
+                        queue.push_back(j);
+                    }
+                }
+            }
+            if order.len() != nodes.len() {
+                return Err(CoelanoxError::Runtime(format!(
+                    "Graph has cycle or missing producers: sorted {} of {} nodes",
+                    order.len(),
+                    nodes.len()
+                )));
+            }
+            order
+        };
+
+        // Collect graph inputs (intermediates consumed but never produced); sort by TensorId for deterministic assignment.
+        let mut graph_inputs: Vec<TensorId> = ir
             .optimized_nodes
             .iter()
             .flat_map(|n| n.input_tensors.iter().copied())
@@ -283,6 +328,7 @@ impl ScalarExecutionBackend {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
+        graph_inputs.sort_by_key(|tid| tid.0);
 
         let expected_input: usize = container
             .manifest
@@ -326,29 +372,84 @@ impl ScalarExecutionBackend {
             let next = weight_offsets.last().unwrap() + wt.elements();
             weight_offsets.push(next);
         }
+        let total_weight_elements = weight_offsets.last().copied().unwrap_or(0);
+        if weights.len() != total_weight_elements {
+            return Err(CoelanoxError::Runtime(format!(
+                "Weight buffer size mismatch: decompressed {} elements, IR expects {}",
+                weights.len(),
+                total_weight_elements
+            )));
+        }
 
-        for node in &ir.optimized_nodes {
-            let input_a = node.input_tensors.first().and_then(|tid| {
-                if tid.is_weight() {
-                    let idx = tid.index();
-                    let start = *weight_offsets.get(idx)?;
-                    let end = *weight_offsets.get(idx + 1)?;
-                    Some(weights.get(start..end)?.to_vec())
-                } else {
-                    tensor_data.get(tid).cloned()
-                }
-            }).ok_or_else(|| CoelanoxError::Runtime("Missing first input for node".to_string()))?;
+        /// Resolve a single input tensor (weight or intermediate) for a node.
+        fn resolve_input(
+            tid: TensorId,
+            tensor_data: &HashMap<TensorId, Vec<f32>>,
+            weights: &[f32],
+            weight_offsets: &[usize],
+            node_index: usize,
+        ) -> CoelanoxResult<Vec<f32>> {
+            if tid.is_weight() {
+                let idx = tid.index();
+                let start = *weight_offsets.get(idx).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: weight index {} out of range ({} weights)",
+                    node_index, idx, weight_offsets.len().saturating_sub(1)
+                )))?;
+                let end = *weight_offsets.get(idx + 1).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: weight index {} end out of range",
+                    node_index, idx
+                )))?;
+                Ok(weights.get(start..end).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: weight slice [{}, {}) out of bounds (weights len {})",
+                    node_index, start, end, weights.len()
+                )))?.to_vec())
+            } else {
+                tensor_data.get(&tid).cloned().ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: intermediate tensor {:?} not in tensor_data",
+                    node_index, tid
+                )))
+            }
+        }
 
-            let input_b = node.input_tensors.get(1).and_then(|tid| {
-                if tid.is_weight() {
-                    let idx = tid.index();
-                    let start = *weight_offsets.get(idx)?;
-                    let end = *weight_offsets.get(idx + 1)?;
-                    Some(weights.get(start..end)?.to_vec())
-                } else {
-                    tensor_data.get(tid).cloned()
+        for (loop_index, &node_index) in node_order.iter().enumerate() {
+            let node = &ir.optimized_nodes[node_index];
+            let tid_a = match node.input_tensors.first() {
+                Some(t) => *t,
+                None => {
+                    return Err(CoelanoxError::Runtime(format!(
+                        "Missing first input for node {} (node has no inputs)",
+                        node_index
+                    )));
                 }
-            });
+            };
+            // Defensive: if first input is intermediate and missing, and we have a single logical input, assign it (handles graph_inputs ordering/empty edge cases).
+            if tid_a.is_intermediate() && !tensor_data.contains_key(&tid_a) && graph_inputs.len() <= 1 && input_slice.len() == expected_input {
+                tensor_data.insert(tid_a, input_slice.to_vec());
+            }
+            let input_a = if tid_a.is_weight() {
+                let idx = tid_a.index();
+                let start = *weight_offsets.get(idx).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Missing first input for node {}: weight index {} out of range (weights count {})",
+                    node_index, idx, ir.shared_weights.len()
+                )))?;
+                let end = *weight_offsets.get(idx + 1).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Missing first input for node {}: weight index {} end out of range",
+                    node_index, idx
+                )))?;
+                weights.get(start..end).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Missing first input for node {}: weight slice [{}, {}) out of bounds (weights len {})",
+                    node_index, start, end, weights.len()
+                )))?.to_vec()
+            } else {
+                tensor_data.get(&tid_a).cloned().ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Missing first input for node {}: tensor {:?} not in tensor_data (graph_inputs len {}, produced count {})",
+                    node_index, tid_a, graph_inputs.len(), produced.len()
+                )))?
+            };
+
+            let input_b = node.input_tensors.get(1).map(|tid| {
+                resolve_input(*tid, &tensor_data, &weights, &weight_offsets, node_index)
+            }).transpose()?;
 
             let weight_slice = node.input_tensors.iter().find(|tid| tid.is_weight()).and_then(|tid| {
                 let idx = tid.index();
@@ -383,6 +484,9 @@ impl ScalarExecutionBackend {
                     tensor_data.insert(tid, output.clone());
                 }
             }
+            if crate::audit::is_enabled() {
+                crate::audit::log_after_op(node_index, &node.op_type, output_size, &output);
+            }
         }
 
         let output_size: usize = container
@@ -395,11 +499,10 @@ impl ScalarExecutionBackend {
             return Ok(vec![]);
         }
 
-        let result = if let Some(last) = ir.optimized_nodes.last() {
-            last.output_tensors.first().and_then(|tid| tensor_data.get(tid)).cloned()
-        } else {
-            None
-        };
+        let result = node_order.last().and_then(|&idx| {
+            let node = &ir.optimized_nodes[idx];
+            node.output_tensors.first().and_then(|tid| tensor_data.get(tid)).cloned()
+        });
 
         match result {
             Some(v) if v.len() >= output_size => Ok(v[..output_size].to_vec()),

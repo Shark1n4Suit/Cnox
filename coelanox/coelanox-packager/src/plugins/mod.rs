@@ -14,6 +14,7 @@ use coelanox_core::ir::UniversalIR;
 // use onnx_translator::OnnxTranslator;  // Commented out - onnx-translator not available
 // Import the BERT translator from the translators directory
 // use bert_translator::BertTranslator;  // Commented out - bert-translator not available
+use crate::translators::ResNetTinyMnistTranslator;
 
 /// Plugin manager for loading and managing translator plugins
 pub struct PluginManager {
@@ -65,7 +66,11 @@ impl PluginManager {
         // let bert_translator = Box::new(BertTranslator::new());
         // self.register_plugin_with_validation("bert_translator".to_string(), bert_translator)?;
         
-        println!("✅ Plugin manager initialized (no translators available)");
+        // ResNet-tiny-MNIST translator (bundle format: RTM1 + config + weights)
+        let resnet_translator = Box::new(ResNetTinyMnistTranslator::new());
+        self.register_plugin("resnet_tiny_mnist".to_string(), resnet_translator);
+        
+        println!("✅ Plugin manager initialized (ResNet-tiny-MNIST translator registered)");
         Ok(())
     }
     

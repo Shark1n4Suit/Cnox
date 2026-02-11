@@ -1757,7 +1757,14 @@ impl CoelanoxRuntime {
         backend: &str,
     ) -> CoelanoxResult<Vec<f32>> {
         let container = self.get_container_info(container_name)?;
-        self.run_backend_execution(container.as_ref(), input_data, backend)
+        let start = std::time::Instant::now();
+        let result = self.run_backend_execution(container.as_ref(), input_data, backend);
+        let elapsed_us = start.elapsed().as_micros() as u64;
+        if let Ok(_) = &result {
+            let mut stats = self.stats.lock().unwrap();
+            stats.update_execution(elapsed_us, 0);
+        }
+        result
     }
 
     /// Core backend-driven execution. Used by execute_with_backend and execute_execution_stage.

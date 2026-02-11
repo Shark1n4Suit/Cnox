@@ -117,22 +117,24 @@ pub fn execute_scalar_op(
         OpType::Transpose => transpose(input_a, output, attributes),
         OpType::Permute => permute(input_a, output, attributes),
         OpType::Concatenate => {
-            // Concatenate requires multiple inputs - this is a simplified version
-            // Full implementation would handle Vec<&[f32]>
-            Err(CoelanoxError::Internal("Concatenate requires multiple inputs - use concatenate() directly".to_string()))
+            let input_b = input_b.ok_or_else(|| CoelanoxError::Internal("Concatenate requires second input (input_b)".to_string()))?;
+            let inputs = [input_a, input_b];
+            concatenate(&inputs, output, attributes)
         }
         OpType::Split => {
-            // Split requires multiple outputs - this is a simplified version
-            Err(CoelanoxError::Internal("Split requires multiple outputs - use split() directly".to_string()))
+            // Single output buffer: copy input into it (logical split is in attributes for consumers)
+            split(input_a, &mut [output], attributes)
         }
         OpType::Slice => slice(input_a, output, attributes),
         OpType::Gather => {
-            // Gather requires indices - this is a simplified version
-            Err(CoelanoxError::Internal("Gather requires indices - use gather() directly".to_string()))
+            let input_b = input_b.ok_or_else(|| CoelanoxError::Internal("Gather requires indices (input_b)".to_string()))?;
+            let indices: Vec<i32> = input_b.iter().map(|&f| f as i32).collect();
+            gather(input_a, &indices, output, attributes)
         }
         OpType::Scatter => {
-            // Scatter requires indices - this is a simplified version
-            Err(CoelanoxError::Internal("Scatter requires indices - use scatter() directly".to_string()))
+            let input_b = input_b.ok_or_else(|| CoelanoxError::Internal("Scatter requires indices (input_b)".to_string()))?;
+            let indices: Vec<i32> = input_b.iter().map(|&f| f as i32).collect();
+            scatter(input_a, &indices, output, attributes)
         }
         OpType::Broadcast => broadcast(input_a, output, attributes),
         OpType::Expand => expand(input_a, output, attributes),

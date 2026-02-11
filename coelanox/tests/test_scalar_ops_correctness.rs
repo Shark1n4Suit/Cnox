@@ -4,9 +4,9 @@
 //! and asserts the output matches the expected values. This verifies that
 //! the scalar implementations produce correct results regardless of container/IR.
 //!
-//! Coverage: All 46 ops that are callable via execute_scalar_op are tested.
-//! OpType has 50 non-Custom variants; 4 return Err from execute_scalar_op
-//! (Concatenate, Split, Gather, Scatter) and are not tested here.
+//! Coverage: The ISA has 51 non-Custom primitive OpTypes; the scalar backend
+//! implements all 51. These tests cover each op callable via execute_scalar_op
+//! (including Concatenate, Split, Gather, Scatter which use input_b or attributes).
 
 use coelanox_core::ir::{Attribute, OpType};
 use coelanox_core::scalar::execute_scalar_op;
@@ -546,4 +546,64 @@ fn scalar_broadcast_expand_correctness() {
     execute_scalar_op(&OpType::Expand, &input, None, &mut out, None, &empty_attrs())
         .expect("Expand should succeed");
     assert_slice_eq(&out, &[1.0, 2.0, 1.0, 2.0], "Expand");
+}
+
+#[test]
+fn scalar_concatenate_correctness() {
+    let a = [1.0f32, 2.0f32, 3.0f32];
+    let b = [4.0f32, 5.0f32];
+    let mut out = [0.0f32; 5];
+    execute_scalar_op(
+        &OpType::Concatenate,
+        &a,
+        Some(&b),
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Concatenate should succeed");
+    assert_slice_eq(&out, &[1.0, 2.0, 3.0, 4.0, 5.0], "Concatenate");
+}
+
+#[test]
+fn scalar_split_correctness() {
+    let input = [1.0f32, 2.0f32, 3.0f32, 4.0f32];
+    let mut out = [0.0f32; 4];
+    execute_scalar_op(&OpType::Split, &input, None, &mut out, None, &empty_attrs())
+        .expect("Split should succeed");
+    assert_slice_eq(&out, &[1.0, 2.0, 3.0, 4.0], "Split");
+}
+
+#[test]
+fn scalar_gather_correctness() {
+    let data = [10.0f32, 20.0f32, 30.0f32, 40.0f32];
+    let indices = [0.0f32, 2.0f32, 1.0f32]; // interpreted as i32: 0, 2, 1
+    let mut out = [0.0f32; 3];
+    execute_scalar_op(
+        &OpType::Gather,
+        &data,
+        Some(&indices),
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Gather should succeed");
+    assert_slice_eq(&out, &[10.0, 30.0, 20.0], "Gather");
+}
+
+#[test]
+fn scalar_scatter_correctness() {
+    let updates = [100.0f32, 200.0f32];
+    let indices = [1.0f32, 3.0f32]; // interpreted as i32: 1, 3
+    let mut out = [0.0f32; 4];
+    execute_scalar_op(
+        &OpType::Scatter,
+        &updates,
+        Some(&indices),
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Scatter should succeed");
+    assert_slice_eq(&out, &[0.0, 100.0, 0.0, 200.0], "Scatter");
 }

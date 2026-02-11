@@ -91,6 +91,7 @@ struct SerializedOptimizedIR {
 }
 
 pub mod plugins;
+pub mod translators;
 pub mod optimizers;
 pub mod optimization;
 pub mod backend_trait;
@@ -310,6 +311,11 @@ impl CoelanoxPackager {
                 // Extract weights using ONNX plugin (which has its own fallback mechanism)
                 onnx_plugin.extract_weights(model_data)
             }
+            coelanox_core::format::ModelFormat::Custom(name) if name == "resnet_tiny_mnist" => {
+                let plugin = self.plugin_manager.find_plugin(format.clone())
+                    .ok_or_else(|| CoelanoxError::format("ResNet-tiny-MNIST plugin not found"))?;
+                plugin.extract_weights(model_data)
+            }
             _ => {
                 Err(CoelanoxError::format(&format!("Weight extraction not supported for format: {:?}", format)))
             }
@@ -330,6 +336,21 @@ impl CoelanoxPackager {
     /// * `auto` - Auto-detect backends
     /// * `backend_add` - Additional backends to add
     pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>) -> CoelanoxResult<CoelanoxContainer> {
+        // If directory given, use ResNet bundle inside it (no PyTorch needed at package time)
+        let actual_path: std::path::PathBuf = if model_path.is_dir() {
+            let bundle = model_path.join("resnet_tiny_mnist.bundle");
+            if bundle.exists() {
+                bundle
+            } else {
+                return Err(CoelanoxError::format(
+                    "Directory given but resnet_tiny_mnist.bundle not found. Create it first (e.g. python export_resnet_bundle.py <dir>) or pass the .bundle file path."
+                ));
+            }
+        } else {
+            model_path.to_path_buf()
+        };
+        let model_path = actual_path.as_path();
+
         eprintln!("📦 Starting package for: {}", model_path.display());
         eprintln!("📦 Model path: {:?}", model_path);
         
@@ -461,6 +482,10 @@ impl CoelanoxPackager {
     /// Detect model format from data
     fn detect_format(&self, model_data: &[u8]) -> CoelanoxResult<coelanox_core::format::ModelFormat> {
         if model_data.len() >= 4 {
+            // ResNet-tiny-MNIST bundle (RTM1 magic)
+            if model_data.len() >= 4 && model_data.starts_with(b"RTM1") {
+                return Ok(coelanox_core::format::ModelFormat::Custom("resnet_tiny_mnist".to_string()));
+            }
             // ONNX files start with protobuf magic (08 is the protobuf field tag)
             // The second byte can vary, so we just check for 08 as the first byte
             if model_data[0] == 0x08 {

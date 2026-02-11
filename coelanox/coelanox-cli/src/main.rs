@@ -154,6 +154,14 @@ enum Commands {
         /// Backend to use (cpu, gpu, npu, tpu)
         #[arg(short, long, default_value = "cpu")]
         backend: String,
+        
+        /// Audit mode: log after each op (dumps op index, type, output size, sample to stderr and optionally to file)
+        #[arg(long)]
+        audit: bool,
+        
+        /// When using --audit, append audit log lines to this file
+        #[arg(long)]
+        audit_output: Option<String>,
     },
     
     /// Benchmark a COELANOX container
@@ -217,8 +225,8 @@ fn main() -> CoelanoxResult<()> {
         Commands::Info { file } => {
             info_command(&file)
         }
-        Commands::Run { file, input, output, backend } => {
-            run_command(&file, input.as_deref(), &output, &backend)
+        Commands::Run { file, input, output, backend, audit, audit_output } => {
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref())
         }
         Commands::Benchmark { file, iterations } => {
             benchmark_command(&file, iterations)
@@ -453,8 +461,11 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
     Ok(())
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str) -> CoelanoxResult<()> {
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>) -> CoelanoxResult<()> {
     info!("Running inference: {} -> {} (backend: {})", input.unwrap_or("auto"), output, backend);
+    if audit {
+        coelanox_orchestrator::audit::set_audit_mode(true, audit_output.map(std::path::Path::new));
+    }
     
     // Verify security hash first (pre-deployment check)
     // This ensures container integrity before loading into memory tier
@@ -502,7 +513,11 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str) -> 
     };
     
     // Execute inference with backend selection (backend manager chooses execution path)
-    let result = runtime.execute_with_backend(file, &input_data, backend)?;
+    let result = runtime.execute_with_backend(file, &input_data, backend);
+    if audit {
+        coelanox_orchestrator::audit::set_audit_mode(false, None);
+    }
+    let result = result?;
     
     // Save output
     let output_json = serde_json::to_string_pretty(&result)

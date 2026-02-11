@@ -418,10 +418,7 @@ impl CoelanoxManifest {
             return Err(CoelanoxError::ManifestParse("Model name cannot be empty".to_string()));
         }
         
-        if self.model_size == 0 {
-            return Err(CoelanoxError::ManifestParse("Model size cannot be zero".to_string()));
-        }
-        
+        // model_size may be 0 for scalar/interpreted fallback (no generated code blob)
         if self.input_shapes.is_empty() {
             return Err(CoelanoxError::ManifestParse("Input shapes cannot be empty".to_string()));
         }
