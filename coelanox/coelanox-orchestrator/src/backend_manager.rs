@@ -204,10 +204,13 @@ impl BackendManager {
         Ok(result)
     }
     
-    /// Check if a file is a CLF (Coelanox Library File)
+    /// Check if a file is a CLF (Coelanox Library File). Accepts .clf (legacy) and .clfc (compute).
     fn is_clf_file(path: &Path) -> bool {
         path.extension()
-            .map(|e| e.to_string_lossy().to_lowercase() == "clf")
+            .map(|e| {
+                let ext = e.to_string_lossy().to_lowercase();
+                ext == "clf" || ext == "clfc"
+            })
             .unwrap_or(false)
     }
     
@@ -316,14 +319,23 @@ impl BackendManager {
     /// Get default search paths for backend discovery
     /// 
     /// Returns a list of paths to search for backend libraries, in order of priority:
+    /// 0. `COELANOX_CLF_PATH` (single path for testing; CLF/mnist or .clfc file dir)
     /// 1. `./backends/` (current directory)
     /// 2. `~/.coelanox/backends/` (user directory)
-    /// 3. `COELANOX_BACKEND_PATH` environment variable
+    /// 3. `COELANOX_BACKEND_PATH` environment variable (colon-separated)
     /// 
     /// # Returns
     /// * Vector of search paths
     pub fn default_search_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();
+        
+        // 0. Testing: explicit CLF path (directory containing .clfc or path to .clfc's directory)
+        if let Ok(clf_path) = std::env::var("COELANOX_CLF_PATH") {
+            let p = PathBuf::from(&clf_path);
+            if p.exists() {
+                paths.push(p);
+            }
+        }
         
         // 1. Current directory
         paths.push(PathBuf::from("./backends"));

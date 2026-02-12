@@ -7,6 +7,9 @@ authors = ["Benjamin Morin <benjamin.morin@example.com>"]
 license = "MIT"
 repository = "https://github.com/benjamin-morin/coelanox"
 
+[features]
+default = []
+
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
 clf = { path = "../../../CLF" }

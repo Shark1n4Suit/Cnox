@@ -680,32 +680,33 @@ impl CoelanoxPackager {
             return Ok(Some(BackendMetadata::new_auto(detected_backends)));
         }
         
-        // Slim mode: validate primary and additional backends
-        let primary = if matches!(target_str.to_lowercase().as_str(), "cpu" | "gpu" | "edge" | "auto") {
-            target_str.to_lowercase()
+        // Slim mode: resolve primary backend name. For generic targets (gpu, edge), if no backend
+        // is named exactly "gpu"/"edge", use any discovered backend that supports that target
+        // (e.g. CLF file resnet_tiny_mnist.spv.clfc is registered as "resnet_tiny_mnist.spv" and supports Gpu).
+        let primary = target_str.to_lowercase();
+        let primary_resolved: String = if primary == "cpu" {
+            primary.clone()
+        } else if self.backend_manager.get_backend(&primary).is_some() {
+            primary.clone()
+        } else if let Some(backend_info) = self.backend_manager.find_backend_for_target(target) {
+            backend_info.name.clone()
         } else {
-            target_str.to_lowercase()
+            let available: Vec<String> = self.backend_manager.list_backends()
+                .iter()
+                .map(|b| b.name.clone())
+                .collect();
+            return Err(CoelanoxError::BackendNotFound(
+                format!("Primary backend '{}' not found and no backend supports target {:?}. Available: {}", 
+                    primary,
+                    target,
+                    if available.is_empty() {
+                        "none".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                )
+            ));
         };
-        
-        // Validate primary backend exists (if not generic CPU)
-        if primary != "cpu" {
-            if self.backend_manager.get_backend(&primary).is_none() {
-                let available: Vec<String> = self.backend_manager.list_backends()
-                    .iter()
-                    .map(|b| b.name.clone())
-                    .collect();
-                return Err(CoelanoxError::BackendNotFound(
-                    format!("Primary backend '{}' not found. Available backends: {}", 
-                        primary,
-                        if available.is_empty() {
-                            "none".to_string()
-                        } else {
-                            available.join(", ")
-                        }
-                    )
-                ));
-            }
-        }
         
         let additional = if let Some(add_str) = backend_add {
             let additional_list: Vec<String> = add_str.split(',')
@@ -724,13 +725,9 @@ impl CoelanoxPackager {
             Vec::new()
         };
         
-        // Only create metadata if we have hardware-specific target or additional backends
-        // (for backward compatibility, generic cpu/gpu/edge without --backend-add returns None)
-        if matches!(target, HardwareTarget::Custom(_)) || !additional.is_empty() {
-            Ok(Some(BackendMetadata::new_slim(primary, additional)))
-        } else {
-            Ok(None)
-        }
+        // Emit backend metadata so runtime knows whether container code is CPU or not
+        // (e.g. GPU-packed container has primary_resolved = "resnet_tiny_mnist.spv"; runtime skips native execution when backend is cpu)
+        Ok(Some(BackendMetadata::new_slim(primary_resolved, additional)))
     }
     
     /// Get environment information

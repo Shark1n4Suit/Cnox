@@ -11,6 +11,9 @@ repository = "https://github.com/benjamin-morin/coelanox"
 name = "coelanox"
 path = "src/main.rs"
 
+[features]
+default = []
+
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
 coelanox-packager = { path = "../coelanox-packager" }

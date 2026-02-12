@@ -162,6 +162,10 @@ enum Commands {
         /// When using --audit, append audit log lines to this file
         #[arg(long)]
         audit_output: Option<String>,
+        
+        /// Skip container integrity verification (dev only; remove in later releases)
+        #[arg(long)]
+        no_verify: bool,
     },
     
     /// Benchmark a COELANOX container
@@ -225,8 +229,8 @@ fn main() -> CoelanoxResult<()> {
         Commands::Info { file } => {
             info_command(&file)
         }
-        Commands::Run { file, input, output, backend, audit, audit_output } => {
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref())
+        Commands::Run { file, input, output, backend, audit, audit_output, no_verify } => {
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), no_verify)
         }
         Commands::Benchmark { file, iterations } => {
             benchmark_command(&file, iterations)
@@ -461,25 +465,30 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
     Ok(())
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>) -> CoelanoxResult<()> {
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, no_verify: bool) -> CoelanoxResult<()> {
     info!("Running inference: {} -> {} (backend: {})", input.unwrap_or("auto"), output, backend);
     if audit {
         coelanox_orchestrator::audit::set_audit_mode(true, audit_output.map(std::path::Path::new));
     }
     
-    // Verify security hash first (pre-deployment check)
-    // This ensures container integrity before loading into memory tier
-    info!("Verifying container integrity...");
-    coelanox_core::format::verify_security_hash(std::path::Path::new(file))
-        .map_err(|e| {
-            error!("Container integrity verification failed: {}", e);
-            eprintln!("❌ Container verification failed - refusing to load");
-            eprintln!("Error: {}", e);
-            eprintln!("The container file may have been tampered with or corrupted.");
-            eprintln!("Do not execute this container.");
-            e
-        })?;
-    info!("✅ Container integrity verified");
+    // TODO: Remove --no-verify bypass in later releases. Integrity verification must be required for production.
+    if !no_verify {
+        // Verify security hash first (pre-deployment check)
+        // This ensures container integrity before loading into memory tier
+        info!("Verifying container integrity...");
+        coelanox_core::format::verify_security_hash(std::path::Path::new(file))
+            .map_err(|e| {
+                error!("Container integrity verification failed: {}", e);
+                eprintln!("❌ Container verification failed - refusing to load");
+                eprintln!("Error: {}", e);
+                eprintln!("The container file may have been tampered with or corrupted.");
+                eprintln!("Do not execute this container.");
+                e
+            })?;
+        info!("✅ Container integrity verified");
+    } else {
+        info!("Container integrity verification skipped (--no-verify)");
+    }
     
     // Load runtime
     let mut runtime = CoelanoxRuntime::new();

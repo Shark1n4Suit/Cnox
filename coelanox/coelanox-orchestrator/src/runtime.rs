@@ -12,13 +12,14 @@
 //! - Multi-backend execution support
 
 use crate::{
+    backend_manager::BackendManager,
     container_clfmm_backend::ContainerClfmmBackend,
     container_clfmp_backend::ContainerClfmpBackend,
     RuntimeBackendRegistry,
     ScalarExecutionBackend,
 };
 use coelanox_core::{
-    format::CoelanoxContainer,
+    format::{CoelanoxContainer, HardwareTarget},
     ir::{Attribute, OpType},
     memory_hal::{MemoryBackendRegistry, MemoryHAL, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
     protection_hal::{ProtectionBackendRegistry, ProtectionHAL, RegionPermissions},
@@ -496,6 +497,9 @@ pub struct CoelanoxRuntime {
     /// Runtime execution backend registry. Holds fallback backends (e.g. scalar-fallback).
     /// The runtime tries CPU native machine code first, then falls back via this registry.
     runtime_backend_registry: Arc<RwLock<RuntimeBackendRegistry>>,
+    /// Backend manager for dynamic resolution of "gpu"/"npu"/"tpu"/"edge" to discovered backends
+    /// (e.g. CLF name "resnet_tiny_mnist.spv"). Same discovery as packager (COELANOX_CLF_PATH etc.).
+    backend_manager: Arc<RwLock<BackendManager>>,
 }
 
 /// Simple memory region wrapper for legacy allocations. Implements MemoryRegion for
@@ -834,6 +838,12 @@ impl CoelanoxRuntime {
                 let mut reg = RuntimeBackendRegistry::new();
                 reg.register("scalar-fallback", Box::new(ScalarExecutionBackend::new()));
                 Arc::new(RwLock::new(reg))
+            },
+            backend_manager: {
+                let mut mgr = BackendManager::new();
+                let paths = BackendManager::default_search_paths();
+                let _ = mgr.discover_backends(&paths);
+                Arc::new(RwLock::new(mgr))
             },
         }
     }
@@ -1485,8 +1495,17 @@ impl CoelanoxRuntime {
     }
     
     /// Execute machine code from container with proper memory management
-    /// Uses unified descriptor-based calling convention for all models
+    /// Uses unified descriptor-based calling convention for all models.
+    /// Skips execution when container was built for a non-CPU backend (e.g. GPU/SPIR-V) so caller can fall back to scalar.
     fn execute_machine_code(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+        if let Some(ref b) = container.manifest.backend_metadata {
+            if b.primary_backend.to_lowercase() != "cpu" {
+                return Err(CoelanoxError::Runtime(format!(
+                    "Container code is for backend '{}', not CPU; use scalar fallback",
+                    b.primary_backend
+                )));
+            }
+        }
         // Calculate output size
         let output_size: usize = container.manifest.output_shapes.iter()
             .map(|shape| shape.iter().product::<usize>())
@@ -1800,12 +1819,16 @@ impl CoelanoxRuntime {
     }
 
     /// Try backend from registry, then scalar fallback.
+    /// When backend is "gpu"/"npu"/"tpu"/"edge", dynamically resolve via backend manager
+    /// to a discovered backend name (e.g. "resnet_tiny_mnist.spv") and try that in the registry too,
+    /// so a GPU executor registered as "gpu" or under the CLF name can be selected.
     fn try_registry_backend_then_scalar(
         &self,
         container: &CoelanoxContainer,
         input_data: &[f32],
         backend: &str,
     ) -> CoelanoxResult<Vec<f32>> {
+        // Try literal backend name first (e.g. "gpu")
         let result = {
             let registry = self.runtime_backend_registry.read().unwrap();
             registry.get(backend).map(|b| b.execute(container, input_data))
@@ -1816,7 +1839,38 @@ impl CoelanoxRuntime {
         if let Some(Err(e)) = result {
             warn!("Backend '{}' failed: {:?}, falling back to scalar", backend, e);
         } else {
-            debug!("Backend '{}' not registered, using scalar fallback", backend);
+            // Not registered under literal name: resolve via backend manager for target-based names
+            let target_opt = match backend {
+                "gpu" => Some(HardwareTarget::Gpu),
+                "npu" => Some(HardwareTarget::NPU),
+                "tpu" => Some(HardwareTarget::Custom("tpu".to_string())),
+                "edge" => Some(HardwareTarget::Edge),
+                _ => None,
+            };
+            if let Some(target) = target_opt {
+                let resolved_name = {
+                    let mgr = self.backend_manager.read().unwrap();
+                    mgr.find_backend_for_target(&target).map(|b| b.name.clone())
+                };
+                if let Some(name) = resolved_name {
+                    let result = {
+                        let registry = self.runtime_backend_registry.read().unwrap();
+                        registry.get(&name).map(|b| b.execute(container, input_data))
+                    };
+                    if let Some(Ok(out)) = result {
+                        return Ok(out);
+                    }
+                    if let Some(Err(e)) = result {
+                        warn!("Resolved backend '{}' failed: {:?}, falling back to scalar", name, e);
+                    } else {
+                        debug!("Backend '{}' resolved to '{}' but not registered, using scalar fallback", backend, name);
+                    }
+                } else {
+                    debug!("Backend '{}' not registered; no backend discovered for target {:?}, using scalar fallback", backend, target);
+                }
+            } else {
+                debug!("Backend '{}' not registered, using scalar fallback", backend);
+            }
         }
         self.try_scalar_fallback(container, input_data)
     }
