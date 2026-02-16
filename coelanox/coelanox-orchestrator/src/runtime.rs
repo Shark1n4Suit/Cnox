@@ -18,6 +18,7 @@ use crate::{
     RuntimeBackendRegistry,
     ScalarExecutionBackend,
 };
+use coelanox_executor::{parse_plan, run_with_plan};
 use coelanox_core::{
     format::{CoelanoxContainer, HardwareTarget},
     ir::{Attribute, OpType},
@@ -1494,10 +1495,17 @@ impl CoelanoxRuntime {
         }
     }
     
-    /// Execute machine code from container with proper memory management
-    /// Uses unified descriptor-based calling convention for all models.
-    /// Skips execution when container was built for a non-CPU backend (e.g. GPU/SPIR-V) so caller can fall back to scalar.
+    /// Execute machine code from container with proper memory management.
+    /// When container has an execution plan (CLF multi-blob), uses the mini-executor to dispatch to kernel blobs.
+    /// Otherwise uses single-entry-point native call (or falls back to scalar when backend != cpu).
     fn execute_machine_code(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+        // CLF multi-blob path: use mini-executor with execution plan
+        if let Some(ref plan) = container.execution_plan {
+            if !container.optimized_code.is_empty() {
+                return self.execute_via_plan(container, input_data, plan);
+            }
+        }
+        // Single-blob path: require primary_backend == "cpu"
         if let Some(ref b) = container.manifest.backend_metadata {
             if b.primary_backend.to_lowercase() != "cpu" {
                 return Err(CoelanoxError::Runtime(format!(
@@ -1506,24 +1514,13 @@ impl CoelanoxRuntime {
                 )));
             }
         }
-        // Calculate output size
         let output_size: usize = container.manifest.output_shapes.iter()
             .map(|shape| shape.iter().product::<usize>())
             .sum();
-        
-        // Create executable memory and run real machine code
         let mut output = vec![0.0f32; output_size];
-        
-        // FIX: Translator now combines all inputs into one flattened input shape
-        // Runtime just passes the flattened input_data directly as a single input
-        // Function signature: fn(&[f32], &mut [f32], &[f32])
-        // Parameters: rdi=input.ptr, rsi=input.len, rdx=output.ptr, rcx=output.len, r8=weights.ptr, r9=weights.len
-        
-        // Verify input size matches expected (single combined input)
         let expected_input_size: usize = container.manifest.input_shapes.iter()
             .map(|shape| shape.iter().product::<usize>())
             .sum();
-        
         if input_data.len() != expected_input_size {
             return Err(CoelanoxError::Runtime(format!(
                 "Input data size mismatch: expected {} elements (combined), got {}",
@@ -1531,19 +1528,15 @@ impl CoelanoxRuntime {
                 input_data.len()
             )));
         }
-        
-        // Decompress weights
         let weights = container.decompress_weights()?;
-        
-        // Execute using a raw-ABI compatible signature to guarantee register assignment
         type CpuFunc = unsafe extern "sysv64" fn(
-            *const f32, usize, // rdi, rsi
-            *mut f32, usize,   // rdx, rcx
-            *const f32, usize  // r8,  r9
+            *const f32, usize,
+            *mut f32, usize,
+            *const f32, usize
         );
         let ptr = self.allocate_and_copy_code(container)?;
         let func: CpuFunc = unsafe { std::mem::transmute(ptr as usize) };
-        info!("🔍 Calling generated CPU native machine code function with {} input elements, {} output elements", 
+        info!("🔍 Calling generated CPU native machine code function with {} input elements, {} output elements",
               input_data.len(), output.len());
         info!("✅ Using CPU native execution (no Rust fallback)");
         unsafe {
@@ -1554,7 +1547,57 @@ impl CoelanoxRuntime {
             );
         }
         info!("✅ CPU native execution completed");
-        
+        Ok(output)
+    }
+
+    /// Execute via CLF mini-executor: parse plan, allocate workspace, copy code, run_with_plan.
+    fn execute_via_plan(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        plan: &[u8],
+    ) -> CoelanoxResult<Vec<f32>> {
+        let (workspace_elements, _steps, _offsets) = parse_plan(plan)
+            .map_err(|e| CoelanoxError::Runtime(format!("Invalid execution plan: {}", e)))?;
+        let output_size: usize = container.manifest.output_shapes.iter()
+            .map(|shape| shape.iter().product::<usize>())
+            .sum();
+        let expected_input_size: usize = container.manifest.input_shapes.iter()
+            .map(|shape| shape.iter().product::<usize>())
+            .sum();
+        if input_data.len() < expected_input_size {
+            return Err(CoelanoxError::Runtime(format!(
+                "Input size mismatch: expected {} elements, got {}",
+                expected_input_size,
+                input_data.len()
+            )));
+        }
+        let weights = container.decompress_weights()?;
+        let mut workspace = vec![0.0f32; workspace_elements as usize];
+        let mut output = vec![0.0f32; output_size];
+        // Code must be in executable memory for kernel blobs to be called
+        let _ptr = self.allocate_and_copy_code(container)?;
+        // run_with_plan expects code_section - we just copied it to executable memory; the kernel
+        // pointers we pass are from the plan (offsets into code section). So we need to pass the
+        // code section content (same bytes now in executable memory). The executor will call into
+        // the copied code via the offsets. So we pass container.optimized_code as the code_section
+        // for reading offsets; the actual calls go to _ptr + offset. So run_with_plan needs to use
+        // the executable region. So we need to change run_with_plan to accept code_base pointer
+        // (executable) instead of &[u8], so it can call code_base + offset. Let me check the
+        // executor again.
+        // In run_with_plan we do: let code_base = code_section.as_ptr() as usize; ... let kernel_ptr = (code_base + k_off) as *const u8; func: KernelFn = transmute(kernel_ptr). So we're calling into code_section's memory. So code_section must be executable. So we need to pass the executable copy, not the container's optimized_code. So we need the executor to receive a pointer (the executable base) and the length (to bounds-check offsets). So change run_with_plan to take (code_ptr: *const u8, code_len: usize, plan, ...) or we pass the executable region as a slice - but we can't get a slice from raw pointer without knowing it's valid. So the runtime allocates and copies, then we need to pass the slice. The runtime has the block in executable_memory; the pointer is _ptr. We could make a slice from ptr and length: unsafe { std::slice::from_raw_parts(_ptr, container.optimized_code.len()) }. That is valid for the duration we don't free it. So we hold the guard so the block isn't freed, then run_with_plan(unsafe { std::slice::from_raw_parts(_ptr, container.optimized_code.len()) }, plan, ...). So we need to keep the allocation alive. allocate_and_copy_code pushes the block and returns the pointer; the block stays in the list. So we can safely use the slice until we return. So:
+        let code_slice = unsafe {
+            std::slice::from_raw_parts(_ptr, container.optimized_code.len())
+        };
+        run_with_plan(
+            code_slice,
+            plan,
+            input_data,
+            &mut output,
+            &weights,
+            &mut workspace,
+        )?;
+        info!("✅ CLF mini-executor execution completed");
         Ok(output)
     }
     

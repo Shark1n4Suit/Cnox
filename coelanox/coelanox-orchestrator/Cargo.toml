@@ -12,6 +12,7 @@ default = []
 
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
+coelanox-executor = { path = "../coelanox-executor" }
 clf = { path = "../../../CLF" }
 bincode = "1.3"
 libc = "0.2"

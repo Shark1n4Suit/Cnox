@@ -1,0 +1,11 @@
+[package]
+name = "coelanox-executor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
+description = "CLF mini-executor: runs multi-blob containers via execution plan (graph walk + kernel dispatch)"
+
+[dependencies]
+coelanox-core = { path = "../coelanox-core" }
+# CLF SIMD kernels (Rust): correct per-op ABI; we dispatch by op_id instead of calling raw blobs.
+clf-kernels-simd = { path = "../../../CLF/kernels/simd", default-features = true }

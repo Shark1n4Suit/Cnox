@@ -380,6 +380,9 @@ pub struct CoelanoxManifest {
     /// CLFMP (memory protection) data size in bytes; present when container embeds memory protection
     #[serde(default)]
     pub clfmp_size: Option<usize>,
+    /// Execution plan size in bytes (CLF mini-executor); present when container has multi-blob code
+    #[serde(default)]
+    pub execution_plan_size: Option<usize>,
 }
 
 impl CoelanoxManifest {
@@ -409,6 +412,7 @@ impl CoelanoxManifest {
             nvme_backing_size: None,
             clfmm_size: None,
             clfmp_size: None,
+            execution_plan_size: None,
         }
     }
     
@@ -520,6 +524,8 @@ pub struct CoelanoxContainer {
     pub clfmm_data: Option<Vec<u8>>,
     /// CLFMP (memory protection) blobs; container configures protection via these.
     pub clfmp_data: Option<Vec<u8>>,
+    /// Execution plan for CLF mini-executor (multi-blob dispatch); present when code is kernel blobs in graph order
+    pub execution_plan: Option<Vec<u8>>,
     /// Backend hints
     pub backend_hints: Option<BackendHints>,
     /// Security metadata
@@ -544,7 +550,7 @@ impl CoelanoxContainer {
         Self::new_with_hal_data(manifest, optimized_code, compressed_weights, compression_type, ir_data, nvme_backing_data, None, None)
     }
 
-    /// Create a new COELANOX container with NVMe, CLFMM, and CLFMP data
+    /// Create a new COELANOX container with NVMe, CLFMM, CLFMP, and optional execution plan data
     pub fn new_with_hal_data(
         manifest: CoelanoxManifest,
         optimized_code: Vec<u8>,
@@ -554,6 +560,24 @@ impl CoelanoxContainer {
         nvme_backing_data: Option<Vec<u8>>,
         clfmm_data: Option<Vec<u8>>,
         clfmp_data: Option<Vec<u8>>,
+    ) -> Self {
+        Self::new_with_hal_data_and_plan(
+            manifest, optimized_code, compressed_weights, compression_type, ir_data,
+            nvme_backing_data, clfmm_data, clfmp_data, None,
+        )
+    }
+
+    /// Create a new COELANOX container with NVMe, CLFMM, CLFMP, and optional execution plan (CLF mini-executor)
+    pub fn new_with_hal_data_and_plan(
+        manifest: CoelanoxManifest,
+        optimized_code: Vec<u8>,
+        compressed_weights: Vec<u8>,
+        compression_type: CompressionType,
+        ir_data: Vec<u8>,
+        nvme_backing_data: Option<Vec<u8>>,
+        clfmm_data: Option<Vec<u8>>,
+        clfmp_data: Option<Vec<u8>>,
+        execution_plan: Option<Vec<u8>>,
     ) -> Self {
         let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
         let code_offset = COELANOX_HEADER_SIZE as u64 + manifest_size as u64;
@@ -567,7 +591,7 @@ impl CoelanoxContainer {
         // Calculate NVMe backing offset (IR has 4-byte length prefix)
         let nvme_backing_offset = ir_offset + 4 + ir_data.len() as u64;
         
-        // Calculate total size including NVMe backing and optional CLFMM/CLFMP
+        // Calculate total size including NVMe backing and optional CLFMM/CLFMP/execution_plan
         let nvme_size = nvme_backing_data.as_ref().map(|d| d.len()).unwrap_or(0) as u64;
         let base_after_nvme = if nvme_size > 0 {
             nvme_backing_offset + 8 + nvme_size
@@ -577,13 +601,16 @@ impl CoelanoxContainer {
 
         let clfmm_size = clfmm_data.as_ref().map(|d| d.len());
         let clfmp_size = clfmp_data.as_ref().map(|d| d.len());
+        let execution_plan_size = execution_plan.as_ref().map(|d| d.len());
         let mut manifest = manifest;
         manifest.clfmm_size = clfmm_size;
         manifest.clfmp_size = clfmp_size;
+        manifest.execution_plan_size = execution_plan_size;
 
         let total_size = base_after_nvme
             + clfmm_data.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0)
-            + clfmp_data.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0);
+            + clfmp_data.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0)
+            + execution_plan.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0);
 
         Self {
             header: CoelanoxHeader::new(total_size, COELANOX_HEADER_SIZE as u64, code_offset),
@@ -595,6 +622,7 @@ impl CoelanoxContainer {
             nvme_backing_data,
             clfmm_data,
             clfmp_data,
+            execution_plan,
             backend_hints: None,
             security: None,
         }
@@ -749,6 +777,12 @@ impl CoelanoxContainer {
             writer.write_all(&(clfmp.len() as u64).to_le_bytes())?;
             writer.write_all(clfmp)?;
         }
+
+        // Write execution plan with length prefix (if present; CLF mini-executor)
+        if let Some(ref plan) = self.execution_plan {
+            writer.write_all(&(plan.len() as u64).to_le_bytes())?;
+            writer.write_all(plan)?;
+        }
         
         // TODO: Write backend hints and security metadata if present
         
@@ -861,6 +895,27 @@ impl CoelanoxContainer {
         } else {
             None
         };
+
+        // Read execution plan if present (manifest.execution_plan_size)
+        let execution_plan = if let Some(plan_size) = manifest.execution_plan_size {
+            if plan_size > 0 {
+                let mut len_bytes = [0u8; 8];
+                reader.read_exact(&mut len_bytes)?;
+                let len = u64::from_le_bytes(len_bytes) as usize;
+                if len != plan_size {
+                    return Err(CoelanoxError::PayloadValidation(
+                        format!("Execution plan size mismatch: manifest says {}, file has {}", plan_size, len)
+                    ));
+                }
+                let mut data = vec![0u8; len];
+                reader.read_exact(&mut data)?;
+                Some(data)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         
         // TODO: Read backend hints and security metadata if present
         // TODO: Determine compression_type from manifest or metadata
@@ -875,6 +930,7 @@ impl CoelanoxContainer {
             nvme_backing_data,
             clfmm_data,
             clfmp_data,
+            execution_plan,
             backend_hints: None,
             security: None,
         })

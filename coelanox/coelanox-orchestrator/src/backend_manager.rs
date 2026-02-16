@@ -214,7 +214,7 @@ impl BackendManager {
             .unwrap_or(false)
     }
     
-    /// Register a .clf file as a backend. CLF reader (extract blobs by op_id) is implemented separately.
+    /// Register a .clf file as a backend. Reads CLF header to set supported_targets from target field.
     fn load_clf_backend(&self, path: &Path) -> CoelanoxResult<BackendInfo> {
         if !path.exists() {
             return Err(CoelanoxError::BackendLibraryNotFound(
@@ -226,13 +226,31 @@ impl BackendManager {
             .and_then(|s| s.to_str())
             .unwrap_or("clf")
             .to_string();
+        let supported_targets = Self::clf_target_to_hardware(path);
         Ok(BackendInfo {
             name,
             version: "1.0".to_string(),
             library_path: path.to_path_buf(),
-            supported_targets: vec![HardwareTarget::Gpu],
+            supported_targets,
             kind: BackendKind::Clf,
         })
+    }
+
+    /// Read CLF header target string and map to HardwareTarget(s). Defaults to Gpu if read fails.
+    fn clf_target_to_hardware(path: &Path) -> Vec<HardwareTarget> {
+        let reader = match clf::ClfReader::open(path) {
+            Ok(r) => r,
+            Err(_) => return vec![HardwareTarget::Gpu],
+        };
+        let t = reader.header.target.to_lowercase();
+        let target = if t.is_empty() || t == "gpu" || t == "vulkan" || t == "spir-v" {
+            HardwareTarget::Gpu
+        } else if t == "cpu" || t.contains("x86_64") || t.contains("avx") || t == "simd" {
+            HardwareTarget::Cpu
+        } else {
+            HardwareTarget::Custom(reader.header.target.clone())
+        };
+        vec![target]
     }
     
     /// Check if a file is a dynamic library

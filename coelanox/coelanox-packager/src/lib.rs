@@ -13,12 +13,14 @@ use coelanox_core::{
 };
 use clf::{ClfReader as ClfFileReader, MissingOpIdPolicy, op_type_to_clf_id as clf_op_type_to_clf_id, OpType as ClfOpType};
 use coelanox_orchestrator::{BackendManager, BackendKind};
+use coelanox_executor::build_plan_from_ir;
+use coelanox_core::ir::TensorId;
+use std::collections::{HashMap, HashSet, VecDeque};
 use crate::memory::NvmeAllocator;
 // CodeGenerator trait removed - generators folder deleted
 use crate::optimizers::HardwareOptimizer;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Map coelanox-core IR OpType to CLF crate OpType for canonical op_id lookup.
 fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
@@ -392,8 +394,8 @@ impl CoelanoxPackager {
         // Optimize IR for target hardware
         let optimized_ir = self.optimize_ir(ir.clone(), &target, optimization_level)?;
         
-        // Generate machine code (pass original IR metadata for input shape information)
-        let machine_code = self.generate_machine_code(&optimized_ir, &target, &ir.metadata.input_shapes)?;
+        // Generate machine code (and kernel offsets for CLF execution plan)
+        let (machine_code, kernel_byte_offsets) = self.generate_machine_code(&optimized_ir, &target, &ir.metadata.input_shapes)?;
         
         // Extract weights from model
         let weights = self.extract_weights(&model_data, &format)?;
@@ -460,14 +462,53 @@ impl CoelanoxPackager {
         manifest.nvme_backing_offset = Some(nvme_backing_offset);
         manifest.nvme_backing_size = Some(nvme_backing_data.len());
         
-        // Create container with weights, IR data, and NVMe backing
-        let container = CoelanoxContainer::new_with_nvme(
+        // Build execution plan for CLF multi-blob (mini-executor)
+        let execution_plan = if let Some(ref kernel_offsets_by_node) = kernel_byte_offsets {
+            let node_order = Self::execution_node_order(&optimized_ir)?;
+            // op_ids and kernel offsets in execution order (step j = node_order[j])
+            let op_ids: Vec<u32> = node_order
+                .iter()
+                .map(|&i| clf_op_type_to_clf_id(ir_op_type_to_clf_op_type(&optimized_ir.optimized_nodes[i].op_type)))
+                .collect();
+            let offsets_in_exec_order: Vec<u32> = node_order
+                .iter()
+                .map(|&i| kernel_offsets_by_node[i])
+                .collect();
+            let weight_offsets: Vec<usize> = {
+                let mut w = vec![0];
+                for wt in optimized_ir.shared_weights.iter() {
+                    w.push(w.last().copied().unwrap_or(0) + wt.elements());
+                }
+                w
+            };
+            let input_elements: usize = ir.metadata.input_shapes.iter().map(|s| s.total_elements()).sum();
+            let output_elements: usize = ir.metadata.output_shapes.iter().map(|s| s.total_elements()).sum();
+            let (plan, _ws) = build_plan_from_ir(
+                &optimized_ir.optimized_nodes,
+                &optimized_ir.intermediate_tensors,
+                &weight_offsets,
+                input_elements,
+                output_elements,
+                &node_order,
+                &op_ids,
+                &offsets_in_exec_order,
+            )?;
+            Some(plan)
+        } else {
+            None
+        };
+        
+        // Create container with weights, IR data, NVMe backing, and optional execution plan
+        let container = CoelanoxContainer::new_with_hal_data_and_plan(
             manifest,
             machine_code,
             compressed_weights,
             compression_type,
             ir_data,
             Some(nvme_backing_data),
+            None,
+            None,
+            execution_plan,
         );
         
         Ok(container)
@@ -584,12 +625,14 @@ impl CoelanoxPackager {
         }
     }
     
-    /// Generate machine code for target hardware
-    ///
-    /// Uses CLF when backend for target is Clf: loads the .clf file at backend path and
-    /// builds the code section from IR nodes via build_code_section (canonical op_ids).
-    /// Otherwise uses BackendTranslator or returns empty (scalar fallback).
-    fn generate_machine_code(&self, optimized_ir: &coelanox_core::ir::OptimizedIR, target: &HardwareTarget, input_shapes: &[coelanox_core::ir::Shape]) -> CoelanoxResult<Vec<u8>> {
+    /// Generate machine code for target hardware.
+    /// For CLF backends, also returns kernel byte offsets (for execution plan); otherwise returns (code, None).
+    fn generate_machine_code(
+        &self,
+        optimized_ir: &coelanox_core::ir::OptimizedIR,
+        target: &HardwareTarget,
+        input_shapes: &[coelanox_core::ir::Shape],
+    ) -> CoelanoxResult<(Vec<u8>, Option<Vec<u32>>)> {
         if let Some(backend_info) = self.backend_manager.find_backend_for_target(target) {
             if backend_info.kind == BackendKind::Clf {
                 let mut reader = ClfFileReader::open(backend_info.library_path.as_path())
@@ -599,14 +642,73 @@ impl CoelanoxPackager {
                     .iter()
                     .map(|node| clf_op_type_to_clf_id(ir_op_type_to_clf_op_type(&node.op_type)))
                     .collect();
-                let code = reader
-                    .build_code_section(&op_ids, MissingOpIdPolicy::Skip)
-                    .map_err(|e| CoelanoxError::format(&format!("CLF build_code_section failed: {}", e)))?;
-                return Ok(code);
+                let mut code = Vec::new();
+                let mut kernel_byte_offsets = Vec::with_capacity(op_ids.len());
+                for op_id in &op_ids {
+                    if let Ok(Some(blob)) = reader.get_blob(*op_id) {
+                        kernel_byte_offsets.push(code.len() as u32);
+                        code.extend_from_slice(&blob);
+                    }
+                }
+                // Only return kernel offsets when we have a blob for every node (required for execution plan)
+                let offsets = if kernel_byte_offsets.len() == op_ids.len() {
+                    Some(kernel_byte_offsets)
+                } else {
+                    None
+                };
+                return Ok((code, offsets));
             }
         }
         let _ = (optimized_ir, input_shapes);
-        Ok(Vec::new())
+        Ok((Vec::new(), None))
+    }
+
+    /// Topological execution order for optimized nodes (same logic as scalar fallback).
+    fn execution_node_order(optimized_ir: &coelanox_core::ir::OptimizedIR) -> CoelanoxResult<Vec<usize>> {
+        let nodes = &optimized_ir.optimized_nodes;
+        let produced: HashSet<TensorId> = nodes
+            .iter()
+            .flat_map(|n| n.output_tensors.iter().copied())
+            .collect();
+        let mut producer: HashMap<TensorId, usize> = HashMap::new();
+        for (i, node) in nodes.iter().enumerate() {
+            for &tid in &node.output_tensors {
+                if tid.is_intermediate() {
+                    producer.insert(tid, i);
+                }
+            }
+        }
+        let mut in_degree: Vec<usize> = vec![0; nodes.len()];
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+        for (i, node) in nodes.iter().enumerate() {
+            for &tid in &node.input_tensors {
+                if tid.is_intermediate() && produced.contains(&tid) {
+                    if let Some(&p) = producer.get(&tid) {
+                        in_degree[i] += 1;
+                        dependents[p].push(i);
+                    }
+                }
+            }
+        }
+        let mut queue: VecDeque<usize> = (0..nodes.len()).filter(|&i| in_degree[i] == 0).collect();
+        let mut order = Vec::with_capacity(nodes.len());
+        while let Some(i) = queue.pop_front() {
+            order.push(i);
+            for &j in &dependents[i] {
+                in_degree[j] -= 1;
+                if in_degree[j] == 0 {
+                    queue.push_back(j);
+                }
+            }
+        }
+        if order.len() != nodes.len() {
+            return Err(CoelanoxError::Runtime(format!(
+                "Graph cycle or missing producers: sorted {} of {} nodes",
+                order.len(),
+                nodes.len()
+            )));
+        }
+        Ok(order)
     }
     
     /// Create manifest from IR
@@ -684,8 +786,12 @@ impl CoelanoxPackager {
         // is named exactly "gpu"/"edge", use any discovered backend that supports that target
         // (e.g. CLF file resnet_tiny_mnist.spv.clfc is registered as "resnet_tiny_mnist.spv" and supports Gpu).
         let primary = target_str.to_lowercase();
+        // When target is "cpu", use discovered backend name if it's a CLF (e.g. resnet_tiny_mnist_simd)
+        // so the runtime skips single-entry-point native execution and falls back to scalar (SIMD blobs are multi-kernel).
         let primary_resolved: String = if primary == "cpu" {
-            primary.clone()
+            self.backend_manager.find_backend_for_target(target)
+                .map(|b| b.name.clone())
+                .unwrap_or_else(|| primary.clone())
         } else if self.backend_manager.get_backend(&primary).is_some() {
             primary.clone()
         } else if let Some(backend_info) = self.backend_manager.find_backend_for_target(target) {

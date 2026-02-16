@@ -208,6 +208,22 @@ enum Commands {
         #[arg(short, long, default_value = "10")]
         trace_limit: usize,
     },
+    
+    /// Extract runtime-only binary for deployment (same arch or cross-arch, e.g. ARM server).
+    /// Produces a standalone runtime that matches this CLI version; deploy it with .cnox files only.
+    Extract {
+        /// Output path for the runtime binary (e.g. coelanox-run or coelanox-run-arm)
+        #[arg(short, long, default_value = "coelanox-run")]
+        output: String,
+        
+        /// Extract runtime for ARM64 (aarch64). Default is current platform.
+        #[arg(long)]
+        arm: bool,
+        
+        /// Target triple for cross-arch (e.g. aarch64-unknown-linux-gnu). Overrides --arm if set.
+        #[arg(long)]
+        target: Option<String>,
+    },
 }
 
 fn main() -> CoelanoxResult<()> {
@@ -240,6 +256,9 @@ fn main() -> CoelanoxResult<()> {
         }
         Commands::Debug { file, input, output, gdb, dump_registers, trace_limit } => {
             debug_command(&file, input.as_deref(), &output, gdb, dump_registers, trace_limit)
+        }
+        Commands::Extract { output, arm, target } => {
+            extract_command(&output, arm, target.as_deref())
         }
     }
 }
@@ -618,6 +637,22 @@ fn env_command() -> CoelanoxResult<()> {
     println!("Recommended target: {:?}", recommended_target);
     println!("Recommended optimization: {:?}", recommended_optimization);
     
+    Ok(())
+}
+
+/// Extract command - Produce runtime-only binary for deployment (stub).
+/// Full implementation will write embedded or downloaded runtime for --output, optionally for --arm / --target.
+fn extract_command(output: &str, arm: bool, target: Option<&str>) -> CoelanoxResult<()> {
+    info!("Extract runtime (stub): output={}, arm={}, target={:?}", output, arm, target);
+    let effective_target = target
+        .map(|s| s.to_string())
+        .or_else(|| if arm { Some("aarch64-unknown-linux-gnu".to_string()) } else { None });
+    println!("📤 Extract runtime (not yet implemented)");
+    println!("   Output path: {}", output);
+    println!("   Target: {}", effective_target.as_deref().unwrap_or("current"));
+    println!();
+    println!("   When implemented: a runtime binary will be written to '{}' for deployment.", output);
+    println!("   Deploy that binary + your .cnox file(s); no packager needed on the server.");
     Ok(())
 }
 

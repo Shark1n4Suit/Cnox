@@ -9,6 +9,7 @@ repository = "https://github.com/coelanox-ai/coelanox"
 
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
+coelanox-executor = { path = "../coelanox-executor" }
 clf = { path = "../../../CLF" }
 coelanox-orchestrator = { path = "../coelanox-orchestrator" }
 bincode = "1.3"

@@ -166,6 +166,18 @@
 2. **Packager** – Embed CLFMM and CLFMP when building. `--clfmm`, `--clfmp` or target-based discovery.
 3. **Runtime** – Remove allocation for containers. Use embedded CLFMM/CLFMP from container. Runtime becomes orchestrator only (multi-container on same card).
 4. **Bootstrap** – Minimal loader or container-as-loadable format so CLFMM blobs are executable before use.
+5. **CLF mini-executor (flight manager)** – Single entry-point blob that orchestrates execution and memory tiering inside the container (see below).
+
+### **CLF Mini-Executor (Flight Manager)**
+
+For CLF execution with multiple kernel blobs, use **one mini-executor** as the single host-callable entry point. It acts as a "flight manager" for the model:
+
+- **Scheduling** – Walks the graph (IR in container), decides which kernel runs when and in what order. Kernels stay dumb (pointers in, compute, return).
+- **Memory tiering** – Single place to decide where buffers live (fast vs slow), when to move data, prefetch, or evict. Fits CLFMM and keeps tiering policy inside the container.
+- **Host contract** – Host loads container, makes code executable (via CLFMM when present), and **calls the executor once**. No host-side graph walk or per-op dispatch; minimal shim (e.g. load → call one entry).
+- **Layout** – Code section = `[executor blob] + [kernel blobs]`. Packager emits executor as first blob; host invokes only that. Executor calls other blobs via CLF ABI.
+
+Same container can run on different devices; executor can adapt scheduling or memory policy without changing kernel blobs.
 
 ### **Orchestrator Role on Server**
 
@@ -195,6 +207,26 @@ It does **not** allocate memory for containers; each container pulls its own via
 
 - **Server/Desktop (with OS):** Orchestrator manages multiple containers. Each container uses its own embedded CLFMM/CLFMP.
 - **Drone/Edge (no OS):** Container flashed directly. No orchestrator. Bootloader loads container and runs.
+
+### **Extract Command (Runtime-Only Deployment)**
+
+**Goal:** One Coelanox download (full CLI with packager + runtime). Users who deploy to a server or another arch don’t need the full tooling there—only the runtime + `.cnox`. Extract produces a standalone runtime binary (same version as CLI) so there’s no double install or version mismatch.
+
+**Behavior:**
+
+- **`coelanox extract`** (default: current platform) – Write the runtime-only binary for the current architecture (e.g. x86 → x86 runtime). Deploy that binary + `.cnox` to an x86 server; no packager on the server.
+- **`coelanox extract --arm`** (or `--target aarch64-unknown-linux-gnu`) – Produce the runtime for that target (e.g. for ARM server). Runtimes are built in CI (Rust cross-compile) and either embedded in the CLI or downloaded from release artifacts so version matches the CLI.
+- **ESP32 / constrained embedded:** No full runtime. User builds a minimal shim (load `.cnox`, run plan). Extract is for server/desktop runtimes (x86, ARM, etc.) only.
+
+**Implementation (stub → full):**
+
+- **Stub:** CLI subcommand `extract` with flags e.g. `--output`, `--arm`, `--target`. Handler prints "Not yet implemented" or writes a placeholder; confirms UX and parsing.
+- **Full (later):** Either (1) embed runtime blobs per target in the CLI build and write the selected blob to `--output`, or (2) have extract download the matching prebuilt runtime from release artifacts for the requested target. CI builds `coelanox-run` for `x86_64-linux`, `aarch64-linux`, `x86_64-windows`, etc., and publishes them with each release.
+
+**Success criteria:**
+
+- `coelanox extract` and `coelanox extract --arm` (or `--target …`) documented and wired in CLI.
+- Stub implemented; full implementation produces a runnable runtime binary for the requested target, version-aligned with the CLI.
 
 ### **Safety Model**
 
