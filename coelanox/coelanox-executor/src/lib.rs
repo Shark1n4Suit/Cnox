@@ -86,6 +86,7 @@ pub struct PlanStep {
 /// - `output`: model output buffer (executor writes final node output here).
 /// - `weights`: decompressed weights (flat f32).
 /// - `workspace`: pre-allocated buffer of size (workspace_elements from plan) * 4 bytes.
+/// - `audit_cb`: when Some, called after each step with (step_index, op_id, output_slice) for audit logging.
 ///
 /// Non-x86: we cannot call SIMD kernels; return an error so runtime falls back to scalar.
 #[cfg(not(target_arch = "x86_64"))]
@@ -96,6 +97,7 @@ pub fn run_with_plan(
     _output: &mut [f32],
     _weights: &[f32],
     _workspace: &mut [f32],
+    _audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
 ) -> CoelanoxResult<()> {
     Err(CoelanoxError::Runtime(
         "CLF executor is only implemented for x86_64; use scalar fallback on this platform".to_string(),
@@ -110,6 +112,7 @@ pub fn run_with_plan(
     output: &mut [f32],
     weights: &[f32],
     workspace: &mut [f32],
+    mut audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
 ) -> CoelanoxResult<()> {
     let (workspace_elements, steps, _kernel_offsets) = parse_plan(plan)?;
     if workspace.len() < workspace_elements as usize {
@@ -123,7 +126,7 @@ pub fn run_with_plan(
     let input_len = input.len().min(workspace.len());
     workspace[..input_len].copy_from_slice(&input[..input_len]);
 
-    for step in &steps {
+    for (step_index, step) in steps.iter().enumerate() {
         let in_ptr = workspace.as_ptr().wrapping_add(step.in_off as usize);
         let out_ptr = workspace.as_mut_ptr().wrapping_add(step.out_off as usize);
         let w_ptr = weights.as_ptr().wrapping_add(step.w_off as usize);
@@ -142,8 +145,10 @@ pub fn run_with_plan(
                     clf_simd_relu(out_ptr, in_ptr, in_len);
                 }
                 30 => {
-                    // Convolution: derive n,c_in,h,w,c_out,k_h,k_w,stride,pad from lengths
-                    dispatch_conv(in_ptr, out_ptr, w_ptr, in_len, out_len, w_len)?;
+                    // Convolution: derive n,c_in,h,w,c_out,k_h,k_w,stride,pad from lengths.
+                    // w_len==0 usually means the plan assigned no weights to this node (only first weight tensor per node is used).
+                    dispatch_conv(in_ptr, out_ptr, w_ptr, in_len, out_len, w_len)
+                        .map_err(|e| CoelanoxError::Runtime(format!("Step {} (op_id Conv): {}", step_index, e)))?;
                 }
                 34 => {
                     // GlobalAvgPool: out (n*c), inp (n*c*h*w), n,c,h,w. in_len=n*c*h*w, out_len=n*c => c=out_len, h*w=in_len/out_len
@@ -158,21 +163,27 @@ pub fn run_with_plan(
                     clf_simd_global_avg_pool(out_ptr, in_ptr, n, c, h, w);
                 }
                 35 => {
-                    // BatchNorm: scale,bias,mean,var each c elements => w_len=4*c, c=w_len/4. in_len=n*c*h*w => n*h*w=in_len/c
-                    let c = w_len / 4;
-                    if c == 0 {
-                        return Err(CoelanoxError::Runtime("BatchNorm: w_len < 4".to_string()));
+                    // BatchNorm: scale,bias,mean,var each c elements => w_len=4*c. If w_len==0, plan has no weights -> identity (copy in -> out).
+                    if w_len == 0 {
+                        if in_ptr != out_ptr && in_len > 0 {
+                            std::ptr::copy_nonoverlapping(in_ptr, out_ptr, in_len);
+                        }
+                    } else {
+                        let c = w_len / 4;
+                        if c == 0 {
+                            return Err(CoelanoxError::Runtime("BatchNorm: w_len must be 0 or >= 4".to_string()));
+                        }
+                        let nhw = in_len / c;
+                        let n = 1usize;
+                        let hw = nhw;
+                        let h = (hw as f64).sqrt() as usize;
+                        let w = if h > 0 { hw / h } else { 0 };
+                        let scale = w_ptr;
+                        let bias = w_ptr.add(c);
+                        let mean = w_ptr.add(2 * c);
+                        let var = w_ptr.add(3 * c);
+                        clf_simd_batchnorm(out_ptr, in_ptr, scale, bias, mean, var, n, c, h, w);
                     }
-                    let nhw = in_len / c;
-                    let n = 1usize;
-                    let hw = nhw;
-                    let h = (hw as f64).sqrt() as usize;
-                    let w = if h > 0 { hw / h } else { 0 };
-                    let scale = w_ptr;
-                    let bias = w_ptr.add(c);
-                    let mean = w_ptr.add(2 * c);
-                    let var = w_ptr.add(3 * c);
-                    clf_simd_batchnorm(out_ptr, in_ptr, scale, bias, mean, var, n, c, h, w);
                 }
                 50 => {
                     // MatMul: in_len=m*k, w_len=k*n, out_len=m*n => k^2=in_len*w_len/out_len, k=sqrt(...), m=in_len/k, n=out_len/m
@@ -196,6 +207,15 @@ pub fn run_with_plan(
                 }
             }
         }
+        // Audit: log after this step when callback provided
+        if let Some(cb) = &mut audit_cb {
+            let out_start = step.out_off as usize;
+            let out_len = step.out_len as usize;
+            let end = (out_start + out_len).min(workspace.len());
+            if out_start < end {
+                cb(step_index, step.op_id, &workspace[out_start..end]);
+            }
+        }
     }
     // Last node's output is the model output; copy to output buffer
     if let Some(last) = steps.last() {
@@ -211,6 +231,7 @@ pub fn run_with_plan(
 
 /// Derive conv params from element counts and call clf_simd_conv. Assumes n=1, same padding when possible.
 /// in_len = c_in*h*w, out_len = c_out*h_out*w_out, w_len = c_out*c_in*k_h*k_w; we search c_in so spatial = in_len/c_in divides out_len.
+/// Zero-length: skip (no-op) so we don't error; w_len==0 still errors and falls back to scalar.
 #[cfg(target_arch = "x86_64")]
 unsafe fn dispatch_conv(
     in_ptr: *const f32,
@@ -220,8 +241,11 @@ unsafe fn dispatch_conv(
     out_len: usize,
     w_len: usize,
 ) -> CoelanoxResult<()> {
-    if in_len == 0 || out_len == 0 || w_len == 0 {
-        return Err(CoelanoxError::Runtime("Conv: zero length".to_string()));
+    if in_len == 0 || out_len == 0 {
+        return Ok(());
+    }
+    if w_len == 0 {
+        return Err(CoelanoxError::Runtime("Conv: zero weight length".to_string()));
     }
     let n = 1usize;
     let (c_in, c_out, h, w, k_h, k_w) = {

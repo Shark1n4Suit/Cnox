@@ -2357,6 +2357,26 @@ pub struct AmdCodeGenerator {
 
 ---
 
+## 📌 **Optional look later**
+
+Items here are non-blocking; consider when touching related code or when packager/runtime performance matters.
+
+### **Topological sort in-place (packager)**
+
+- **Goal:** In `sort_nodes_for_execution` (IR), reorder nodes in place by permuting the existing `nodes` vector according to topological order instead of allocating a new vector and cloning each node.
+- **Rationale:** Saves memory and clone overhead during packaging; more relevant for large graphs or constrained CI. Current behavior is correct; this is an optional optimization.
+- **Scope:** `coelanox-core/src/ir.rs`: implement in-place permutation and update `NodeId`s; avoid `Vec::with_capacity` + clone loop + replace.
+- **Priority:** Optional; look later when touching that code or when packager memory/speed matters.
+
+### **SIMD audit: op_id → human-readable op name**
+
+- **Goal:** When audit is enabled on the SIMD/plan path, log human-readable op names (e.g. "Add", "ReLU", "Conv") instead of "op_id_1", "op_id_10", "op_id_30".
+- **Rationale:** Audit output matches the scalar path style and is easier to read. Executor already passes op_id; mapping is trivial (match on known CLF op_ids).
+- **Scope:** In the runtime audit closure (or audit module), add op_id → name mapping and pass the name to `log_after_op`. Keep mapping in the audit path only so executor hot path has zero change and no performance impact.
+- **Priority:** Optional; look later when touching audit or SIMD logging.
+
+---
+
 ## 🚀 **Next Steps**
 
 ### **Immediate Actions (Week 1)**

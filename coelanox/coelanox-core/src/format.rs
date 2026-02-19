@@ -13,6 +13,8 @@ use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
 /// COELANOX binary format constants
 pub const COELANOX_BINARY_VERSION: u32 = 0x00010000; // Version 1.0.0
 pub const COELANOX_HEADER_SIZE: usize = 76; // Fixed header size: 4(magic) + 4(version) + 4(flags) + 8(container_size) + 8(manifest_offset) + 8(code_offset) + 32(security_hash) + 8(reserved) = 76 bytes
+/// Byte offset of the 32-byte security_hash field in the header (4+4+4+8+8+8 = 36).
+pub const COELANOX_HEADER_SECURITY_HASH_OFFSET: usize = 36;
 pub const COELANOX_MANIFEST_OFFSET: usize = COELANOX_HEADER_SIZE;
 pub const COELANOX_CODE_OFFSET: usize = COELANOX_MANIFEST_OFFSET + 1024; // Approximate manifest size
 
@@ -724,19 +726,17 @@ impl CoelanoxContainer {
         let calculated_hash: [u8; 32] = hasher.finalize().into();
         
         // Update header in buffer with calculated hash
-        // Hash is at offset 36-67 (32 bytes) in the header
-        let hash_offset = 36;
-        if buffer.len() < hash_offset + 32 {
+        if buffer.len() < COELANOX_HEADER_SECURITY_HASH_OFFSET + 32 {
             return Err(CoelanoxError::Internal(
                 "Buffer too small to contain header with hash".to_string()
             ));
         }
         
-        buffer[hash_offset..hash_offset + 32].copy_from_slice(&calculated_hash);
+        buffer[COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32].copy_from_slice(&calculated_hash);
         
         // Write final buffer to file
         std::fs::write(path, &buffer)
-            .map_err(|e| CoelanoxError::FileSystem(e))?;
+            .map_err(CoelanoxError::FileSystem)?;
         
         Ok(())
     }
@@ -792,7 +792,7 @@ impl CoelanoxContainer {
     /// Read container from binary file
     pub fn read_binary_file(path: &std::path::Path) -> CoelanoxResult<Self> {
         let mut file = std::fs::File::open(path)
-            .map_err(|e| CoelanoxError::FileSystem(e))?;
+            .map_err(CoelanoxError::FileSystem)?;
         
         Self::read_binary(&mut file)
     }
@@ -1008,7 +1008,7 @@ impl CoelanoxValidator {
 pub fn verify_security_hash(container_path: &Path) -> CoelanoxResult<()> {
     // Read entire container file from cold storage
     let container_data = std::fs::read(container_path)
-        .map_err(|e| CoelanoxError::FileSystem(e))?;
+        .map_err(CoelanoxError::FileSystem)?;
     
     // Verify minimum size (must be at least header size)
     if container_data.len() < COELANOX_HEADER_SIZE {
@@ -1018,30 +1018,24 @@ pub fn verify_security_hash(container_path: &Path) -> CoelanoxResult<()> {
     }
     
     // Extract stored hash from header
-    // Hash is at offset 36-67 (32 bytes) in the header
-    // Header layout: magic(4) + version(4) + flags(4) + container_size(8) + manifest_offset(8) + code_offset(8) + security_hash(32) + reserved(8)
-    let hash_offset = 36; // Start of security_hash field
-    if container_data.len() < hash_offset + 32 {
+    if container_data.len() < COELANOX_HEADER_SECURITY_HASH_OFFSET + 32 {
         return Err(CoelanoxError::SecurityValidation(
             "Container file too small to contain security hash".to_string()
         ));
     }
     
-    let stored_hash: [u8; 32] = container_data[hash_offset..hash_offset + 32]
+    let stored_hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
         .try_into()
         .map_err(|_| CoelanoxError::SecurityValidation(
             "Failed to extract security hash from header".to_string()
         ))?;
     
-    // Create a copy of container data with hash set to [0; 32] for hash calculation
-    // The stored hash is the hash of the file with hash = [0; 32]
-    let mut data_for_hashing = container_data.to_vec();
-    let zero_hash = [0u8; 32];
-    data_for_hashing[hash_offset..hash_offset + 32].copy_from_slice(&zero_hash);
-    
-    // Calculate SHA-256 hash of file with hash bytes set to zero
+    // Hash the container as if the 32-byte hash field were zeros (no second copy of the file).
+    // For large containers (e.g. 5GB) this avoids doubling RAM (read + to_vec).
     let mut hasher = Sha256::new();
-    hasher.update(&data_for_hashing);
+    hasher.update(&container_data[..COELANOX_HEADER_SECURITY_HASH_OFFSET]);
+    hasher.update(&[0u8; 32]);
+    hasher.update(&container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..]);
     let calculated_hash: [u8; 32] = hasher.finalize().into();
     
     // Compare hashes

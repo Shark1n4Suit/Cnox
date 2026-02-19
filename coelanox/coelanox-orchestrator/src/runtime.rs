@@ -1589,6 +1589,10 @@ impl CoelanoxRuntime {
         let code_slice = unsafe {
             std::slice::from_raw_parts(_ptr, container.optimized_code.len())
         };
+        let mut audit_cb = |step_ix: usize, op_id: u32, out_slice: &[f32]| {
+            let op_type = format!("op_id_{}", op_id);
+            crate::audit::log_after_op(step_ix, &op_type, out_slice.len(), out_slice);
+        };
         run_with_plan(
             code_slice,
             plan,
@@ -1596,6 +1600,11 @@ impl CoelanoxRuntime {
             &mut output,
             &weights,
             &mut workspace,
+            if crate::audit::is_enabled() {
+                Some(&mut audit_cb)
+            } else {
+                None
+            },
         )?;
         info!("✅ CLF mini-executor execution completed");
         Ok(output)
@@ -1836,29 +1845,31 @@ impl CoelanoxRuntime {
         input_data: &[f32],
         backend: &str,
     ) -> CoelanoxResult<Vec<f32>> {
-        let backend_normalized = backend.to_lowercase();
-
-        match backend_normalized.as_str() {
-            "cpu" => {
-                self.execute_machine_code(container, input_data).or_else(|e| {
-                    warn!("CPU machine code failed: {:?}, falling back to scalar", e);
-                    self.try_scalar_fallback(container, input_data)
-                })
-            }
-            "gpu" | "npu" | "tpu" | "edge" => {
-                self.try_registry_backend_then_scalar(container, input_data, &backend_normalized)
-            }
-            "scalar" => self.try_scalar_fallback(container, input_data),
-            "auto" => {
-                let detected = self.select_backend_auto();
-                debug!("Auto-detected backend: {}", detected);
-                self.run_backend_execution(container, input_data, &detected)
-            }
-            _ => {
-                warn!("Unknown backend '{}', trying as registered backend then scalar", backend);
-                self.try_registry_backend_then_scalar(container, input_data, &backend_normalized)
-            }
+        // Avoid allocating for common backends; only normalize when calling registry.
+        if backend.eq_ignore_ascii_case("cpu") {
+            return self.execute_machine_code(container, input_data).or_else(|e| {
+                warn!("CPU machine code failed: {:?}, falling back to scalar", e);
+                self.try_scalar_fallback(container, input_data)
+            });
         }
+        if backend.eq_ignore_ascii_case("scalar") {
+            return self.try_scalar_fallback(container, input_data);
+        }
+        if backend.eq_ignore_ascii_case("auto") {
+            let detected = self.select_backend_auto();
+            debug!("Auto-detected backend: {}", detected);
+            return self.run_backend_execution(container, input_data, &detected);
+        }
+        let backend_normalized = backend.to_lowercase();
+        if backend.eq_ignore_ascii_case("gpu")
+            || backend.eq_ignore_ascii_case("npu")
+            || backend.eq_ignore_ascii_case("tpu")
+            || backend.eq_ignore_ascii_case("edge")
+        {
+            return self.try_registry_backend_then_scalar(container, input_data, &backend_normalized);
+        }
+        warn!("Unknown backend '{}', trying as registered backend then scalar", backend);
+        self.try_registry_backend_then_scalar(container, input_data, &backend_normalized)
     }
 
     /// Try backend from registry, then scalar fallback.
