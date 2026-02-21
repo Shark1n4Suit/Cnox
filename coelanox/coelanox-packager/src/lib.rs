@@ -337,7 +337,8 @@ impl CoelanoxPackager {
     /// * `fat` - Include all backends (fat container)
     /// * `auto` - Auto-detect backends
     /// * `backend_add` - Additional backends to add
-    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>) -> CoelanoxResult<CoelanoxContainer> {
+    /// * `fallback_only` - Do not embed any backend code; container runs with scalar fallback only (for benchmarking)
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool) -> CoelanoxResult<CoelanoxContainer> {
         // If directory given, use ResNet bundle inside it (no PyTorch needed at package time)
         let actual_path: std::path::PathBuf = if model_path.is_dir() {
             let bundle = model_path.join("resnet_tiny_mnist.bundle");
@@ -394,8 +395,13 @@ impl CoelanoxPackager {
         // Optimize IR for target hardware
         let optimized_ir = self.optimize_ir(ir.clone(), &target, optimization_level)?;
         
-        // Generate machine code (and kernel offsets for CLF execution plan)
-        let (machine_code, kernel_byte_offsets) = self.generate_machine_code(&optimized_ir, &target, &ir.metadata.input_shapes)?;
+        // Generate machine code (and kernel offsets for CLF execution plan). When fallback_only, skip all backends.
+        let (machine_code, kernel_byte_offsets) = if fallback_only {
+            eprintln!("📦 Fallback-only mode: no backend code embedded (scalar execution at runtime)");
+            (Vec::new(), None)
+        } else {
+            self.generate_machine_code(&optimized_ir, &target, &ir.metadata.input_shapes)?
+        };
         
         // Extract weights from model
         let weights = self.extract_weights(&model_data, &format)?;
@@ -428,13 +434,14 @@ impl CoelanoxPackager {
         let ir_data = bincode::serialize(&serializable_ir)
             .map_err(|e| CoelanoxError::Runtime(format!("Failed to serialize IR: {}", e)))?;
         
-        // Determine AOT backend selection
+        // Determine AOT backend selection (when fallback_only, force scalar so runtime uses fallback)
         let backend_metadata = self.determine_backend_selection(
             &target,
             target_str,
             backend_add,
             fat,
             auto,
+            fallback_only,
         )?;
         
         // Read max shapes from IR for container backing (stack arena / pre-allocated region)
@@ -517,7 +524,7 @@ impl CoelanoxPackager {
     /// Package with automatic target detection
     pub fn package_auto(&self, model_path: &Path) -> CoelanoxResult<CoelanoxContainer> {
         let recommended_target = self.environment.recommended_target();
-        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None)
+        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None, false)
     }
     
     /// Detect model format from data
@@ -737,6 +744,7 @@ impl CoelanoxPackager {
     /// * `backend_add` - Additional backends to add (comma-separated)
     /// * `fat` - Include all available backends
     /// * `auto` - Auto-detect and select backends
+    /// * `fallback_only` - Force scalar-only (no embedded backend code)
     fn determine_backend_selection(
         &self,
         target: &HardwareTarget,
@@ -744,7 +752,12 @@ impl CoelanoxPackager {
         backend_add: Option<&str>,
         fat: bool,
         auto: bool,
+        fallback_only: bool,
     ) -> CoelanoxResult<Option<BackendMetadata>> {
+        // Fallback-only: no embedded backend; runtime will use scalar fallback
+        if fallback_only {
+            return Ok(Some(BackendMetadata::new_slim("scalar".to_string(), Vec::new())));
+        }
         // Fat mode: validate all available backends
         if fat {
             let all_backends = self.backend_manager.list_backends()

@@ -145,10 +145,9 @@ pub fn run_with_plan(
                     clf_simd_relu(out_ptr, in_ptr, in_len);
                 }
                 30 => {
-                    // Convolution: derive n,c_in,h,w,c_out,k_h,k_w,stride,pad from lengths.
-                    // w_len==0 usually means the plan assigned no weights to this node (only first weight tensor per node is used).
+                    // Convolution: w_len==0 is a plan bug (re-package with fixed plan builder). No runtime fallback to avoid heap corruption.
                     dispatch_conv(in_ptr, out_ptr, w_ptr, in_len, out_len, w_len)
-                        .map_err(|e| CoelanoxError::Runtime(format!("Step {} (op_id Conv): {}", step_index, e)))?;
+                        .map_err(|e| CoelanoxError::Runtime(format!("Step {} (op_id Conv): {} (re-package the model to fix the plan)", step_index, e)))?;
                 }
                 34 => {
                     // GlobalAvgPool: out (n*c), inp (n*c*h*w), n,c,h,w. in_len=n*c*h*w, out_len=n*c => c=out_len, h*w=in_len/out_len
@@ -320,7 +319,7 @@ pub fn build_plan_from_ir(
     op_ids: &[u32],
     kernel_byte_offsets: &[u32],
 ) -> CoelanoxResult<(Vec<u8>, u32)> {
-    use coelanox_core::ir::TensorId;
+    use coelanox_core::ir::{OpType, TensorId};
 
     if node_order.len() != op_ids.len() || node_order.len() != kernel_byte_offsets.len() {
         return Err(CoelanoxError::Runtime(format!(
@@ -356,9 +355,46 @@ pub fn build_plan_from_ir(
         tensor_to_offset.insert(tid, (start as u32, len as u32));
     }
 
+    /// Resolve (w_off, w_len) for a node. For Conv/MatMul use the weight input with the
+    /// largest element count (main kernel/matrix); otherwise use the first weight.
+    /// Avoids zero weight length when the first input is not the main weight or index is wrong.
+    fn weight_range_for_node(
+        node: &coelanox_core::ir::GraphNode,
+        weight_offsets: &[usize],
+    ) -> (u32, u32) {
+        let weight_inputs: Vec<_> = node.input_tensors.iter().filter(|t| t.is_weight()).collect();
+        if weight_inputs.is_empty() {
+            return (0, 0);
+        }
+        let use_largest = matches!(node.op_type, OpType::Convolution | OpType::MatMul);
+        let (w_off, w_len) = if use_largest {
+            weight_inputs
+                .iter()
+                .filter_map(|tid| {
+                    let idx = tid.index();
+                    let start = weight_offsets.get(idx).copied()?;
+                    let end = weight_offsets.get(idx + 1).copied()?;
+                    Some((start as u32, (end - start) as u32))
+                })
+                .max_by_key(|&(_, len)| len)
+                .unwrap_or((0, 0))
+        } else {
+            weight_inputs
+                .first()
+                .and_then(|tid| {
+                    let idx = tid.index();
+                    let start = weight_offsets.get(idx).copied()?;
+                    let end = weight_offsets.get(idx + 1).copied()?;
+                    Some((start as u32, (end - start) as u32))
+                })
+                .unwrap_or((0, 0))
+        };
+        (w_off, w_len)
+    }
+
     let mut workspace_offset: u32 = input_elements as u32;
     let mut steps = Vec::with_capacity(node_order.len());
-    for &node_index in node_order {
+    for (step_index, &node_index) in node_order.iter().enumerate() {
         let node = &optimized_nodes[node_index];
         let (in_off, in_len) = node.input_tensors.iter()
             .find(|tid| tid.is_intermediate())
@@ -374,15 +410,19 @@ pub fn build_plan_from_ir(
         let out_off = workspace_offset;
         workspace_offset += out_len;
 
-        let (w_off, w_len) = node.input_tensors.iter().find(|t| t.is_weight()).and_then(|tid| {
-            let idx = tid.index();
-            let start = weight_offsets.get(idx).copied()?;
-            let end = weight_offsets.get(idx + 1).copied()?;
-            Some((start as u32, (end - start) as u32))
-        }).unwrap_or((0, 0));
+        let (w_off, w_len) = weight_range_for_node(node, weight_offsets);
+        if w_len == 0 && matches!(node.op_type, OpType::Convolution | OpType::MatMul) {
+            return Err(CoelanoxError::Runtime(format!(
+                "Plan build: node index {} (op {:?}) has no valid weight range (weight_offsets len {}); \
+                 ensure every Conv/MatMul has a weight input indexed in 0..weight_tensors.len()",
+                node_index,
+                node.op_type,
+                weight_offsets.len().saturating_sub(1),
+            )));
+        }
 
         steps.push((
-            op_ids[node_index],
+            op_ids[step_index],
             in_off,
             out_off,
             w_off,

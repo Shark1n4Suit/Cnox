@@ -110,6 +110,10 @@ enum Commands {
         /// Add additional backends (comma-separated: amd,intel,qualcomm)
         #[arg(long)]
         backend_add: Option<String>,
+        
+        /// Package without any backend code (scalar fallback only at runtime; for benchmarking)
+        #[arg(long)]
+        fallback_only: bool,
     },
     
     /// Validate a COELANOX container
@@ -173,10 +177,15 @@ enum Commands {
         /// COELANOX file to benchmark
         #[arg(short, long)]
         file: String,
-        
-        /// Number of iterations
+        /// Number of iterations (default 100)
         #[arg(short, long, default_value = "100")]
         iterations: usize,
+        /// Loop for N iterations (long-run stability); overrides --iterations when set
+        #[arg(long)]
+        loop_iterations: Option<usize>,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        output: String,
     },
     
     /// Show system environment information
@@ -233,8 +242,8 @@ fn main() -> CoelanoxResult<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add } => {
-            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref())
+        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only } => {
+            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only)
         }
         Commands::Validate { file } => {
             validate_command(&file)
@@ -248,8 +257,8 @@ fn main() -> CoelanoxResult<()> {
         Commands::Run { file, input, output, backend, audit, audit_output, no_verify } => {
             run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), no_verify)
         }
-        Commands::Benchmark { file, iterations } => {
-            benchmark_command(&file, iterations)
+        Commands::Benchmark { file, iterations, loop_iterations, output } => {
+            benchmark_command(&file, iterations, loop_iterations, &output)
         }
         Commands::Env => {
             env_command()
@@ -263,7 +272,7 @@ fn main() -> CoelanoxResult<()> {
     }
 }
 
-fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>) -> CoelanoxResult<()> {
+fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool) -> CoelanoxResult<()> {
     info!("Packaging model: {} -> {}", input, output);
     info!("Model type: {}", model_type);
     
@@ -392,6 +401,7 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
         fat,
         auto,
         backend_add,
+        fallback_only,
     )?;
     eprintln!("✅ packager.package() returned successfully");
     
@@ -562,32 +572,90 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
     Ok(())
 }
 
-fn benchmark_command(file: &str, iterations: usize) -> CoelanoxResult<()> {
-    info!("Benchmarking COELANOX container: {} ({} iterations)", file, iterations);
-    
-    // Load runtime
+fn benchmark_command(
+    file: &str,
+    iterations: usize,
+    loop_iterations: Option<usize>,
+    output_format: &str,
+) -> CoelanoxResult<()> {
+    let effective_iterations = loop_iterations.unwrap_or(iterations);
+    let is_long_run = effective_iterations >= 1000;
+    info!(
+        "Benchmarking COELANOX container: {} ({} iterations{})",
+        file,
+        effective_iterations,
+        if is_long_run { ", long-run stability" } else { "" }
+    );
+
     let mut runtime = CoelanoxRuntime::new();
-    
-    // Load container
+
+    // Measure load time (to first execute-ready)
+    let load_start = std::time::Instant::now();
     runtime.load_container(file)?;
-    
-    // Run benchmark
-    let benchmark_result = runtime.benchmark(file, iterations)?;
-    
+    let load_time_ms = load_start.elapsed().as_millis() as u64;
+
+    let result = runtime.benchmark(file, effective_iterations, Some(load_time_ms))?;
+
+    if output_format.eq_ignore_ascii_case("json") {
+        println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+        return Ok(());
+    }
+
+    // Human-readable text output
     println!("=== Benchmark Results ===");
-    println!("File: {}", file);
-    println!("Iterations: {}", iterations);
+    println!("File: {}", result.container_name);
+    println!("Iterations: {} (warm-up: {})", result.iterations, result.warm_up_runs);
+    if let Some(load_ms) = result.load_time_ms {
+        println!("Load time (to first execute-ready): {} ms", load_ms);
+    }
     println!();
-    println!("=== Performance ===");
-    println!("Average execution time: {:.2} μs", benchmark_result.avg_time);
-    println!("Min execution time: {:.2} μs", benchmark_result.min_time);
-    println!("Max execution time: {:.2} μs", benchmark_result.max_time);
-    println!("Standard deviation: {:.2} μs", 0.0); // TODO: Calculate std deviation
+    println!("=== Latency (μs) ===");
+    println!("  Average:  {:.2}", result.avg_time);
+    println!("  Min:      {}", result.min_time);
+    println!("  Max:      {}", result.max_time);
+    println!("  p50:      {}", result.p50_us);
+    println!("  p95:      {}", result.p95_us);
+    println!("  p99:      {}", result.p99_us);
+    println!("  Std dev:  {:.2}", result.std_dev_us);
+    if let Some(cold) = result.cold_time_us {
+        println!("  Cold (1st run): {} μs", cold);
+    }
+    if let Some(warm) = result.warm_avg_us {
+        println!("  Warm (avg after 1st): {} μs", warm);
+    }
     println!();
     println!("=== Throughput ===");
-    let throughput = 1_000_000.0 / benchmark_result.avg_time as f64; // ops/second
-    println!("Throughput: {:.0} ops/second", throughput);
-    
+    let throughput = 1_000_000.0 / result.avg_time as f64;
+    println!("  Sustained: {:.0} inf/s", throughput);
+    if result.min_time > 0 {
+        println!("  Max burst: {:.0} inf/s (1/min_latency)", 1_000_000.0 / result.min_time as f64);
+    }
+    println!();
+    println!("=== Memory ===");
+    println!("  Workspace (elements): {}", result.workspace_elements);
+    println!("  Weights (decompressed): {} bytes", result.weights_bytes);
+    println!("  Executable memory: {} bytes", result.executable_memory_bytes);
+    if let Some(rss) = result.rss_after_bytes {
+        println!("  RSS after benchmark: {} bytes ({:.2} MiB)", rss, rss as f64 / (1024.0 * 1024.0));
+    }
+    println!();
+    println!("=== Breakdown ===");
+    println!("  Load time: {} ms", result.load_time_ms.unwrap_or(0));
+    println!("  Decompress (one-time): {} ms", result.decompress_time_ms);
+    println!("  Backend: {}", result.backend_used);
+    if is_long_run {
+        if let (Some(first), Some(last), Some(drift)) = (
+            result.stability_first_10pct_avg_us,
+            result.stability_last_10pct_avg_us,
+            result.stability_drift_us,
+        ) {
+            println!();
+            println!("=== Long-run stability ===");
+            println!("  First 10% avg: {} μs", first);
+            println!("  Last 10% avg:  {} μs", last);
+            println!("  Drift (last - first): {} μs {}", drift, if drift > 0 { "(slowdown)" } else { "(improvement)" });
+        }
+    }
     Ok(())
 }
 

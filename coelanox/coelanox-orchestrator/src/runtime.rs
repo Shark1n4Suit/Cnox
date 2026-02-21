@@ -35,6 +35,51 @@ use anyhow::{Context, Result as AnyhowResult};
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
+/// Percentile from sorted latencies (0.0..=100.0). Returns 0 if empty.
+fn percentile(sorted: &[u64], pct: f64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = (pct / 100.0 * (sorted.len() as f64 - 1.0)).floor().max(0.0) as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+/// Returns current process RSS in bytes if available (Linux: /proc/self/status VmRSS; Windows: PROCESS_MEMORY_COUNTERS).
+fn current_rss_bytes() -> Option<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            if line.starts_with("VmRSS:") {
+                let (_, rest) = line.split_once(':')?;
+                let num: u64 = rest.trim().trim_end_matches(" kB").trim().parse().ok()?;
+                return Some((num * 1024) as usize);
+            }
+        }
+        None
+    }
+    #[cfg(windows)]
+    {
+        use std::mem::size_of;
+        use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        unsafe {
+            let mut counters: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+            counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            if GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) != 0 {
+                Some(counters.WorkingSetSize)
+            } else {
+                None
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = ();
+        None
+    }
+}
+
 /// Input descriptor for unified multi-input support
 /// This structure allows passing any number of inputs to generated machine code
 /// Using #[repr(C)] ensures C-compatible memory layout for generated code access
@@ -1499,6 +1544,12 @@ impl CoelanoxRuntime {
     /// When container has an execution plan (CLF multi-blob), uses the mini-executor to dispatch to kernel blobs.
     /// Otherwise uses single-entry-point native call (or falls back to scalar when backend != cpu).
     fn execute_machine_code(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+        // No embedded code (e.g. packaged with --fallback-only): force scalar fallback via error so caller's or_else runs
+        if container.optimized_code.is_empty() && container.execution_plan.is_none() {
+            return Err(CoelanoxError::Runtime(
+                "Container has no embedded backend code (fallback-only package); use scalar execution".to_string(),
+            ));
+        }
         // CLF multi-blob path: use mini-executor with execution plan
         if let Some(ref plan) = container.execution_plan {
             if !container.optimized_code.is_empty() {
@@ -2165,46 +2216,138 @@ impl CoelanoxRuntime {
         );
     }
     
-    /// Benchmark a container
-    pub fn benchmark(&mut self, container_name: &str, iterations: usize) -> CoelanoxResult<BenchmarkResult> {
+    /// Benchmark a container with full latency, memory, and optional long-run stability metrics.
+    /// `load_time_ms` can be set by the caller (e.g. CLI) after measuring load_container() duration.
+    pub fn benchmark(
+        &mut self,
+        container_name: &str,
+        iterations: usize,
+        load_time_ms: Option<u64>,
+    ) -> CoelanoxResult<BenchmarkResult> {
+        const WARM_UP_RUNS: usize = 10;
         let container = self.get_container_info(container_name)?;
-        
+
+        // Workspace size from plan (if CLF mini-executor path)
+        let workspace_elements: u64 = if let Some(ref plan) = container.execution_plan {
+            parse_plan(plan)
+                .map(|(elements, _, _)| elements as u64)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Time single decompress and get weights size
+        let decompress_start = std::time::Instant::now();
+        let weights = container.decompress_weights()?;
+        let decompress_time_ms = decompress_start.elapsed().as_millis() as u64;
+        let weights_bytes = weights.len() * std::mem::size_of::<f32>();
+
+        // Backend label
+        let backend_used = if container.execution_plan.is_some() {
+            "plan"
+        } else {
+            "legacy"
+        }
+        .to_string();
+
         // Generate dummy input data
-        let input_size: usize = container.manifest.input_shapes.iter()
+        let input_size: usize = container
+            .manifest
+            .input_shapes
+            .iter()
             .map(|shape| shape.iter().product::<usize>())
             .sum();
-        
         let input_data = vec![1.0f32; input_size];
-        
-        let mut total_time = 0u64;
-        let mut min_time = u64::MAX;
-        let mut max_time = 0u64;
-        
+
         // Warm up
-        for _ in 0..10 {
+        for _ in 0..WARM_UP_RUNS {
             self.execute(container_name, &input_data)?;
         }
-        
-        // Benchmark
+
+        // Timed iterations: record every latency for percentiles and stability
+        let mut times: Vec<u64> = Vec::with_capacity(iterations);
         for _ in 0..iterations {
-            let start_time = std::time::Instant::now();
+            let start = std::time::Instant::now();
             self.execute(container_name, &input_data)?;
-            let execution_time = start_time.elapsed().as_micros() as u64;
-            
-            total_time += execution_time;
-            min_time = min_time.min(execution_time);
-            max_time = max_time.max(execution_time);
+            times.push(start.elapsed().as_micros() as u64);
         }
-        
+
+        let total_time: u64 = times.iter().sum();
         let avg_time = total_time / iterations as u64;
-        
+        let min_time = *times.iter().min().unwrap_or(&0);
+        let max_time = *times.iter().max().unwrap_or(&0);
+
+        // Percentiles (sort copy and index)
+        let mut sorted = times.clone();
+        sorted.sort_unstable();
+        let p50_us = percentile(&sorted, 50.0);
+        let p95_us = percentile(&sorted, 95.0);
+        let p99_us = percentile(&sorted, 99.0);
+
+        // Standard deviation
+        let mean = total_time as f64 / iterations as f64;
+        let variance = times
+            .iter()
+            .map(|&t| {
+                let d = t as f64 - mean;
+                d * d
+            })
+            .sum::<f64>()
+            / iterations as f64;
+        let std_dev_us = variance.sqrt();
+
+        // Cold (first run) vs warm (rest)
+        let cold_time_us = times.first().copied();
+        let warm_avg_us = if times.len() > 1 {
+            Some(times[1..].iter().sum::<u64>() / (times.len() - 1) as u64)
+        } else {
+            None
+        };
+
+        // Long-run stability: first 10% vs last 10% when we have enough samples
+        const STABILITY_MIN_ITERATIONS: usize = 1000;
+        const STABILITY_WINDOW_PCT: f64 = 10.0;
+        let (stability_first_10pct_avg_us, stability_last_10pct_avg_us, stability_drift_us) =
+            if iterations >= STABILITY_MIN_ITERATIONS {
+                let n = times.len();
+                let window = (n as f64 * STABILITY_WINDOW_PCT / 100.0).floor() as usize;
+                let window = window.max(1);
+                let first_avg = times[..window].iter().sum::<u64>() / window as u64;
+                let last_avg = times[n - window..].iter().sum::<u64>() / window as u64;
+                let drift = last_avg as i64 - first_avg as i64;
+                (Some(first_avg), Some(last_avg), Some(drift))
+            } else {
+                (None, None, None)
+            };
+
+        // Memory after benchmark
+        let mem = self.get_memory_stats();
+        let rss_after_bytes = current_rss_bytes();
+
         Ok(BenchmarkResult {
             container_name: container_name.to_string(),
             iterations,
+            warm_up_runs: WARM_UP_RUNS,
             avg_time,
             min_time,
             max_time,
             total_time,
+            p50_us,
+            p95_us,
+            p99_us,
+            std_dev_us,
+            cold_time_us,
+            warm_avg_us,
+            load_time_ms,
+            decompress_time_ms,
+            workspace_elements,
+            weights_bytes,
+            executable_memory_bytes: mem.executable_memory_size,
+            rss_after_bytes,
+            backend_used,
+            stability_first_10pct_avg_us,
+            stability_last_10pct_avg_us,
+            stability_drift_us,
         })
     }
 }
@@ -2237,15 +2380,52 @@ pub struct HealthStatus {
     pub uptime_ms: u64,
 }
 
-/// Benchmark result
-#[derive(Debug, Clone)]
+/// Benchmark result with full latency, memory, and optional stability metrics
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkResult {
     pub container_name: String,
     pub iterations: usize,
+    pub warm_up_runs: usize,
+    /// Average execution time (μs)
     pub avg_time: u64,
     pub min_time: u64,
     pub max_time: u64,
     pub total_time: u64,
+    /// Latency percentiles (μs)
+    pub p50_us: u64,
+    pub p95_us: u64,
+    pub p99_us: u64,
+    /// Standard deviation of latency (μs)
+    pub std_dev_us: f64,
+    /// First (cold) run time (μs); includes one-time decompress/code path
+    pub cold_time_us: Option<u64>,
+    /// Average of runs after the first (warm) (μs)
+    pub warm_avg_us: Option<u64>,
+    /// Time to load container until first execute-ready (ms); set by CLI when measured
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_time_ms: Option<u64>,
+    /// Time to decompress weights once (ms)
+    pub decompress_time_ms: u64,
+    /// Workspace size from plan (elements)
+    pub workspace_elements: u64,
+    /// Decompressed weights size (bytes)
+    pub weights_bytes: usize,
+    /// Executable memory size (bytes) after benchmark
+    pub executable_memory_bytes: usize,
+    /// Process RSS after benchmark (bytes); None if unavailable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rss_after_bytes: Option<usize>,
+    /// Backend used: "plan" (CLF mini-executor) or "legacy"
+    pub backend_used: String,
+    /// Long-run stability: average latency in first 10% of iterations (μs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stability_first_10pct_avg_us: Option<u64>,
+    /// Long-run stability: average latency in last 10% of iterations (μs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stability_last_10pct_avg_us: Option<u64>,
+    /// Long-run stability: drift (last_10%_avg - first_10%_avg) in μs; positive = slowdown over time
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stability_drift_us: Option<i64>,
 }
 
 impl Drop for CoelanoxRuntime {
