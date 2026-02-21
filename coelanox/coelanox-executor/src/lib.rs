@@ -67,6 +67,58 @@ pub fn parse_plan(plan: &[u8]) -> CoelanoxResult<(u32, Vec<PlanStep>, Vec<u32>)>
     Ok((workspace_elements, steps, kernel_offsets))
 }
 
+/// Maximum conv scratch elements needed for any conv in the plan (for allocating scratch buffer).
+fn conv_scratch_from_lens(in_len: usize, out_len: usize, w_len: usize) -> usize {
+    let mut best = 0usize;
+    for c_in in 1..=in_len {
+        if in_len % c_in != 0 {
+            continue;
+        }
+        let spatial = in_len / c_in;
+        if out_len % spatial != 0 {
+            continue;
+        }
+        let c_out = out_len / spatial;
+        let weight_el = c_in * c_out;
+        if weight_el == 0 || w_len % weight_el != 0 {
+            continue;
+        }
+        let k_prod = w_len / weight_el;
+        let k_h = (k_prod as f64).sqrt() as usize;
+        let k_w = if k_h > 0 { k_prod / k_h } else { 0 };
+        if k_h == 0 || k_w == 0 || k_h * k_w != k_prod {
+            continue;
+        }
+        let h = (spatial as f64).sqrt() as usize;
+        let w = if h > 0 { spatial / h } else { 0 };
+        if h * w != spatial {
+            continue;
+        }
+        let pad_h = (k_h - 1) / 2;
+        let pad_w = (k_w - 1) / 2;
+        let h_out = (h + 2 * pad_h - k_h) / 1 + 1;
+        let w_out = (w + 2 * pad_w - k_w) / 1 + 1;
+        let m = h_out * w_out;
+        let k = c_in * k_h * k_w;
+        let need = m * k + m * c_out;
+        if need > best {
+            best = need;
+        }
+        break; // first valid is enough for this step; we take max over steps
+    }
+    best
+}
+
+pub fn max_conv_scratch_elements(plan: &[u8]) -> CoelanoxResult<usize> {
+    let (_, steps, _) = parse_plan(plan)?;
+    Ok(steps
+        .iter()
+        .filter(|s| s.op_id == 30)
+        .map(|s| conv_scratch_from_lens(s.in_len as usize, s.out_len as usize, s.w_len as usize))
+        .max()
+        .unwrap_or(0))
+}
+
 #[derive(Debug, Clone)]
 pub struct PlanStep {
     pub op_id: u32,
@@ -392,6 +444,9 @@ pub fn build_plan_from_ir(
         (w_off, w_len)
     }
 
+    // Workspace layout: one slot per unique intermediate tensor that is produced.
+    // If multiple nodes output the same tensor (in-place reuse), we reuse the same slot
+    // instead of counting it again — otherwise we'd blow workspace to GB scale.
     let mut workspace_offset: u32 = input_elements as u32;
     let mut steps = Vec::with_capacity(node_order.len());
     for (step_index, &node_index) in node_order.iter().enumerate() {
@@ -407,8 +462,16 @@ pub fn build_plan_from_ir(
                 None
             }
         }).unwrap_or(0);
-        let out_off = workspace_offset;
-        workspace_offset += out_len;
+        // Reuse existing slot if this output tensor was already assigned (in-place / shared output)
+        let (out_off, out_len_actual) = node.output_tensors.first()
+            .and_then(|tid| tid.is_intermediate().then_some(tid))
+            .and_then(|tid| tensor_to_offset.get(tid).copied())
+            .map(|(off, len)| (off, len))
+            .unwrap_or_else(|| {
+                let off = workspace_offset;
+                workspace_offset += out_len;
+                (off, out_len)
+            });
 
         let (w_off, w_len) = weight_range_for_node(node, weight_offsets);
         if w_len == 0 && matches!(node.op_type, OpType::Convolution | OpType::MatMul) {
@@ -427,18 +490,51 @@ pub fn build_plan_from_ir(
             out_off,
             w_off,
             in_len,
-            out_len,
+            out_len_actual,
             w_len,
         ));
         for &tid in &node.output_tensors {
             if tid.is_intermediate() {
-                let len = intermediate_tensors.get(tid.index()).map(|t| t.elements() as u32).unwrap_or(out_len);
+                let len = intermediate_tensors.get(tid.index()).map(|t| t.elements() as u32).unwrap_or(out_len_actual);
                 tensor_to_offset.insert(tid, (out_off, len));
             }
         }
     }
 
     let workspace_elements = workspace_offset;
+
+    // Sanity check: workspace should not be huge for small models (e.g. 400M+ elements = ~1.6 GB)
+    const MAX_WORKSPACE_ELEMENTS: u32 = 100_000_000; // 400 MB at 4 bytes/element
+    if workspace_elements > MAX_WORKSPACE_ELEMENTS {
+        let (worst_step, worst_out_len, worst_node_idx) = steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.5, node_order[i])) // (step_index, out_len, node_index); tuple is (op_id, in_off, out_off, w_off, in_len, out_len, w_len)
+            .max_by_key(|(_, out_len, _)| *out_len)
+            .unwrap_or((0, 0, 0));
+        let shape_info = optimized_nodes
+            .get(worst_node_idx)
+            .and_then(|n| n.output_tensors.first().copied())
+            .filter(|tid| tid.is_intermediate())
+            .and_then(|tid| {
+                intermediate_tensors.get(tid.index()).map(|t| {
+                    format!("tensor idx {} shape {:?} ({} elements)", tid.index(), t.shape.dimensions, t.elements())
+                })
+            })
+            .unwrap_or_else(|| "unknown tensor".to_string());
+        return Err(CoelanoxError::Runtime(format!(
+            "Workspace would be {} elements (~{:.1} GB) - likely a bug in IR shapes. \
+             Largest contributor: step {} (node index {}), output size {} elements. \
+             {} — fix this shape in the translator or optimizer.",
+            workspace_elements,
+            (workspace_elements as f64) * 4.0 / 1e9,
+            worst_step,
+            worst_node_idx,
+            worst_out_len,
+            shape_info,
+        )));
+    }
+
     let mut plan = Vec::new();
     plan.extend_from_slice(&workspace_elements.to_le_bytes());
     plan.extend_from_slice(&(steps.len() as u32).to_le_bytes());

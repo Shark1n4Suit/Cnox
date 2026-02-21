@@ -18,7 +18,7 @@ use crate::{
     RuntimeBackendRegistry,
     ScalarExecutionBackend,
 };
-use coelanox_executor::{parse_plan, run_with_plan};
+use coelanox_executor::{max_conv_scratch_elements, parse_plan, run_with_plan};
 use coelanox_core::{
     format::{CoelanoxContainer, HardwareTarget},
     ir::{Attribute, OpType},
@@ -1623,11 +1623,19 @@ impl CoelanoxRuntime {
                 input_data.len()
             )));
         }
+        // Optional timing breakdown (log with RUST_LOG=debug to see where SIMD path time goes)
+        let t0 = std::time::Instant::now();
         let weights = container.decompress_weights()?;
-        let mut workspace = vec![0.0f32; workspace_elements as usize];
+        debug!("SIMD path: decompress_weights {} ms", t0.elapsed().as_millis());
+        let t1 = std::time::Instant::now();
+        let scratch_elements = max_conv_scratch_elements(plan).unwrap_or(0);
+        let mut workspace = vec![0.0f32; workspace_elements as usize + scratch_elements];
         let mut output = vec![0.0f32; output_size];
+        debug!("SIMD path: workspace+output alloc {} ms ({} elements)", t1.elapsed().as_millis(), workspace.len());
         // Code must be in executable memory for kernel blobs to be called
+        let t2 = std::time::Instant::now();
         let _ptr = self.allocate_and_copy_code(container)?;
+        debug!("SIMD path: allocate_and_copy_code {} ms", t2.elapsed().as_millis());
         // run_with_plan expects code_section - we just copied it to executable memory; the kernel
         // pointers we pass are from the plan (offsets into code section). So we need to pass the
         // code section content (same bytes now in executable memory). The executor will call into
@@ -1644,6 +1652,7 @@ impl CoelanoxRuntime {
             let op_type = format!("op_id_{}", op_id);
             crate::audit::log_after_op(step_ix, &op_type, out_slice.len(), out_slice);
         };
+        let t3 = std::time::Instant::now();
         run_with_plan(
             code_slice,
             plan,
@@ -1657,6 +1666,7 @@ impl CoelanoxRuntime {
                 None
             },
         )?;
+        debug!("SIMD path: run_with_plan (kernel execution) {} ms", t3.elapsed().as_millis());
         info!("✅ CLF mini-executor execution completed");
         Ok(output)
     }
@@ -2328,6 +2338,7 @@ impl CoelanoxRuntime {
             container_name: container_name.to_string(),
             iterations,
             warm_up_runs: WARM_UP_RUNS,
+            input_elements: input_size,
             avg_time,
             min_time,
             max_time,
@@ -2386,6 +2397,8 @@ pub struct BenchmarkResult {
     pub container_name: String,
     pub iterations: usize,
     pub warm_up_runs: usize,
+    /// Input size used (elements); benchmark uses synthetic vec![1.0f32; input_elements], same as run without --input
+    pub input_elements: usize,
     /// Average execution time (μs)
     pub avg_time: u64,
     pub min_time: u64,
