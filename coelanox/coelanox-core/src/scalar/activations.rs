@@ -52,15 +52,51 @@ pub fn tanh(
 }
 
 /// Execute Softmax activation: output = exp(input - max) / sum(exp(input - max))
+/// Optional attribute "axis" (-1 = last) with "shape" (IntArray): softmax over last dimension per row; else whole-tensor.
 pub fn softmax(
     input: &[f32],
     output: &mut [f32],
-    _attributes: &HashMap<String, Attribute>,
+    attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len == 0 {
         return Ok(());
     }
+
+    // Optional: softmax over last dimension (e.g. attention scores [seq, seq] per row).
+    let shape: Option<Vec<usize>> = attributes.get("shape").and_then(|a| match a {
+        crate::ir::Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect()),
+        _ => None,
+    });
+    let axis: i64 = attributes.get("axis").and_then(|a| a.as_int()).unwrap_or(-1);
+    let last_dim = shape.as_ref().and_then(|s| s.last().copied());
+    let do_per_row = (axis == -1 || axis == 1) && last_dim.map_or(false, |d| d > 0 && len % d == 0);
+
+    if do_per_row {
+        let row_len = last_dim.unwrap();
+        let num_rows = len / row_len;
+        for row in 0..num_rows {
+            let start = row * row_len;
+            let end = start + row_len;
+            let row_in = &input[start..end];
+            let row_out = &mut output[start..end];
+            let max = row_in.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+            let mut sum = 0.0f32;
+            for i in 0..row_len {
+                let e = (row_in[i] - max).exp();
+                row_out[i] = e;
+                sum += e;
+            }
+            if sum > 0.0 {
+                for i in 0..row_len {
+                    row_out[i] /= sum;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Whole-tensor softmax (default).
     let max = input[..len].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
     let mut sum = 0.0f32;
     for i in 0..len {

@@ -51,3 +51,11 @@ models/output/
 *.tflite
 *.mlmodel
 *.coreml
+*.bundle
+
+# BERT / inference outputs and audit logs (large or generated)
+bert_*.bundle
+bert_out*.json
+*_audit_log.txt
+*_out_audit.json
+audit_log.txt

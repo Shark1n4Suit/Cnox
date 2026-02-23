@@ -141,12 +141,12 @@ pub fn execute_scalar_op(
         
         // Matrix operations
         OpType::MatMul => {
-            let weights = weights.ok_or_else(|| CoelanoxError::Internal("MatMul requires weights".to_string()))?;
-            matmul(input_a, output, weights, attributes)
+            let w = weights.or(input_b).ok_or_else(|| CoelanoxError::Internal("MatMul requires weights or second input".to_string()))?;
+            matmul(input_a, output, w, attributes)
         }
         OpType::Gemm => {
-            let weights = weights.ok_or_else(|| CoelanoxError::Internal("Gemm requires weights".to_string()))?;
-            gemm(input_a, output, weights, attributes)
+            let w = weights.or(input_b).ok_or_else(|| CoelanoxError::Internal("Gemm requires weights or second input".to_string()))?;
+            gemm(input_a, output, w, attributes)
         }
         
         // Reduction operations

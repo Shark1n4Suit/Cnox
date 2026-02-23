@@ -19,17 +19,12 @@ pub struct NvmeAllocator;
 
 impl NvmeAllocator {
     /// Calculate total NVMe size needed from max shapes
-    /// 
-    /// This calculates the total memory size required for pre-allocation
-    /// based on the maximum shapes of all tensors (weights + intermediates).
-    /// 
-    /// # Arguments
-    /// * `metadata` - Maximum shape metadata from MaxShapeReader
-    /// 
-    /// # Returns
-    /// * Total size in bytes needed for NVMe backing
+    ///
+    /// Uses workspace only (intermediates + input/output). Weights are stored in the
+    /// container weight section and loaded by the runtime separately; including them
+    /// here would duplicate ~500MB+ for large models.
     pub fn calculate_nvme_size(metadata: &MaxShapeMetadata) -> usize {
-        metadata.total_bytes()
+        metadata.total_workspace_bytes()
     }
     
     /// Create NVMe backing data from max shapes
@@ -38,9 +33,8 @@ impl NvmeAllocator {
     /// maximum tensor shapes. This backing data will be appended to the
     /// container file for unified file approach.
     /// 
-    /// **Current Implementation:**
-    /// - Creates zero-initialized backing data
-    /// - Size matches total memory needed (weights + intermediates)
+    /// Creates pre-allocated memory layout from max shapes.
+    /// Size = workspace only (intermediates + input/output), not weights.
     /// 
     /// **Future Enhancement:**
     /// - Structured layout with tensor offsets
@@ -116,40 +110,41 @@ mod tests {
     #[test]
     fn test_calculate_nvme_size() {
         let mut metadata = MaxShapeMetadata::new();
-        
-        // Add some weight shapes
+
+        // Weights are not included in NVMe size (stored in container weight section)
         metadata.weight_shapes.push(MaxShape::new(
             "weight_0".to_string(),
             vec![1000, 1000],
             4, // Float32
         ));
         metadata.total_weight_bytes = 1000 * 1000 * 4;
-        
-        // Add some intermediate shapes
+
+        // Intermediates (workspace) are included
         metadata.intermediate_shapes.push(MaxShape::new(
             "intermediate_0".to_string(),
             vec![1, 1000],
             4, // Float32
         ));
         metadata.total_intermediate_bytes = 1 * 1000 * 4;
-        
+
         let size = NvmeAllocator::calculate_nvme_size(&metadata);
-        assert_eq!(size, 1000 * 1000 * 4 + 1 * 1000 * 4);
+        // Only workspace (intermediates + input/output), not weights
+        assert_eq!(size, 1 * 1000 * 4);
     }
     
     #[test]
     fn test_create_nvme_backing() {
         let mut metadata = MaxShapeMetadata::new();
-        
-        metadata.weight_shapes.push(MaxShape::new(
-            "weight_0".to_string(),
+
+        metadata.intermediate_shapes.push(MaxShape::new(
+            "intermediate_0".to_string(),
             vec![100, 100],
             4, // Float32
         ));
-        metadata.total_weight_bytes = 100 * 100 * 4;
-        
+        metadata.total_intermediate_bytes = 100 * 100 * 4;
+
         let backing = NvmeAllocator::create_nvme_backing(&metadata).unwrap();
-        
+
         assert_eq!(backing.len(), 100 * 100 * 4);
         // Verify it's zero-initialized
         assert!(backing.iter().all(|&b| b == 0));

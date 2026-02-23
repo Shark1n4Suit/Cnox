@@ -671,6 +671,31 @@ impl OptimizedIR {
     }
 }
 
+/// Serialized shape for container ir_data (must match packager SerializedOptimizedIR).
+#[derive(Debug, Clone, Deserialize)]
+struct SerializedOptimizedIR {
+    target: HardwareTarget,
+    optimized_nodes: Vec<GraphNode>,
+    intermediate_tensors: Vec<IntermediateTensor>,
+    optimization_metadata: HashMap<String, String>,
+    original_model_name: String,
+    weight_tensors: Vec<WeightTensor>,
+}
+
+/// Deserialize container IR bytes into OptimizedIR (for runtime warm cache).
+pub fn deserialize_optimized_ir(ir_data: &[u8]) -> CoelanoxResult<OptimizedIR> {
+    let s: SerializedOptimizedIR = bincode::deserialize(ir_data)
+        .map_err(|e| CoelanoxError::Runtime(format!("Failed to deserialize IR: {}", e)))?;
+    Ok(OptimizedIR::from_deserialized(
+        s.target,
+        s.optimized_nodes,
+        s.intermediate_tensors,
+        s.optimization_metadata,
+        s.original_model_name,
+        s.weight_tensors,
+    ))
+}
+
 /// Universal IR - the main intermediate representation with proper graph structure
 /// 
 /// This IR uses an arena-based approach with efficient index-based lookups

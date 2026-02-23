@@ -90,9 +90,19 @@ impl MaxShapeMetadata {
         }
     }
     
-    /// Calculate total memory size for all tensors
+    /// Calculate total memory size for all tensors (weights + intermediates).
+    /// Use this when you need the full footprint for reporting.
     pub fn total_bytes(&self) -> usize {
         self.total_weight_bytes + self.total_intermediate_bytes
+    }
+
+    /// Total bytes for workspace only (intermediates + input + output).
+    /// Use for NVMe backing: weights are stored in the container weight section and
+    /// loaded separately at runtime; backing should not reserve space for weights again.
+    pub fn total_workspace_bytes(&self) -> usize {
+        let input_bytes: usize = self.input_shapes.iter().map(|s| s.total_bytes()).sum();
+        let output_bytes: usize = self.output_shapes.iter().map(|s| s.total_bytes()).sum();
+        self.total_intermediate_bytes + input_bytes + output_bytes
     }
 }
 

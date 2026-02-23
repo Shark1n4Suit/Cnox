@@ -20,7 +20,7 @@ use coelanox_core::scalar::execute_scalar_op;
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use std::collections::{HashMap, HashSet};
 
-use crate::execution_backend::ExecutionBackend;
+use crate::execution_backend::{ContainerWarmData, ExecutionBackend};
 
 /// Scalar fallback backend
 /// 
@@ -238,36 +238,36 @@ impl ScalarExecutionBackend {
     }
 
     /// Execute the full IR graph using scalar operations.
-    fn execute_ir(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        use bincode;
-        use coelanox_core::ir::{GraphNode, IntermediateTensor, WeightTensor};
-        use coelanox_core::format::HardwareTarget;
+    /// When warm_data is Some, uses cached IR and decompressed weights; otherwise deserializes and decompresses.
+    fn execute_ir(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        warm_data: Option<&ContainerWarmData>,
+    ) -> CoelanoxResult<Vec<f32>> {
+        let (ir, weights): (&coelanox_core::ir::OptimizedIR, &[f32]) = match warm_data {
+            Some(warm) => (&warm.optimized_ir, warm.decompressed_weights.as_slice()),
+            None => {
+                use coelanox_core::ir::deserialize_optimized_ir;
+                let ir_owned = deserialize_optimized_ir(&container.ir_data)?;
+                let weights_owned = container.decompress_weights()?;
+                return self.execute_ir_with(container, input_data, &ir_owned, &weights_owned);
+            }
+        };
+        self.execute_ir_with(container, input_data, ir, weights)
+    }
 
-        #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-        struct SerializableIR {
-            target: HardwareTarget,
-            optimized_nodes: Vec<GraphNode>,
-            intermediate_tensors: Vec<IntermediateTensor>,
-            optimization_metadata: HashMap<String, String>,
-            original_model_name: String,
-            weight_tensors: Vec<WeightTensor>,
-        }
+    /// Shared execution path: run graph with given IR and weight slice.
+    fn execute_ir_with(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        ir: &coelanox_core::ir::OptimizedIR,
+        weights: &[f32],
+    ) -> CoelanoxResult<Vec<f32>> {
 
-        let serialized: SerializableIR = bincode::deserialize(&container.ir_data)
-            .map_err(|e| CoelanoxError::Runtime(format!("Failed to deserialize IR: {}", e)))?;
-
-        let ir = coelanox_core::ir::OptimizedIR::from_deserialized(
-            serialized.target,
-            serialized.optimized_nodes,
-            serialized.intermediate_tensors,
-            serialized.optimization_metadata,
-            serialized.original_model_name,
-            serialized.weight_tensors,
-        );
-
-        let weights = container.decompress_weights()?;
-
-        let mut tensor_data: HashMap<TensorId, Vec<f32>> = HashMap::new();
+        let mut tensor_data: HashMap<TensorId, Vec<f32>> =
+            HashMap::with_capacity(ir.intermediate_tensors.len().saturating_add(ir.optimized_nodes.len()));
 
         let produced: HashSet<TensorId> = ir
             .optimized_nodes
@@ -381,37 +381,67 @@ impl ScalarExecutionBackend {
             )));
         }
 
-        /// Resolve a single input tensor (weight or intermediate) for a node.
-        fn resolve_input(
-            tid: TensorId,
-            tensor_data: &HashMap<TensorId, Vec<f32>>,
-            weights: &[f32],
-            weight_offsets: &[usize],
+        /// Resolve first input as a slice (no clone): from tensor_data or weights.
+        fn input_a_slice<'a>(
+            tid_a: TensorId,
+            tensor_data: &'a HashMap<TensorId, Vec<f32>>,
+            weights: &'a [f32],
+            weight_offsets: &'a [usize],
             node_index: usize,
-        ) -> CoelanoxResult<Vec<f32>> {
-            if tid.is_weight() {
-                let idx = tid.index();
+            ir_weights_len: usize,
+        ) -> CoelanoxResult<&'a [f32]> {
+            if tid_a.is_weight() {
+                let idx = tid_a.index();
                 let start = *weight_offsets.get(idx).ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Node {}: weight index {} out of range ({} weights)",
-                    node_index, idx, weight_offsets.len().saturating_sub(1)
+                    "Missing first input for node {}: weight index {} out of range (weights count {})",
+                    node_index, idx, ir_weights_len
                 )))?;
                 let end = *weight_offsets.get(idx + 1).ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Node {}: weight index {} end out of range",
+                    "Missing first input for node {}: weight index {} end out of range",
                     node_index, idx
                 )))?;
-                Ok(weights.get(start..end).ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Node {}: weight slice [{}, {}) out of bounds (weights len {})",
+                weights.get(start..end).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Missing first input for node {}: weight slice [{}, {}) out of bounds (weights len {})",
                     node_index, start, end, weights.len()
-                )))?.to_vec())
+                )))
             } else {
-                tensor_data.get(&tid).cloned().ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Node {}: intermediate tensor {:?} not in tensor_data",
-                    node_index, tid
+                tensor_data.get(&tid_a).map(|v| v.as_slice()).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Missing first input for node {}: tensor {:?} not in tensor_data",
+                    node_index, tid_a
                 )))
             }
         }
 
-        for (loop_index, &node_index) in node_order.iter().enumerate() {
+        /// Resolve second input as a slice (no clone): from tensor_data or weights. Errors if missing.
+        fn input_b_slice<'a>(
+            tid: TensorId,
+            tensor_data: &'a HashMap<TensorId, Vec<f32>>,
+            weights: &'a [f32],
+            weight_offsets: &'a [usize],
+            node_index: usize,
+        ) -> CoelanoxResult<&'a [f32]> {
+            if tid.is_weight() {
+                let idx = tid.index();
+                let start = *weight_offsets.get(idx).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: weight index {} out of range", node_index, idx
+                )))?;
+                let end = *weight_offsets.get(idx + 1).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: weight index {} end out of range", node_index, idx
+                )))?;
+                weights.get(start..end).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: weight slice [{}, {}) out of bounds", node_index, start, end
+                )))
+            } else {
+                tensor_data.get(&tid).map(|v| v.as_slice()).ok_or_else(|| CoelanoxError::Runtime(format!(
+                    "Node {}: intermediate tensor {:?} not in tensor_data", node_index, tid
+                )))
+            }
+        }
+
+        // Reusable output buffer to avoid per-node allocations.
+        let mut output_buf = Vec::<f32>::new();
+
+        for &node_index in node_order.iter() {
             let node = &ir.optimized_nodes[node_index];
             let tid_a = match node.input_tensors.first() {
                 Some(t) => *t,
@@ -426,36 +456,18 @@ impl ScalarExecutionBackend {
             if tid_a.is_intermediate() && !tensor_data.contains_key(&tid_a) && graph_inputs.len() <= 1 && input_slice.len() == expected_input {
                 tensor_data.insert(tid_a, input_slice.to_vec());
             }
-            let input_a = if tid_a.is_weight() {
-                let idx = tid_a.index();
-                let start = *weight_offsets.get(idx).ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Missing first input for node {}: weight index {} out of range (weights count {})",
-                    node_index, idx, ir.shared_weights.len()
-                )))?;
-                let end = *weight_offsets.get(idx + 1).ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Missing first input for node {}: weight index {} end out of range",
-                    node_index, idx
-                )))?;
-                weights.get(start..end).ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Missing first input for node {}: weight slice [{}, {}) out of bounds (weights len {})",
-                    node_index, start, end, weights.len()
-                )))?.to_vec()
-            } else {
-                tensor_data.get(&tid_a).cloned().ok_or_else(|| CoelanoxError::Runtime(format!(
-                    "Missing first input for node {}: tensor {:?} not in tensor_data (graph_inputs len {}, produced count {})",
-                    node_index, tid_a, graph_inputs.len(), produced.len()
-                )))?
-            };
+            let input_a: &[f32] = input_a_slice(tid_a, &tensor_data, &weights, &weight_offsets, node_index, ir.shared_weights.len())?;
 
-            let input_b = node.input_tensors.get(1).map(|tid| {
-                resolve_input(*tid, &tensor_data, &weights, &weight_offsets, node_index)
+            let input_b: Option<&[f32]> = node.input_tensors.get(1).map(|&tid| {
+                input_b_slice(tid, &tensor_data, &weights, &weight_offsets, node_index)
             }).transpose()?;
 
-            let weight_slice = node.input_tensors.iter().find(|tid| tid.is_weight()).and_then(|tid| {
+            // Pass weight slice by reference to avoid cloning (Conv/MatMul/BatchNorm are weight-heavy).
+            let weight_slice: Option<&[f32]> = node.input_tensors.iter().find(|tid| tid.is_weight()).and_then(|tid| {
                 let idx = tid.index();
                 let start = *weight_offsets.get(idx)?;
                 let end = *weight_offsets.get(idx + 1)?;
-                Some(weights.get(start..end)?.to_vec())
+                Some(weights.get(start..end)?)
             });
 
             let output_size = node.output_tensors.first().and_then(|tid| {
@@ -465,27 +477,46 @@ impl ScalarExecutionBackend {
                     None
                 }
             }).unwrap_or_else(|| {
-                input_a.len().max(input_b.as_ref().map(|b| b.len()).unwrap_or(0))
+                input_a.len().max(input_b.map(|b: &[f32]| b.len()).unwrap_or(0))
             });
 
-            let mut output = vec![0.0f32; output_size];
-
-            execute_scalar_op(
-                &node.op_type,
-                &input_a,
-                input_b.as_deref(),
-                &mut output,
-                weight_slice.as_deref(),
-                &node.attributes,
-            )?;
-
-            for &tid in &node.output_tensors {
-                if tid.is_intermediate() {
-                    tensor_data.insert(tid, output.clone());
+            // Single output: allocate once, execute, move into map (no clone). Multi-output: reuse buffer and clone.
+            match node.output_tensors.as_slice() {
+                [tid] if tid.is_intermediate() => {
+                    let mut output = vec![0.0f32; output_size];
+                    execute_scalar_op(
+                        &node.op_type,
+                        input_a,
+                        input_b,
+                        &mut output,
+                        weight_slice,
+                        &node.attributes,
+                    )?;
+                    if crate::audit::is_enabled() {
+                        crate::audit::log_after_op(node_index, &node.op_type, output_size, &output);
+                    }
+                    tensor_data.insert(*tid, output);
                 }
-            }
-            if crate::audit::is_enabled() {
-                crate::audit::log_after_op(node_index, &node.op_type, output_size, &output);
+                _ => {
+                    output_buf.resize(output_size, 0.0f32);
+                    let output = &mut output_buf[..output_size];
+                    execute_scalar_op(
+                        &node.op_type,
+                        input_a,
+                        input_b,
+                        output,
+                        weight_slice,
+                        &node.attributes,
+                    )?;
+                    if crate::audit::is_enabled() {
+                        crate::audit::log_after_op(node_index, &node.op_type, output_size, output);
+                    }
+                    for &tid in &node.output_tensors {
+                        if tid.is_intermediate() {
+                            tensor_data.insert(tid, output.to_vec());
+                        }
+                    }
+                }
             }
         }
 
@@ -499,13 +530,17 @@ impl ScalarExecutionBackend {
             return Ok(vec![]);
         }
 
+        // Prefer remove() so we return the last node's output Vec without cloning.
         let result = node_order.last().and_then(|&idx| {
             let node = &ir.optimized_nodes[idx];
-            node.output_tensors.first().and_then(|tid| tensor_data.get(tid)).cloned()
+            node.output_tensors.first().and_then(|tid| tensor_data.remove(tid))
         });
 
         match result {
-            Some(v) if v.len() >= output_size => Ok(v[..output_size].to_vec()),
+            Some(mut v) if v.len() >= output_size => {
+                v.truncate(output_size);
+                Ok(v)
+            }
             Some(v) => Ok(v),
             None => tensor_data
                 .values()
@@ -517,8 +552,13 @@ impl ScalarExecutionBackend {
 }
 
 impl ExecutionBackend for ScalarExecutionBackend {
-    fn execute(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
-        self.execute_ir(container, input_data)
+    fn execute(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        warm_data: Option<&ContainerWarmData>,
+    ) -> CoelanoxResult<Vec<f32>> {
+        self.execute_ir(container, input_data, warm_data)
     }
 
     fn name(&self) -> &str {

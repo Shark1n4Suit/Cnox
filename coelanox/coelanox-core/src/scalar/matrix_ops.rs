@@ -49,19 +49,27 @@ pub fn matmul(
         let n = output.len();
         (1, k, n)
     };
+    let out_len = (m * n).min(output.len());
+    output[..out_len].fill(0.0f32);
+    // Cache-friendly order: (i, p, j) so inner loop scans weights[p*n..p*n+n] contiguously.
+    // Bounds: input has m*k, weights has k*n; we write output[..out_len].
+    if input.len() < m * k || weights.len() < k * n {
+        return Err(CoelanoxError::Internal(format!(
+            "MatMul: input len {} or weights len {} too small for M={} K={} N={}",
+            input.len(), weights.len(), m, k, n
+        )));
+    }
     for i in 0..m {
-        for j in 0..n {
-            let mut sum = 0.0f32;
-            for p in 0..k {
-                let in_idx = i * k + p;
-                let w_idx = p * n + j;
-                if in_idx < input.len() && w_idx < weights.len() {
-                    sum += input[in_idx] * weights[w_idx];
-                }
+        let out_row = i * n;
+        let out_end = (out_row + n).min(output.len());
+        for p in 0..k {
+            let in_val = input[i * k + p];
+            if in_val == 0.0 {
+                continue;
             }
-            let out_idx = i * n + j;
-            if out_idx < output.len() {
-                output[out_idx] = sum;
+            let w_base = p * n;
+            for j in out_row..out_end {
+                output[j] += in_val * weights[w_base + j - out_row];
             }
         }
     }
@@ -119,15 +127,15 @@ pub fn convolution(
             _ => None,
         })
         .unwrap_or(3);
-    let len = input.len().saturating_sub(kernel_size).saturating_add(1).min(output.len());
-    for i in 0..len {
-        let mut sum = 0.0f32;
-        for j in 0..kernel_size.min(weights.len()) {
-            if i + j < input.len() {
-                sum += input[i + j] * weights[j];
-            }
-        }
-        output[i] = sum;
+    let kw = kernel_size.min(weights.len());
+    let len = input.len().saturating_sub(kw).saturating_add(1).min(output.len());
+    if kw == 0 {
+        output[..len].fill(0.0);
+        return Ok(());
+    }
+    // Use windows() for contiguous access; helps compiler auto-vectorize.
+    for (i, win) in input.windows(kw).enumerate().take(len) {
+        output[i] = win.iter().zip(weights[..kw].iter()).map(|(a, b)| a * b).sum();
     }
     Ok(())
 }

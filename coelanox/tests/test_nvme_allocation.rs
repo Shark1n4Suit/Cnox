@@ -44,16 +44,19 @@ fn test_nvme_allocator_calculate_size() {
     let max_shapes = MaxShapeReader::read_max_shapes(&ir).unwrap();
     
     let size = NvmeAllocator::calculate_nvme_size(&max_shapes);
-    
-    // Expected: weight_bytes + intermediate_bytes
-    // Weight: 64 * 3 * 3 * 3 * 4 = 6912 bytes
-    // Intermediate: 1 * 64 * 224 * 224 * 4 = 12,845,056 bytes
-    // Total: 12,851,968 bytes
-    let expected_weight = 64 * 3 * 3 * 3 * 4;
+
+    // NVMe backing is workspace only (intermediates + input + output), not weights
+    // Weight: 64 * 3 * 3 * 3 * 4 = 6912 (not included in backing)
+    // Intermediate: 1 * 64 * 224 * 224 * 4 = 12,845,056
+    // Input: 1 * 3 * 224 * 224 * 4 = 602,112
+    // Output: 1 * 1000 * 4 = 4,000
+    // Total workspace: 12,845,056 + 602,112 + 4,000 = 13,451,168
     let expected_intermediate = 1 * 64 * 224 * 224 * 4;
-    let expected_total = expected_weight + expected_intermediate;
-    
-    assert_eq!(size, expected_total);
+    let expected_input = 1 * 3 * 224 * 224 * 4;
+    let expected_output = 1 * 1000 * 4;
+    let expected_workspace = expected_intermediate + expected_input + expected_output;
+
+    assert_eq!(size, expected_workspace);
 }
 
 #[test]

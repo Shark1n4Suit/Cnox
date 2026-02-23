@@ -28,17 +28,78 @@ pub fn reshape(
     Ok(())
 }
 
-/// Execute transpose operation: Transpose tensor dimensions
-/// 
-/// # Attributes
-/// * `perm` - Permutation of dimensions (e.g., [0, 2, 1] for 3D transpose)
+/// Execute transpose operation: Transpose tensor dimensions according to permutation.
+///
+/// Attributes: "shape" (IntArray) = input shape, "perm" (IntArray) = permutation of dimension indices.
+/// output[permuted_index] = input[index]. Agnostic: used by any op that reorders axes (e.g. matmul for K^T).
 pub fn transpose(
     input: &[f32],
     output: &mut [f32],
-    _attributes: &HashMap<String, Attribute>,
+    attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    let len = input.len().min(output.len());
-    output[..len].copy_from_slice(&input[..len]);
+    let shape: Vec<usize> = attributes.get("shape")
+        .and_then(|a| match a {
+            Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect()),
+            _ => None,
+        })
+        .ok_or_else(|| CoelanoxError::Internal("Transpose requires attribute 'shape' (IntArray)".to_string()))?;
+
+    let perm: Vec<usize> = attributes.get("perm")
+        .and_then(|a| match a {
+            Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect()),
+            _ => None,
+        })
+        .ok_or_else(|| CoelanoxError::Internal("Transpose requires attribute 'perm' (IntArray)".to_string()))?;
+
+    if shape.is_empty() || perm.len() != shape.len() {
+        return Err(CoelanoxError::Internal(format!(
+            "Transpose: shape len {} and perm len {} must match and be non-zero",
+            shape.len(), perm.len()
+        )));
+    }
+    let total: usize = shape.iter().product();
+    if input.len() < total || output.len() < total {
+        return Err(CoelanoxError::Internal(format!(
+            "Transpose: input len {} or output len {} < total elements {}",
+            input.len(), output.len(), total
+        )));
+    }
+
+    // Output shape after perm: out_shape[i] = shape[perm[i]]
+    let out_shape: Vec<usize> = perm.iter().map(|&p| shape[p]).collect();
+    // Strides for input (row-major)
+    let in_strides: Vec<usize> = {
+        let mut s = vec![1; shape.len()];
+        for i in (0..shape.len().saturating_sub(1)).rev() {
+            s[i] = s[i + 1] * shape[i + 1];
+        }
+        s
+    };
+    // Strides for output (row-major)
+    let out_strides: Vec<usize> = {
+        let mut s = vec![1; out_shape.len()];
+        for i in (0..out_shape.len().saturating_sub(1)).rev() {
+            s[i] = s[i + 1] * out_shape[i + 1];
+        }
+        s
+    };
+
+    for out_linear in 0..total {
+        // Output linear index -> output multi-index
+        let mut out_multi = vec![0; out_shape.len()];
+        let mut rem = out_linear;
+        for (i, &stride) in out_strides.iter().enumerate() {
+            out_multi[i] = rem / stride;
+            rem %= stride;
+        }
+        // Input multi-index: in_multi[perm[i]] = out_multi[i] => in_multi[j] = out_multi[perm^{-1}[j]]
+        let mut in_multi = vec![0; shape.len()];
+        for (i, &p) in perm.iter().enumerate() {
+            in_multi[p] = out_multi[i];
+        }
+        let in_linear: usize = in_multi.iter().zip(in_strides.iter()).map(|(m, s)| m * s).sum();
+        output[out_linear] = input[in_linear];
+    }
     Ok(())
 }
 

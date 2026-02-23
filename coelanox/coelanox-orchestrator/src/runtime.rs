@@ -15,13 +15,14 @@ use crate::{
     backend_manager::BackendManager,
     container_clfmm_backend::ContainerClfmmBackend,
     container_clfmp_backend::ContainerClfmpBackend,
+    execution_backend::ContainerWarmData,
     RuntimeBackendRegistry,
     ScalarExecutionBackend,
 };
 use coelanox_executor::{max_conv_scratch_elements, parse_plan, run_with_plan};
 use coelanox_core::{
     format::{CoelanoxContainer, HardwareTarget},
-    ir::{Attribute, OpType},
+    ir::{deserialize_optimized_ir, Attribute, OpType},
     memory_hal::{MemoryBackendRegistry, MemoryHAL, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
     protection_hal::{ProtectionBackendRegistry, ProtectionHAL, RegionPermissions},
     CoelanoxError, CoelanoxResult,
@@ -546,6 +547,9 @@ pub struct CoelanoxRuntime {
     /// Backend manager for dynamic resolution of "gpu"/"npu"/"tpu"/"edge" to discovered backends
     /// (e.g. CLF name "resnet_tiny_mnist.spv"). Same discovery as packager (COELANOX_CLF_PATH etc.).
     backend_manager: Arc<RwLock<BackendManager>>,
+    /// Warm cache: decompressed weights + deserialized IR per container (same key as containers).
+    /// Avoids per-inference decompress/deserialize when using scalar or other backends that accept it.
+    warm_cache: Arc<RwLock<HashMap<String, ContainerWarmData>>>,
 }
 
 /// Simple memory region wrapper for legacy allocations. Implements MemoryRegion for
@@ -891,6 +895,7 @@ impl CoelanoxRuntime {
                 let _ = mgr.discover_backends(&paths);
                 Arc::new(RwLock::new(mgr))
             },
+            warm_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -1384,9 +1389,9 @@ impl CoelanoxRuntime {
             let containers = self.containers.read().unwrap();
             Arc::clone(&containers.get(&execution_state.container_name).unwrap().0)
         };
-        
+        let warm_data = self.resolve_warm_data(&execution_state.container_name, container.as_ref()).ok().flatten();
         // Execute using backend selection (auto = backend manager chooses from detected hardware)
-        let result = self.run_backend_execution(container.as_ref(), input_data, "auto");
+        let result = self.run_backend_execution(container.as_ref(), input_data, "auto", warm_data.as_ref());
         
         match result {
             Ok(output) => {
@@ -1889,8 +1894,9 @@ impl CoelanoxRuntime {
         backend: &str,
     ) -> CoelanoxResult<Vec<f32>> {
         let container = self.get_container_info(container_name)?;
+        let warm_data = self.resolve_warm_data(container_name, container.as_ref())?;
         let start = std::time::Instant::now();
-        let result = self.run_backend_execution(container.as_ref(), input_data, backend);
+        let result = self.run_backend_execution(container.as_ref(), input_data, backend, warm_data.as_ref());
         let elapsed_us = start.elapsed().as_micros() as u64;
         if let Ok(_) = &result {
             let mut stats = self.stats.lock().unwrap();
@@ -1899,27 +1905,50 @@ impl CoelanoxRuntime {
         result
     }
 
+    /// Resolve warm cache for a container: hit returns existing; miss decompresses + deserializes and inserts.
+    fn resolve_warm_data(
+        &self,
+        container_name: &str,
+        container: &CoelanoxContainer,
+    ) -> CoelanoxResult<Option<ContainerWarmData>> {
+        {
+            let cache = self.warm_cache.read().unwrap();
+            if let Some(warm) = cache.get(container_name) {
+                return Ok(Some(warm.clone()));
+            }
+        }
+        let decompressed_weights = container.decompress_weights()?;
+        let optimized_ir = deserialize_optimized_ir(&container.ir_data)?;
+        let warm = ContainerWarmData {
+            decompressed_weights,
+            optimized_ir,
+        };
+        self.warm_cache.write().unwrap().insert(container_name.to_string(), warm.clone());
+        Ok(Some(warm))
+    }
+
     /// Core backend-driven execution. Used by execute_with_backend and execute_execution_stage.
     fn run_backend_execution(
         &self,
         container: &CoelanoxContainer,
         input_data: &[f32],
         backend: &str,
+        warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>> {
         // Avoid allocating for common backends; only normalize when calling registry.
         if backend.eq_ignore_ascii_case("cpu") {
             return self.execute_machine_code(container, input_data).or_else(|e| {
                 warn!("CPU machine code failed: {:?}, falling back to scalar", e);
-                self.try_scalar_fallback(container, input_data)
+                self.try_scalar_fallback(container, input_data, warm_data)
             });
         }
         if backend.eq_ignore_ascii_case("scalar") {
-            return self.try_scalar_fallback(container, input_data);
+            return self.try_scalar_fallback(container, input_data, warm_data);
         }
         if backend.eq_ignore_ascii_case("auto") {
             let detected = self.select_backend_auto();
             debug!("Auto-detected backend: {}", detected);
-            return self.run_backend_execution(container, input_data, &detected);
+            return self.run_backend_execution(container, input_data, &detected, warm_data);
         }
         let backend_normalized = backend.to_lowercase();
         if backend.eq_ignore_ascii_case("gpu")
@@ -1927,10 +1956,10 @@ impl CoelanoxRuntime {
             || backend.eq_ignore_ascii_case("tpu")
             || backend.eq_ignore_ascii_case("edge")
         {
-            return self.try_registry_backend_then_scalar(container, input_data, &backend_normalized);
+            return self.try_registry_backend_then_scalar(container, input_data, &backend_normalized, warm_data);
         }
         warn!("Unknown backend '{}', trying as registered backend then scalar", backend);
-        self.try_registry_backend_then_scalar(container, input_data, &backend_normalized)
+        self.try_registry_backend_then_scalar(container, input_data, &backend_normalized, warm_data)
     }
 
     /// Try backend from registry, then scalar fallback.
@@ -1942,11 +1971,12 @@ impl CoelanoxRuntime {
         container: &CoelanoxContainer,
         input_data: &[f32],
         backend: &str,
+        warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>> {
         // Try literal backend name first (e.g. "gpu")
         let result = {
             let registry = self.runtime_backend_registry.read().unwrap();
-            registry.get(backend).map(|b| b.execute(container, input_data))
+            registry.get(backend).map(|b| b.execute(container, input_data, warm_data))
         };
         if let Some(Ok(out)) = result {
             return Ok(out);
@@ -1970,7 +2000,7 @@ impl CoelanoxRuntime {
                 if let Some(name) = resolved_name {
                     let result = {
                         let registry = self.runtime_backend_registry.read().unwrap();
-                        registry.get(&name).map(|b| b.execute(container, input_data))
+                        registry.get(&name).map(|b| b.execute(container, input_data, warm_data))
                     };
                     if let Some(Ok(out)) = result {
                         return Ok(out);
@@ -1987,7 +2017,7 @@ impl CoelanoxRuntime {
                 debug!("Backend '{}' not registered, using scalar fallback", backend);
             }
         }
-        self.try_scalar_fallback(container, input_data)
+        self.try_scalar_fallback(container, input_data, warm_data)
     }
 
     /// Execute using scalar fallback backend.
@@ -1995,6 +2025,7 @@ impl CoelanoxRuntime {
         &self,
         container: &CoelanoxContainer,
         input_data: &[f32],
+        warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>> {
         let registry = self.runtime_backend_registry.read().unwrap();
         let backend = registry.scalar_fallback().ok_or_else(|| {
@@ -2002,7 +2033,7 @@ impl CoelanoxRuntime {
                 "Scalar fallback backend not registered in runtime backend registry".to_string(),
             )
         })?;
-        backend.execute(container, input_data)
+        backend.execute(container, input_data, warm_data)
     }
 
     /// Auto-detect backend from hardware (e.g. env.recommended_target).
@@ -2046,6 +2077,7 @@ impl CoelanoxRuntime {
             .collect();
         for name in expired {
             containers.remove(&name);
+            self.warm_cache.write().unwrap().remove(&name);
             info!("Evicted container from cache (TTL): {}", name);
         }
     }
@@ -2062,7 +2094,11 @@ impl CoelanoxRuntime {
 
     /// Evict a specific container from the cache by name.
     pub fn evict_container(&self, container_name: &str) -> bool {
-        self.containers.write().unwrap().remove(container_name).is_some()
+        let removed = self.containers.write().unwrap().remove(container_name).is_some();
+        if removed {
+            self.warm_cache.write().unwrap().remove(container_name);
+        }
+        removed
     }
     
     /// List loaded containers (thread-safe)

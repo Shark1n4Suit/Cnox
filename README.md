@@ -25,7 +25,11 @@
 
 ## What is COELANOX?
 
-**COELANOX** is a **universal binary container** for AI models. You package a source model into a single `.cnox` file (universal IR, optimized code, compressed weights, SHA-256 hash), verify its integrity with a standalone command, and run inference via the CLI. The runtime executes using a scalar fallback backend (pure Rust, from `coelanox-core`); vendor backends for packaging are discovered at package time via the BackendManager.
+**COELANOX** is the **universal binary container** for AI models—and the compiler that produces it. You take any supported model (e.g. ONNX), run it through the packager, and get a single **`.cnox`** file: one artifact that carries the model’s graph (universal IR), optimized machine code (or CLF kernel blobs), compressed weights, and a SHA-256 integrity hash. No Python, no framework runtime, no format fragmentation. You **verify** the container with a standalone command, then **run** inference anywhere—same file, same guarantees. The runtime can execute via **SIMD/CLF** (native kernel blobs from a `.clfc` file) or **scalar fallback** (pure Rust); both paths are proven. Coelanox is the pipeline that compiles models into these portable, secure, run-anywhere containers—and the path to an **AI unikernel**: a self-contained artifact that carries its own code, and eventually its own memory and protection policy (CLFMM, CLFMP), with minimal host dependency.
+
+### The science is done
+
+The core technical risk was **whether the CLF compute path (CLFC) could work at all**: can we run real inference from CLF kernel blobs, in a real environment, with real I/O? **That question is answered.** Coelanox has been demonstrated in a **relevant environment** (non-developer PC) with a real model (ResNet-tiny MNIST), real input (28×28 digit), and full SIMD execution via the CLF mini-executor; the execution path is verified by an audit log (CLF op_ids, tensor shapes, final logits). Scalar fallback works on the same container, so one artifact runs in both “fast path” (SIMD/CLFC) and “portable path” (scalar). **Full CLF** (CLFC + CLFMM + CLFMP) is the unikernel; the rest of the CLF surface (memory movement, protection) is implementation following the same pattern. The science—making `.clfc` work—is done; what remains is extending that pattern to memory and protection and scaling the pipeline.
 
 ### What the CLI Does (from `coelanox-cli`)
 

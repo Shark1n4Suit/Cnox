@@ -13,8 +13,7 @@ use coelanox_core::ir::UniversalIR;
 // Import the ONNX translator from the translators directory
 // use onnx_translator::OnnxTranslator;  // Commented out - onnx-translator not available
 // Import the BERT translator from the translators directory
-// use bert_translator::BertTranslator;  // Commented out - bert-translator not available
-use crate::translators::ResNetTinyMnistTranslator;
+use crate::translators::{BertTranslator, ResNetTinyMnistTranslator};
 
 /// Plugin manager for loading and managing translator plugins
 pub struct PluginManager {
@@ -61,16 +60,15 @@ impl PluginManager {
         // let onnx_translator = Box::new(OnnxTranslator::new());
         // self.register_plugin_with_validation("onnx_translator".to_string(), onnx_translator)?;
         
-        // Register BERT translator from the translators directory
-        // Commented out - bert-translator not available
-        // let bert_translator = Box::new(BertTranslator::new());
-        // self.register_plugin_with_validation("bert_translator".to_string(), bert_translator)?;
-        
+        // BERT translator (bundle format: BRT1 + config + weights)
+        let bert_translator = Box::new(BertTranslator::new());
+        self.register_plugin("bert_base_uncased".to_string(), bert_translator);
+
         // ResNet-tiny-MNIST translator (bundle format: RTM1 + config + weights)
         let resnet_translator = Box::new(ResNetTinyMnistTranslator::new());
         self.register_plugin("resnet_tiny_mnist".to_string(), resnet_translator);
         
-        println!("✅ Plugin manager initialized (ResNet-tiny-MNIST translator registered)");
+        println!("✅ Plugin manager initialized (BERT + ResNet-tiny-MNIST translators registered)");
         Ok(())
     }
     
@@ -94,8 +92,7 @@ impl PluginManager {
             
             // For demo mode, prefer specialized translators (bert_translator) over general ones
             // Try specialized translators first
-            // Note: bert_translator not available, so specialized_plugins is empty for now
-            let specialized_plugins: Vec<&str> = vec![];
+            let specialized_plugins: Vec<&str> = vec!["bert_base_uncased"];
             
             for plugin_name in specialized_plugins {
                 if let Some(plugin) = self.plugins.get(plugin_name) {

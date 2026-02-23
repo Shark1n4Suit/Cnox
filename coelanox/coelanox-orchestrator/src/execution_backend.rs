@@ -11,20 +11,35 @@
 //! - Scalar is always the fallback when the selected backend fails.
 
 use coelanox_core::format::CoelanoxContainer;
+use coelanox_core::ir::OptimizedIR;
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
+
+/// Cached (warm) data for a container to avoid per-inference decompress and IR deserialize.
+/// Filled by the orchestrator on first use; backends use it when provided.
+#[derive(Clone)]
+pub struct ContainerWarmData {
+    /// Decompressed weights (one-time decompress, reused for all inferences).
+    pub decompressed_weights: Vec<f32>,
+    /// Deserialized IR for scalar fallback (avoids bincode::deserialize every run).
+    pub optimized_ir: OptimizedIR,
+}
 
 /// Trait for runtime execution backends.
 ///
 /// Execution backends can run inference given a container and input data.
-/// The scalar fallback is one implementation; vendor backends (GPU, NPU, etc.)
-/// would implement this trait for runtime execution.
+/// When the orchestrator has filled the warm cache, `warm_data` is `Some` and
+/// backends should use it instead of decompressing/deserializing again.
 pub trait ExecutionBackend: Send + Sync {
     /// Execute inference on the given container with input data.
     ///
+    /// When `warm_data` is `Some`, the backend should use cached weights and IR
+    /// instead of calling `container.decompress_weights()` or deserializing `container.ir_data`.
+    ///
     /// # Arguments
-    /// * `container` - The loaded COELANOX container
+    /// * `container` - The loaded COELANOX container (for manifest, shapes, etc.)
     /// * `input_data` - Flattened input tensor data
+    /// * `warm_data` - Optional cached decompressed weights and deserialized IR (orchestrator fills on first run)
     ///
     /// # Returns
     /// * `Ok(Vec<f32>)` - Flattened output tensor data
@@ -33,6 +48,7 @@ pub trait ExecutionBackend: Send + Sync {
         &self,
         container: &CoelanoxContainer,
         input_data: &[f32],
+        warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>>;
 
     /// Backend name for registry and fallback selection.

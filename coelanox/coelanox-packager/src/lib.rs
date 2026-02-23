@@ -313,9 +313,9 @@ impl CoelanoxPackager {
                 // Extract weights using ONNX plugin (which has its own fallback mechanism)
                 onnx_plugin.extract_weights(model_data)
             }
-            coelanox_core::format::ModelFormat::Custom(name) if name == "resnet_tiny_mnist" => {
+            coelanox_core::format::ModelFormat::Custom(_) => {
                 let plugin = self.plugin_manager.find_plugin(format.clone())
-                    .ok_or_else(|| CoelanoxError::format("ResNet-tiny-MNIST plugin not found"))?;
+                    .ok_or_else(|| CoelanoxError::format(&format!("No plugin found for format: {:?}", format)))?;
                 plugin.extract_weights(model_data)
             }
             _ => {
@@ -530,8 +530,12 @@ impl CoelanoxPackager {
     /// Detect model format from data
     fn detect_format(&self, model_data: &[u8]) -> CoelanoxResult<coelanox_core::format::ModelFormat> {
         if model_data.len() >= 4 {
+            // BERT bundle (BRT1 magic)
+            if model_data.starts_with(b"BRT1") {
+                return Ok(coelanox_core::format::ModelFormat::Custom("bert_base_uncased".to_string()));
+            }
             // ResNet-tiny-MNIST bundle (RTM1 magic)
-            if model_data.len() >= 4 && model_data.starts_with(b"RTM1") {
+            if model_data.starts_with(b"RTM1") {
                 return Ok(coelanox_core::format::ModelFormat::Custom("resnet_tiny_mnist".to_string()));
             }
             // ONNX files start with protobuf magic (08 is the protobuf field tag)
