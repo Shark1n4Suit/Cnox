@@ -155,8 +155,8 @@ enum Commands {
         #[arg(short, long)]
         output: String,
         
-        /// Backend to use (cpu, gpu, npu, tpu)
-        #[arg(short, long, default_value = "cpu")]
+        /// Backend to use (auto, cpu, gpu, npu, tpu). Use "auto" to match benchmark behaviour.
+        #[arg(short, long, default_value = "auto")]
         backend: String,
         
         /// Audit mode: log after each op (dumps op index, type, output size, sample to stderr and optionally to file)
@@ -170,6 +170,10 @@ enum Commands {
         /// Skip container integrity verification (dev only; remove in later releases)
         #[arg(long)]
         no_verify: bool,
+        
+        /// Max workspace in MB (overrides COELANOX_MAX_WORKSPACE_MB). 0 = no cap.
+        #[arg(long)]
+        max_workspace_mb: Option<u64>,
     },
     
     /// Benchmark a COELANOX container
@@ -186,6 +190,9 @@ enum Commands {
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         output: String,
+        /// Max workspace in MB (overrides COELANOX_MAX_WORKSPACE_MB). 0 = no cap.
+        #[arg(long)]
+        max_workspace_mb: Option<u64>,
     },
     
     /// Show system environment information
@@ -254,11 +261,11 @@ fn main() -> CoelanoxResult<()> {
         Commands::Info { file } => {
             info_command(&file)
         }
-        Commands::Run { file, input, output, backend, audit, audit_output, no_verify } => {
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), no_verify)
+        Commands::Run { file, input, output, backend, audit, audit_output, no_verify, max_workspace_mb } => {
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), no_verify, max_workspace_mb)
         }
-        Commands::Benchmark { file, iterations, loop_iterations, output } => {
-            benchmark_command(&file, iterations, loop_iterations, &output)
+        Commands::Benchmark { file, iterations, loop_iterations, output, max_workspace_mb } => {
+            benchmark_command(&file, iterations, loop_iterations, &output, max_workspace_mb)
         }
         Commands::Env => {
             env_command()
@@ -484,6 +491,10 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
     println!("Header size: {} bytes", coelanox_core::format::COELANOX_HEADER_SIZE);
     println!("Manifest size: ~{} bytes", serde_json::to_string(&container.manifest).unwrap_or_default().len());
     println!("Machine code size: {} bytes", container.optimized_code.len());
+    if let Some(elements) = container.manifest.workspace_required_elements {
+        let mb = (elements * 4 + 1024 * 1024 - 1) / (1024 * 1024);
+        println!("Workspace required: {} elements (~{} MB)", elements, mb);
+    }
     println!();
     println!("=== Performance ===");
     // Calculate actual compression ratio (original file size / COELANOX size)
@@ -494,11 +505,13 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
     Ok(())
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, no_verify: bool) -> CoelanoxResult<()> {
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, no_verify: bool, max_workspace_mb: Option<u64>) -> CoelanoxResult<()> {
     info!("Running inference: {} -> {} (backend: {})", input.unwrap_or("auto"), output, backend);
     if audit {
         coelanox_orchestrator::audit::set_audit_mode(true, audit_output.map(std::path::Path::new));
     }
+    
+    let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
     
     // TODO: Remove --no-verify bypass in later releases. Integrity verification must be required for production.
     if !no_verify {
@@ -521,6 +534,9 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
     
     // Load runtime
     let mut runtime = CoelanoxRuntime::new();
+    if let Some(mb) = resolved_workspace_mb {
+        runtime.set_max_workspace_mb(mb);
+    }
     
     // Load container (now trusted, already verified)
     runtime.load_container(file)?;
@@ -549,7 +565,7 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
             .sum();
         vec![1.0f32; input_size]
     };
-    
+
     // Execute inference with backend selection (backend manager chooses execution path)
     let result = runtime.execute_with_backend(file, &input_data, backend);
     if audit {
@@ -577,8 +593,10 @@ fn benchmark_command(
     iterations: usize,
     loop_iterations: Option<usize>,
     output_format: &str,
+    max_workspace_mb: Option<u64>,
 ) -> CoelanoxResult<()> {
     let effective_iterations = loop_iterations.unwrap_or(iterations);
+    let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
     let is_long_run = effective_iterations >= 1000;
     info!(
         "Benchmarking COELANOX container: {} ({} iterations{})",
@@ -588,7 +606,9 @@ fn benchmark_command(
     );
 
     let mut runtime = CoelanoxRuntime::new();
-
+    if let Some(mb) = resolved_workspace_mb {
+        runtime.set_max_workspace_mb(mb);
+    }
     // Measure load time (to first execute-ready)
     let load_start = std::time::Instant::now();
     runtime.load_container(file)?;
@@ -617,11 +637,12 @@ fn benchmark_command(
     println!("  p95:      {}", result.p95_us);
     println!("  p99:      {}", result.p99_us);
     println!("  Std dev:  {:.2}", result.std_dev_us);
+    println!("  True cold (1st run, no warm-up): {} μs  (same metric as single \"run\" Execution time)", result.true_cold_time_us);
     if let Some(cold) = result.cold_time_us {
-        println!("  Cold (1st run): {} μs", cold);
+        println!("  First measured (after warm-up): {} μs", cold);
     }
     if let Some(warm) = result.warm_avg_us {
-        println!("  Warm (avg after 1st): {} μs", warm);
+        println!("  Warm (avg after 1st measured): {} μs", warm);
     }
     println!();
     println!("=== Throughput ===");

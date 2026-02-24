@@ -385,6 +385,9 @@ pub struct CoelanoxManifest {
     /// Execution plan size in bytes (CLF mini-executor); present when container has multi-blob code
     #[serde(default)]
     pub execution_plan_size: Option<usize>,
+    /// Workspace required in elements (f32) for CLF plan execution. Set at package time; runtime can cap via --max-workspace-mb or env.
+    #[serde(default)]
+    pub workspace_required_elements: Option<u64>,
 }
 
 impl CoelanoxManifest {
@@ -415,6 +418,7 @@ impl CoelanoxManifest {
             clfmm_size: None,
             clfmp_size: None,
             execution_plan_size: None,
+            workspace_required_elements: None,
         }
     }
     

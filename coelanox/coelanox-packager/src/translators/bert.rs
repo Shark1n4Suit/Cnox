@@ -140,38 +140,43 @@ impl BertTranslator {
             if base + TENSORS_PER_LAYER > weights.len() {
                 return Err(CoelanoxError::format(&format!("BERT bundle has fewer than {} tensors for layer {}", base + TENSORS_PER_LAYER, layer)));
             }
-            for j in 0..8 {
+            // Bundle within layer: 0,1=attn_ln; 2=q_w,3=q_b,4=k_w,5=k_b,6=v_w,7=v_b,8=o_w,9=o_b; 10..14=ffn; 14,15=out_ln.
+            // IR order: q_w..o_b (0..8) then attn_ln then ffn then out_ln. So read attention from base+2..base+10.
+            for j in 2..10 {
                 let w = &weights[base + j];
                 ir.add_weight_tensor_with_data(
-                    format!("bert.L{}.{}", layer, j),
+                    format!("bert.L{}.{}", layer, j - 2),
                     Shape::new(w.shape.clone()),
                     DataType::Float32,
                     to_bytes(&w.data),
                 );
             }
-            let g = &weights[base + 8].data;
-            let b = &weights[base + 9].data;
-            let mut combined = g.clone();
-            combined.extend(b.iter().copied());
+            // attn_ln: bundle indices 0,1 (gamma, beta 768 each)
+            let g = &weights[base + 0].data;
+            let b = &weights[base + 1].data;
+            let mut combined: Vec<f32> = g.iter().copied().take(hidden_size).collect();
+            combined.extend(b.iter().copied().take(hidden_size));
             ir.add_weight_tensor_with_data(
                 format!("bert.L{}.attn_ln", layer),
                 Shape::new(vec![2 * hidden_size]),
                 DataType::Float32,
                 to_bytes(&combined),
             );
-            for j in 10..14 {
+            // FFN: bundle 12,13,14,15 = inter_w, inter_b, out_w, out_b (weights[15..19] for layer 0)
+            for j in 12..16 {
                 let w = &weights[base + j];
                 ir.add_weight_tensor_with_data(
-                    format!("bert.L{}.{}", layer, j),
+                    format!("bert.L{}.{}", layer, 10 + (j - 12)),
                     Shape::new(w.shape.clone()),
                     DataType::Float32,
                     to_bytes(&w.data),
                 );
             }
-            let g = &weights[base + 14].data;
-            let b = &weights[base + 15].data;
-            let mut combined = g.clone();
-            combined.extend(b.iter().copied());
+            // out_ln: bundle indices 10,11
+            let g = &weights[base + 10].data;
+            let b = &weights[base + 11].data;
+            let mut combined: Vec<f32> = g.iter().copied().take(hidden_size).collect();
+            combined.extend(b.iter().copied().take(hidden_size));
             ir.add_weight_tensor_with_data(
                 format!("bert.L{}.out_ln", layer),
                 Shape::new(vec![2 * hidden_size]),
@@ -438,6 +443,7 @@ impl TranslatorPlugin for BertTranslator {
         }
         let (config, weights) = Self::parse_bundle(model_data)?;
         let num_layers = config.num_hidden_layers.unwrap_or(12) as usize;
+        let hidden_size = config.hidden_size.unwrap_or(768) as usize;
         let mut out = Vec::new();
         for i in 0..EMB_COUNT.min(weights.len()) {
             out.extend(weights[i].data.iter().copied());
@@ -447,16 +453,16 @@ impl TranslatorPlugin for BertTranslator {
             if base + TENSORS_PER_LAYER > weights.len() {
                 break;
             }
-            for j in 0..8 {
+            for j in 2..10 {
                 out.extend(weights[base + j].data.iter().copied());
             }
-            out.extend(weights[base + 8].data.iter().copied());
-            out.extend(weights[base + 9].data.iter().copied());
-            for j in 10..14 {
+            out.extend(weights[base + 0].data.iter().copied().take(hidden_size));
+            out.extend(weights[base + 1].data.iter().copied().take(hidden_size));
+            for j in 12..16 {
                 out.extend(weights[base + j].data.iter().copied());
             }
-            out.extend(weights[base + 14].data.iter().copied());
-            out.extend(weights[base + 15].data.iter().copied());
+            out.extend(weights[base + 10].data.iter().copied().take(hidden_size));
+            out.extend(weights[base + 11].data.iter().copied().take(hidden_size));
         }
         Ok(out)
     }

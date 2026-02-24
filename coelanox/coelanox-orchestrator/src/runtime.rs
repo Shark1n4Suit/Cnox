@@ -19,7 +19,7 @@ use crate::{
     RuntimeBackendRegistry,
     ScalarExecutionBackend,
 };
-use coelanox_executor::{max_conv_scratch_elements, parse_plan, run_with_plan};
+use coelanox_executor::{max_conv_scratch_elements, parse_plan, run_with_plan, run_with_plan_with_weight_provider};
 use coelanox_core::{
     format::{CoelanoxContainer, HardwareTarget},
     ir::{deserialize_optimized_ir, Attribute, OpType},
@@ -550,6 +550,8 @@ pub struct CoelanoxRuntime {
     /// Warm cache: decompressed weights + deserialized IR per container (same key as containers).
     /// Avoids per-inference decompress/deserialize when using scalar or other backends that accept it.
     warm_cache: Arc<RwLock<HashMap<String, ContainerWarmData>>>,
+    /// Max workspace in MB (0 = no cap). Set via set_max_workspace_mb(); used in execute_via_plan.
+    max_workspace_mb: AtomicU64,
 }
 
 /// Simple memory region wrapper for legacy allocations. Implements MemoryRegion for
@@ -896,7 +898,13 @@ impl CoelanoxRuntime {
                 Arc::new(RwLock::new(mgr))
             },
             warm_cache: Arc::new(RwLock::new(HashMap::new())),
+            max_workspace_mb: AtomicU64::new(0),
         }
+    }
+
+    /// Set max workspace in MB (0 = no cap). Used when executing via CLF plan; if model needs more, execution fails with a clear error.
+    pub fn set_max_workspace_mb(&self, mb: u64) {
+        self.max_workspace_mb.store(mb, Ordering::Relaxed);
     }
 
     /// Access the runtime backend registry (fallback execution backends).
@@ -1548,17 +1556,24 @@ impl CoelanoxRuntime {
     /// Execute machine code from container with proper memory management.
     /// When container has an execution plan (CLF multi-blob), uses the mini-executor to dispatch to kernel blobs.
     /// Otherwise uses single-entry-point native call (or falls back to scalar when backend != cpu).
-    fn execute_machine_code(&self, container: &CoelanoxContainer, input_data: &[f32]) -> CoelanoxResult<Vec<f32>> {
+    /// Uses warm_data.decompressed_weights when provided to avoid decompressing twice.
+    fn execute_machine_code(
+        &self,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        warm_data: Option<&ContainerWarmData>,
+    ) -> CoelanoxResult<Vec<f32>> {
         // No embedded code (e.g. packaged with --fallback-only): force scalar fallback via error so caller's or_else runs
         if container.optimized_code.is_empty() && container.execution_plan.is_none() {
             return Err(CoelanoxError::Runtime(
                 "Container has no embedded backend code (fallback-only package); use scalar execution".to_string(),
             ));
         }
+        let weights_override = warm_data.map(|w| w.decompressed_weights.as_slice());
         // CLF multi-blob path: use mini-executor with execution plan
         if let Some(ref plan) = container.execution_plan {
             if !container.optimized_code.is_empty() {
-                return self.execute_via_plan(container, input_data, plan);
+                return self.execute_via_plan(container, input_data, plan, weights_override);
             }
         }
         // Single-blob path: require primary_backend == "cpu"
@@ -1584,7 +1599,14 @@ impl CoelanoxRuntime {
                 input_data.len()
             )));
         }
-        let weights = container.decompress_weights()?;
+        let decompressed_own;
+        let weights: &[f32] = match weights_override {
+            Some(w) => w,
+            None => {
+                decompressed_own = container.decompress_weights()?;
+                &decompressed_own[..]
+            }
+        };
         type CpuFunc = unsafe extern "sysv64" fn(
             *const f32, usize,
             *mut f32, usize,
@@ -1607,14 +1629,35 @@ impl CoelanoxRuntime {
     }
 
     /// Execute via CLF mini-executor: parse plan, allocate workspace, copy code, run_with_plan.
+    /// When weights_override is Some, uses that slice instead of decompressing again.
     fn execute_via_plan(
         &self,
         container: &CoelanoxContainer,
         input_data: &[f32],
         plan: &[u8],
+        weights_override: Option<&[f32]>,
     ) -> CoelanoxResult<Vec<f32>> {
-        let (workspace_elements, _steps, _offsets) = parse_plan(plan)
+        let decompressed_own;
+        let weights: &[f32] = match weights_override {
+            Some(w) => w,
+            None => {
+                decompressed_own = container.decompress_weights()?;
+                &decompressed_own[..]
+            }
+        };
+        let (workspace_elements, steps, _offsets) = parse_plan(plan)
             .map_err(|e| CoelanoxError::Runtime(format!("Invalid execution plan: {}", e)))?;
+        let cap_mb = self.max_workspace_mb.load(Ordering::Relaxed);
+        if cap_mb > 0 {
+            let cap_elements = (cap_mb * 1024 * 1024) / 4;
+            if workspace_elements as u64 > cap_elements {
+                let need_mb = (workspace_elements as u64 * 4 + 1024 * 1024 - 1) / (1024 * 1024);
+                return Err(CoelanoxError::Runtime(format!(
+                    "Workspace limit exceeded: model needs {} MB workspace, limit is {} MB (set --max-workspace-mb or COELANOX_MAX_WORKSPACE_MB)",
+                    need_mb, cap_mb
+                )));
+            }
+        }
         let output_size: usize = container.manifest.output_shapes.iter()
             .map(|shape| shape.iter().product::<usize>())
             .sum();
@@ -1629,12 +1672,19 @@ impl CoelanoxRuntime {
             )));
         }
         // Optional timing breakdown (log with RUST_LOG=debug to see where SIMD path time goes)
-        let t0 = std::time::Instant::now();
-        let weights = container.decompress_weights()?;
-        debug!("SIMD path: decompress_weights {} ms", t0.elapsed().as_millis());
         let t1 = std::time::Instant::now();
         let scratch_elements = max_conv_scratch_elements(plan).unwrap_or(0);
-        let mut workspace = vec![0.0f32; workspace_elements as usize + scratch_elements];
+        // Cap total workspace+scratch to avoid bad plan / wrong values causing multi-GB allocation (see docs/INVESTIGATION-backend-cpu-vs-auto-scalar-fallback.md)
+        const MAX_WORKSPACE_TOTAL_ELEMENTS: usize = 256 * 1024 * 1024; // 256M = 1 GB
+        let total_elements = workspace_elements as usize + scratch_elements;
+        if total_elements > MAX_WORKSPACE_TOTAL_ELEMENTS {
+            return Err(CoelanoxError::Runtime(format!(
+                "Workspace+scratch {} elements exceeds limit {} (plan may be corrupt or from wrong format); set --max-workspace-mb to override",
+                total_elements,
+                MAX_WORKSPACE_TOTAL_ELEMENTS
+            )));
+        }
+        let mut workspace = vec![0.0f32; total_elements];
         let mut output = vec![0.0f32; output_size];
         debug!("SIMD path: workspace+output alloc {} ms ({} elements)", t1.elapsed().as_millis(), workspace.len());
         // Code must be in executable memory for kernel blobs to be called
@@ -1658,20 +1708,103 @@ impl CoelanoxRuntime {
             crate::audit::log_after_op(step_ix, &op_type, out_slice.len(), out_slice);
         };
         let t3 = std::time::Instant::now();
-        run_with_plan(
-            code_slice,
-            plan,
-            input_data,
-            &mut output,
-            &weights,
-            &mut workspace,
-            if crate::audit::is_enabled() {
-                Some(&mut audit_cb)
-            } else {
-                None
-            },
-        )?;
-        debug!("SIMD path: run_with_plan (kernel execution) {} ms", t3.elapsed().as_millis());
+
+        let max_w_len = steps.iter().map(|s| s.w_len as usize).max().unwrap_or(0);
+        // Double ring only when memory tiering is available (slow tier, e.g. NVMe): overlap load from slow tier with compute.
+        // RAM-only: no extra layer; single path. Env COELANOX_DOUBLE_RING=1 overrides for testing.
+        let tiering_available = self.memory_registry().get_for_tier(MemoryTier::Slow).is_some();
+        let env_force_double_ring = std::env::var("COELANOX_DOUBLE_RING").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+        let use_double_ring = (tiering_available || env_force_double_ring)
+            && steps.len() >= 2 && max_w_len > 0 && max_w_len <= 64 * 1024 * 1024;
+
+        if use_double_ring {
+            debug!("Using double ring buffer ({} steps, max_w_len {} elements)", steps.len(), max_w_len);
+            use std::sync::{Arc, Mutex};
+            let buffer_a_shared = Arc::new(Mutex::new(vec![0.0f32; max_w_len]));
+            let buffer_b_shared = Arc::new(Mutex::new(vec![0.0f32; max_w_len]));
+            let len0 = steps[0].w_len as usize;
+            if len0 > 0 && steps[0].w_off as usize + len0 <= weights.len() {
+                buffer_a_shared.lock().unwrap()[..len0]
+                    .copy_from_slice(&weights[steps[0].w_off as usize..steps[0].w_off as usize + len0]);
+            }
+            // Unbounded request channel so main thread doesn't block on send (prefetch receives when ready).
+            // Done channel with capacity 1 so prefetch thread can send without blocking when main is still in kernel.
+            let (tx_req, rx_req) = std::sync::mpsc::channel::<(u8, Vec<f32>)>();
+            let (tx_done, rx_done) = std::sync::mpsc::sync_channel::<u8>(1);
+            let buf_a = Arc::clone(&buffer_a_shared);
+            let buf_b = Arc::clone(&buffer_b_shared);
+            std::thread::scope(|s| {
+                s.spawn(move || {
+                    for (buf_id, data) in rx_req {
+                        if buf_id >= 2 {
+                            break;
+                        }
+                        let mut guard = if buf_id == 0 { buf_a.lock().unwrap() } else { buf_b.lock().unwrap() };
+                        let copy_len = data.len().min(guard.len());
+                        guard[..copy_len].copy_from_slice(&data[..copy_len]);
+                        drop(guard);
+                        let _ = tx_done.send(buf_id);
+                    }
+                });
+                let mut weight_buffer = vec![0.0f32; max_w_len];
+                let len0 = steps[0].w_len as usize;
+                weight_buffer[..len0].copy_from_slice(&buffer_a_shared.lock().unwrap()[..len0]);
+                let mut weight_provider = |step_index: usize, _w_off: u32, w_len: u32, out: &mut [f32]| -> usize {
+                    if step_index > 0 {
+                        let _ = rx_done.recv();
+                        let len = w_len as usize;
+                        if step_index % 2 == 0 {
+                            out[..len].copy_from_slice(&buffer_a_shared.lock().unwrap()[..len]);
+                        } else {
+                            out[..len].copy_from_slice(&buffer_b_shared.lock().unwrap()[..len]);
+                        }
+                    }
+                    if step_index + 1 < steps.len() {
+                        let next_buf = (step_index + 1) % 2;
+                        let w_off = steps[step_index + 1].w_off as usize;
+                        let w_len_next = steps[step_index + 1].w_len as usize;
+                        let chunk: Vec<f32> = weights[w_off..w_off + w_len_next].to_vec();
+                        let _ = tx_req.send((next_buf as u8, chunk));
+                        if step_index + 2 == steps.len() {
+                            let _ = tx_req.send((2u8, vec![]));
+                        }
+                    }
+                    w_len as usize
+                };
+                run_with_plan_with_weight_provider(
+                    code_slice,
+                    plan,
+                    input_data,
+                    &mut output,
+                    &mut workspace,
+                    &mut weight_buffer,
+                    if crate::audit::is_enabled() {
+                        Some(&mut audit_cb)
+                    } else {
+                        None
+                    },
+                    &mut weight_provider,
+                )?;
+                drop(tx_req);
+                Ok::<(), coelanox_core::CoelanoxError>(())
+            })?;
+            debug!("SIMD path: run_with_plan (double ring buffer) {} ms", t3.elapsed().as_millis());
+        } else {
+            run_with_plan(
+                code_slice,
+                plan,
+                input_data,
+                &mut output,
+                &weights,
+                &mut workspace,
+                if crate::audit::is_enabled() {
+                    Some(&mut audit_cb)
+                } else {
+                    None
+                },
+            )?;
+            debug!("SIMD path: run_with_plan (kernel execution) {} ms", t3.elapsed().as_millis());
+        }
         info!("✅ CLF mini-executor execution completed");
         Ok(output)
     }
@@ -1905,6 +2038,24 @@ impl CoelanoxRuntime {
         result
     }
 
+    /// Load container and resolve warm data (decompress, deserialize) and touch execution plan
+    /// and machine code so the first timed run sees the same cache state as benchmark true cold.
+    /// Call before timed execute_with_backend if you want single-run "Execution time" to match benchmark "True cold".
+    pub fn prepare_container_for_execution(&self, container_name: &str) -> CoelanoxResult<()> {
+        let container = self.get_container_info(container_name)?;
+        let _ = self.resolve_warm_data(container_name, container.as_ref())?;
+        // Warm execution plan (benchmark does this for workspace_elements)
+        if let Some(ref plan) = container.execution_plan {
+            let _ = parse_plan(plan);
+        }
+        // Touch machine code so first copy in run_backend_execution doesn't fault on cold pages
+        let _ = container.optimized_code.len();
+        if let Some(&b) = container.optimized_code.first() {
+            std::hint::black_box(b);
+        }
+        Ok(())
+    }
+
     /// Resolve warm cache for a container: hit returns existing; miss decompresses + deserializes and inserts.
     fn resolve_warm_data(
         &self,
@@ -1937,7 +2088,7 @@ impl CoelanoxRuntime {
     ) -> CoelanoxResult<Vec<f32>> {
         // Avoid allocating for common backends; only normalize when calling registry.
         if backend.eq_ignore_ascii_case("cpu") {
-            return self.execute_machine_code(container, input_data).or_else(|e| {
+            return self.execute_machine_code(container, input_data, warm_data).or_else(|e| {
                 warn!("CPU machine code failed: {:?}, falling back to scalar", e);
                 self.try_scalar_fallback(container, input_data, warm_data)
             });
@@ -2282,12 +2433,6 @@ impl CoelanoxRuntime {
             0
         };
 
-        // Time single decompress and get weights size
-        let decompress_start = std::time::Instant::now();
-        let weights = container.decompress_weights()?;
-        let decompress_time_ms = decompress_start.elapsed().as_millis() as u64;
-        let weights_bytes = weights.len() * std::mem::size_of::<f32>();
-
         // Backend label
         let backend_used = if container.execution_plan.is_some() {
             "plan"
@@ -2304,6 +2449,17 @@ impl CoelanoxRuntime {
             .map(|shape| shape.iter().product::<usize>())
             .sum();
         let input_data = vec![1.0f32; input_size];
+
+        // True cold: first run before any other work (no prior decompress = same as single "run" command).
+        // Use the same metric as single "run" (run_backend_execution only), not full execute() time.
+        self.execute(container_name, &input_data)?;
+        let true_cold_time_us = self.stats.lock().unwrap().avg_execution_time;
+
+        // Time single decompress and get weights size (after true cold so report has these metrics)
+        let decompress_start = std::time::Instant::now();
+        let weights = container.decompress_weights()?;
+        let decompress_time_ms = decompress_start.elapsed().as_millis() as u64;
+        let weights_bytes = weights.len() * std::mem::size_of::<f32>();
 
         // Warm up
         for _ in 0..WARM_UP_RUNS {
@@ -2342,8 +2498,8 @@ impl CoelanoxRuntime {
             / iterations as f64;
         let std_dev_us = variance.sqrt();
 
-        // Cold (first run) vs warm (rest)
-        let cold_time_us = times.first().copied();
+        // First measured run (after warm-up) vs warm (rest of measured runs)
+        let first_measured_us = times.first().copied();
         let warm_avg_us = if times.len() > 1 {
             Some(times[1..].iter().sum::<u64>() / (times.len() - 1) as u64)
         } else {
@@ -2383,7 +2539,8 @@ impl CoelanoxRuntime {
             p95_us,
             p99_us,
             std_dev_us,
-            cold_time_us,
+            true_cold_time_us,
+            cold_time_us: first_measured_us,
             warm_avg_us,
             load_time_ms,
             decompress_time_ms,
@@ -2446,9 +2603,11 @@ pub struct BenchmarkResult {
     pub p99_us: u64,
     /// Standard deviation of latency (μs)
     pub std_dev_us: f64,
-    /// First (cold) run time (μs); includes one-time decompress/code path
+    /// True cold: first run before any warm-up (μs); matches single "run" command
+    pub true_cold_time_us: u64,
+    /// First of the measured runs, after warm-up (μs)
     pub cold_time_us: Option<u64>,
-    /// Average of runs after the first (warm) (μs)
+    /// Average of runs after the first measured (warm) (μs)
     pub warm_avg_us: Option<u64>,
     /// Time to load container until first execute-ready (ms); set by CLI when measured
     #[serde(skip_serializing_if = "Option::is_none")]

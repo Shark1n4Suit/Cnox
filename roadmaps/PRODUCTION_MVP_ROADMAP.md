@@ -27,7 +27,7 @@
   - **OS Independence**: Direct register access (ARM MPU, x86 Page Tables, RISC-V PMP)
   - **Cross-Platform**: 64KB alignment required (MMU/MPU granularity)
   - **AOT Code**: Must accept `InferenceContext` struct (physical memory region pointers)
-- Next: Chunk streaming with double ring buffer, memory tiering
+- Next: Chunk streaming with double ring buffer, memory tiering. Double ring buffer in CLFMM: Phase 1 (host-driven schedule, CLFMM performs moves); Phase 2 (fully described in container—plan encodes compute + move steps and overlap).
 
 **Phase 3: AMD Backend Reference** ⏳ **NOT STARTED** (Weeks 9-13)
 
@@ -727,6 +727,13 @@ It does **not** allocate memory for containers; each container pulls its own via
   - Thread-safe concurrent access
   - Latency hiding validated (compute + I/O overlap)
   - No page faults during execution (predictable performance)
+
+**5.2.1 Double Ring Buffer in CLFMM (two phases)**
+
+Double ring buffer (fetch overlaps with compute) is planned for integration with the full CLF loadout (CLFC + CLFMM + CLFMP) in two phases:
+
+- **Phase 1 – Double ring buffer in CLFMM:** Implement double ring buffer with CLFMM performing the moves. Runtime or host drives the schedule: two buffers (A and B), prefetch-next-while-compute-current, then swap. When it is time to fill the "next" buffer, the runtime invokes the container’s embedded CLFMM to perform the move (e.g. copy from backing region into the buffer) instead of host-side read. CLFC (compute) and CLFMP (protection) unchanged; overlap is achieved by prefetch thread or async I/O calling CLFMM for each fill. Delivers overlap of fetch with compute while keeping the move primitive inside the container (CLFMM).
+- **Phase 2 – Fully described in container:** The overlap schedule is fully described in the container. Execution plan (or equivalent CLF schedule) is extended with memory-move steps and dependencies (e.g. "step 2i: compute on buffer A; step 2i+1: move chunk for step 2i+2 into buffer B"). Runtime runs compute steps and move steps in parallel (e.g. one thread for compute, one for moves), respecting dependencies. Packager emits the combined compute+move schedule; no host-side policy for when to prefetch—container fully describes when to compute and when to move so that fetch overlaps compute.
 
 **5.3 Chunk Streaming for Static RAM & Tiering**
 - **Location**: `coelanox-core/src/streaming/`

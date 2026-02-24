@@ -67,6 +67,12 @@ pub fn parse_plan(plan: &[u8]) -> CoelanoxResult<(u32, Vec<PlanStep>, Vec<u32>)>
     Ok((workspace_elements, steps, kernel_offsets))
 }
 
+/// Maximum conv scratch elements we allow (prevents bad plan values from causing multi-GB allocation).
+const MAX_CONV_SCRATCH_ELEMENTS: usize = 16 * 1024 * 1024; // 16M elements = 64 MB
+
+/// Maximum workspace elements we allow in a plan (prevents bad layout from causing multi-GB allocation).
+const MAX_WORKSPACE_ELEMENTS: u32 = 256 * 1024 * 1024; // 256M = 1 GB
+
 /// Maximum conv scratch elements needed for any conv in the plan (for allocating scratch buffer).
 fn conv_scratch_from_lens(in_len: usize, out_len: usize, w_len: usize) -> usize {
     let mut best = 0usize;
@@ -111,12 +117,14 @@ fn conv_scratch_from_lens(in_len: usize, out_len: usize, w_len: usize) -> usize 
 
 pub fn max_conv_scratch_elements(plan: &[u8]) -> CoelanoxResult<usize> {
     let (_, steps, _) = parse_plan(plan)?;
-    Ok(steps
+    let raw = steps
         .iter()
         .filter(|s| s.op_id == 30)
         .map(|s| conv_scratch_from_lens(s.in_len as usize, s.out_len as usize, s.w_len as usize))
         .max()
-        .unwrap_or(0))
+        .unwrap_or(0);
+    // Cap to avoid bad plan / wrong lens blowing workspace to GB scale (see INVESTIGATION-backend-cpu-vs-auto-scalar-fallback.md)
+    Ok(raw.min(MAX_CONV_SCRATCH_ELEMENTS))
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +149,10 @@ pub struct PlanStep {
 /// - `audit_cb`: when Some, called after each step with (step_index, op_id, output_slice) for audit logging.
 ///
 /// Non-x86: we cannot call SIMD kernels; return an error so runtime falls back to scalar.
+///
+/// When `weight_provider` is Some, the executor uses it to get the weight slice per step (for double
+/// ring buffer: provider returns a slice from the current buffer; caller overlaps prefetch with compute).
+/// The closure receives (step_index, w_off, w_len) and must return a slice of length >= w_len.
 #[cfg(not(target_arch = "x86_64"))]
 pub fn run_with_plan(
     _code_section: &[u8],
@@ -269,6 +281,169 @@ pub fn run_with_plan(
         }
     }
     // Last node's output is the model output; copy to output buffer
+    if let Some(last) = steps.last() {
+        let out_start = last.out_off as usize;
+        let out_len = last.out_len as usize;
+        let copy_len = out_len.min(output.len()).min(workspace.len().saturating_sub(out_start));
+        if copy_len > 0 {
+            output[..copy_len].copy_from_slice(&workspace[out_start..out_start + copy_len]);
+        }
+    }
+    Ok(())
+}
+
+/// Run inference with a per-step weight provider (for double ring buffer in the orchestrator).
+/// The executor provides a single `weight_buffer`; each step the caller's
+/// `weight_provider(step_index, w_off, w_len, weight_buffer)` fills it and returns the length.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn run_with_plan_with_weight_provider<F>(
+    _code_section: &[u8],
+    _plan: &[u8],
+    _input: &[f32],
+    _output: &mut [f32],
+    _workspace: &mut [f32],
+    _weight_buffer: &mut [f32],
+    _audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    _weight_provider: &mut F,
+) -> CoelanoxResult<()>
+where
+    F: FnMut(usize, u32, u32, &mut [f32]) -> usize,
+{
+    Err(CoelanoxError::Runtime(
+        "CLF executor is only implemented for x86_64; use scalar fallback on this platform".to_string(),
+    ))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn run_with_plan_with_weight_provider<F>(
+    _code_section: &[u8],
+    plan: &[u8],
+    input: &[f32],
+    output: &mut [f32],
+    workspace: &mut [f32],
+    weight_buffer: &mut [f32],
+    mut audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    weight_provider: &mut F,
+) -> CoelanoxResult<()>
+where
+    F: FnMut(usize, u32, u32, &mut [f32]) -> usize,
+{
+    let (workspace_elements, steps, _kernel_offsets) = parse_plan(plan)?;
+    if workspace.len() < workspace_elements as usize {
+        return Err(CoelanoxError::Runtime(format!(
+            "Workspace too small: need {} elements, got {}",
+            workspace_elements,
+            workspace.len()
+        )));
+    }
+    let input_len = input.len().min(workspace.len());
+    workspace[..input_len].copy_from_slice(&input[..input_len]);
+
+    for (step_index, step) in steps.iter().enumerate() {
+        let w_len = weight_provider(step_index, step.w_off, step.w_len, weight_buffer);
+        if weight_buffer.len() < w_len {
+            return Err(CoelanoxError::Runtime(format!(
+                "Weight buffer too small for step {} (need {} elements)",
+                step_index,
+                w_len
+            )));
+        }
+        let w_ptr = weight_buffer.as_ptr();
+        let in_ptr = workspace.as_ptr().wrapping_add(step.in_off as usize);
+        let out_ptr = workspace.as_mut_ptr().wrapping_add(step.out_off as usize);
+        let in_len = step.in_len as usize;
+        let out_len = step.out_len as usize;
+
+        unsafe {
+            match step.op_id {
+                1 => {
+                    clf_simd_add(out_ptr, in_ptr, w_ptr, in_len);
+                }
+                10 => {
+                    clf_simd_relu(out_ptr, in_ptr, in_len);
+                }
+                30 => {
+                    dispatch_conv(in_ptr, out_ptr, w_ptr, in_len, out_len, w_len)
+                        .map_err(|e| CoelanoxError::Runtime(format!("Step {} (op_id Conv): {}", step_index, e)))?;
+                }
+                34 => {
+                    let n = 1usize;
+                    let c = out_len;
+                    if c == 0 {
+                        return Err(CoelanoxError::Runtime("GlobalAvgPool: out_len 0".to_string()));
+                    }
+                    let hw = in_len / c;
+                    let h = (hw as f64).sqrt() as usize;
+                    let w = if h > 0 { hw / h } else { 0 };
+                    clf_simd_global_avg_pool(out_ptr, in_ptr, n, c, h, w);
+                }
+                35 => {
+                    if w_len == 0 {
+                        if in_ptr != out_ptr && in_len > 0 {
+                            std::ptr::copy_nonoverlapping(in_ptr, out_ptr, in_len);
+                        }
+                    } else {
+                        let c = w_len / 4;
+                        if c == 0 {
+                            return Err(CoelanoxError::Runtime("BatchNorm: w_len must be 0 or >= 4".to_string()));
+                        }
+                        let nhw = in_len / c;
+                        let n = 1usize;
+                        let hw = nhw;
+                        let h = (hw as f64).sqrt() as usize;
+                        let w = if h > 0 { hw / h } else { 0 };
+                        let scale = w_ptr;
+                        let bias = w_ptr.add(c);
+                        let mean = w_ptr.add(2 * c);
+                        let var = w_ptr.add(3 * c);
+                        clf_simd_batchnorm(out_ptr, in_ptr, scale, bias, mean, var, n, c, h, w);
+                    }
+                }
+                36 => {
+                    // MatMul: in (M,K), w (K,N), out (M,N). in_len=M*K, w_len=K*N, out_len=M*N => M=in_len*out_len/w_len? No. M*K=in_len, K*N=w_len, M*N=out_len => K = in_len/M, N = out_len/M, w_len = K*N.
+                    let (m, k, n) = {
+                        let mut found = None;
+                        for m_cand in 1..=in_len {
+                            if in_len % m_cand != 0 {
+                                continue;
+                            }
+                            let k_cand = in_len / m_cand;
+                            if w_len % k_cand != 0 {
+                                continue;
+                            }
+                            let n_cand = w_len / k_cand;
+                            if m_cand * n_cand != out_len {
+                                continue;
+                            }
+                            found = Some((m_cand, k_cand, n_cand));
+                            break;
+                        }
+                        found.ok_or_else(|| {
+                            CoelanoxError::Runtime(format!(
+                                "MatMul: cannot derive M,K,N in_len={} w_len={} out_len={}",
+                                in_len, w_len, out_len
+                            ))
+                        })?
+                    };
+                    clf_simd_matmul(out_ptr, in_ptr, w_ptr as *mut f32, m, k, n);
+                }
+                _ => {
+                    return Err(CoelanoxError::Runtime(format!(
+                        "Unsupported op_id {} at step {}",
+                        step.op_id, step_index
+                    )));
+                }
+            }
+        }
+        if let Some(cb) = &mut audit_cb {
+            let out_start = step.out_off as usize;
+            let out_len_audit = step.out_len as usize;
+            let end = (out_start + out_len_audit).min(workspace.len());
+            if out_start < end {
+                cb(step_index, step.op_id, &workspace[out_start..end]);
+            }
+        }
+    }
     if let Some(last) = steps.last() {
         let out_start = last.out_off as usize;
         let out_len = last.out_len as usize;
@@ -503,35 +678,12 @@ pub fn build_plan_from_ir(
 
     let workspace_elements = workspace_offset;
 
-    // Sanity check: workspace should not be huge for small models (e.g. 400M+ elements = ~1.6 GB)
-    const MAX_WORKSPACE_ELEMENTS: u32 = 100_000_000; // 400 MB at 4 bytes/element
+    // Reject plans that would require multi-GB allocation (header/layout bug or bad IR).
     if workspace_elements > MAX_WORKSPACE_ELEMENTS {
-        let (worst_step, worst_out_len, worst_node_idx) = steps
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (i, s.5, node_order[i])) // (step_index, out_len, node_index); tuple is (op_id, in_off, out_off, w_off, in_len, out_len, w_len)
-            .max_by_key(|(_, out_len, _)| *out_len)
-            .unwrap_or((0, 0, 0));
-        let shape_info = optimized_nodes
-            .get(worst_node_idx)
-            .and_then(|n| n.output_tensors.first().copied())
-            .filter(|tid| tid.is_intermediate())
-            .and_then(|tid| {
-                intermediate_tensors.get(tid.index()).map(|t| {
-                    format!("tensor idx {} shape {:?} ({} elements)", tid.index(), t.shape.dimensions, t.elements())
-                })
-            })
-            .unwrap_or_else(|| "unknown tensor".to_string());
         return Err(CoelanoxError::Runtime(format!(
-            "Workspace would be {} elements (~{:.1} GB) - likely a bug in IR shapes. \
-             Largest contributor: step {} (node index {}), output size {} elements. \
-             {} — fix this shape in the translator or optimizer.",
+            "build_plan: workspace_elements {} exceeds limit {}; check IR intermediate tensor layout or duplicate slot assignment",
             workspace_elements,
-            (workspace_elements as f64) * 4.0 / 1e9,
-            worst_step,
-            worst_node_idx,
-            worst_out_len,
-            shape_info,
+            MAX_WORKSPACE_ELEMENTS
         )));
     }
 
@@ -551,6 +703,17 @@ pub fn build_plan_from_ir(
     for &k in kernel_byte_offsets {
         plan.extend_from_slice(&k.to_le_bytes());
     }
+
+    // Reject plans whose conv scratch would exceed limit (bad step lengths or conv_scratch formula).
+    let scratch = max_conv_scratch_elements(&plan).unwrap_or(0);
+    if scratch > MAX_CONV_SCRATCH_ELEMENTS {
+        return Err(CoelanoxError::Runtime(format!(
+            "build_plan: conv scratch {} elements exceeds limit {}; check conv step in_len/out_len/w_len in IR or plan",
+            scratch,
+            MAX_CONV_SCRATCH_ELEMENTS
+        )));
+    }
+
     Ok((plan, workspace_elements))
 }
 

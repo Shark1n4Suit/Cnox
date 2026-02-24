@@ -405,6 +405,17 @@ impl CoelanoxPackager {
         
         // Extract weights from model
         let weights = self.extract_weights(&model_data, &format)?;
+        let expected_elements: usize = optimized_ir.shared_weights.as_ref().iter()
+            .map(|wt| wt.elements())
+            .sum();
+        if weights.len() != expected_elements {
+            return Err(CoelanoxError::format(&format!(
+                "Weight extraction size mismatch: plugin returned {} elements but IR expects {} (model format: {:?})",
+                weights.len(),
+                expected_elements,
+                format
+            )));
+        }
         
         // Compress weights
         let (compressed_weights, compression_type) = self.compress_weights(&weights)?;
@@ -469,8 +480,8 @@ impl CoelanoxPackager {
         manifest.nvme_backing_offset = Some(nvme_backing_offset);
         manifest.nvme_backing_size = Some(nvme_backing_data.len());
         
-        // Build execution plan for CLF multi-blob (mini-executor)
-        let execution_plan = if let Some(ref kernel_offsets_by_node) = kernel_byte_offsets {
+        // Build execution plan for CLF multi-blob (mini-executor); set workspace header in manifest
+        let (execution_plan, workspace_required_elements) = if let Some(ref kernel_offsets_by_node) = kernel_byte_offsets {
             let node_order = Self::execution_node_order(&optimized_ir)?;
             // op_ids and kernel offsets in execution order (step j = node_order[j])
             let op_ids: Vec<u32> = node_order
@@ -490,7 +501,7 @@ impl CoelanoxPackager {
             };
             let input_elements: usize = ir.metadata.input_shapes.iter().map(|s| s.total_elements()).sum();
             let output_elements: usize = ir.metadata.output_shapes.iter().map(|s| s.total_elements()).sum();
-            let (plan, _ws) = build_plan_from_ir(
+            let (plan, ws) = build_plan_from_ir(
                 &optimized_ir.optimized_nodes,
                 &optimized_ir.intermediate_tensors,
                 &weight_offsets,
@@ -500,9 +511,10 @@ impl CoelanoxPackager {
                 &op_ids,
                 &offsets_in_exec_order,
             )?;
-            Some(plan)
+            manifest.workspace_required_elements = Some(ws as u64);
+            (Some(plan), ())
         } else {
-            None
+            (None, ())
         };
         
         // Create container with weights, IR data, NVMe backing, and optional execution plan
