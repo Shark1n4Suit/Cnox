@@ -19,7 +19,7 @@ use crate::{
     RuntimeBackendRegistry,
     ScalarExecutionBackend,
 };
-use coelanox_executor::{max_conv_scratch_elements, parse_plan, run_with_plan, run_with_plan_with_weight_provider};
+use coelanox_executor::{parse_plan, run_with_plan, run_with_plan_with_weight_provider, scratch_elements_from_plan};
 use coelanox_core::{
     format::{CoelanoxContainer, HardwareTarget},
     ir::{deserialize_optimized_ir, Attribute, OpType},
@@ -1673,17 +1673,8 @@ impl CoelanoxRuntime {
         }
         // Optional timing breakdown (log with RUST_LOG=debug to see where SIMD path time goes)
         let t1 = std::time::Instant::now();
-        let scratch_elements = max_conv_scratch_elements(plan).unwrap_or(0);
-        // Cap total workspace+scratch to avoid bad plan / wrong values causing multi-GB allocation (see docs/INVESTIGATION-backend-cpu-vs-auto-scalar-fallback.md)
-        const MAX_WORKSPACE_TOTAL_ELEMENTS: usize = 256 * 1024 * 1024; // 256M = 1 GB
+        let scratch_elements = scratch_elements_from_plan(plan).unwrap_or(0);
         let total_elements = workspace_elements as usize + scratch_elements;
-        if total_elements > MAX_WORKSPACE_TOTAL_ELEMENTS {
-            return Err(CoelanoxError::Runtime(format!(
-                "Workspace+scratch {} elements exceeds limit {} (plan may be corrupt or from wrong format); set --max-workspace-mb to override",
-                total_elements,
-                MAX_WORKSPACE_TOTAL_ELEMENTS
-            )));
-        }
         let mut workspace = vec![0.0f32; total_elements];
         let mut output = vec![0.0f32; output_size];
         debug!("SIMD path: workspace+output alloc {} ms ({} elements)", t1.elapsed().as_millis(), workspace.len());
@@ -2178,6 +2169,9 @@ impl CoelanoxRuntime {
         input_data: &[f32],
         warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>> {
+        if container.execution_plan.is_none() {
+            eprintln!("Note: Container has no CLF execution plan; using scalar fallback (interpreted ops). Large models will be slow.");
+        }
         let registry = self.runtime_backend_registry.read().unwrap();
         let backend = registry.scalar_fallback().ok_or_else(|| {
             CoelanoxError::Runtime(

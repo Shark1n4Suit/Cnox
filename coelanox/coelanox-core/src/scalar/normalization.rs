@@ -1,25 +1,16 @@
 //! Normalization operations
-//! 
-//! Pure Rust scalar implementations of normalization operations:
-//! - BatchNorm: Batch normalization with learnable parameters
-//! - LayerNorm: Layer normalization with learnable parameters
+//!
+//! Pure Rust scalar implementations with parallel iteration for large buffers
+//! (same pattern as MatMul: use Rayon when beneficial).
 
 use crate::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
 use crate::ir::Attribute;
+use rayon::prelude::*;
+
+const PAR_THRESHOLD: usize = 64 * 1024;
 
 /// Execute batch normalization: output = gamma * (input - mean) / sqrt(var + epsilon) + beta
-/// 
-/// # Arguments
-/// * `input` - Input tensor data
-/// * `output` - Output tensor buffer (must be pre-allocated)
-/// * `weights` - Weight tensor containing [gamma, beta, mean, variance] in that order
-/// * `attributes` - Operation-specific attributes
-///   * `epsilon` - Small value for numerical stability (default: 1e-5)
-/// 
-/// # Returns
-/// * `Ok(())` if operation succeeds
-/// * `Err(CoelanoxError)` if operation fails
 pub fn batch_norm(
     input: &[f32],
     output: &mut [f32],
@@ -35,8 +26,13 @@ pub fn batch_norm(
     let std_inv = 1.0 / var.sqrt();
     let gamma = weights.get(0).copied().unwrap_or(1.0);
     let beta = weights.get(1).copied().unwrap_or(0.0);
-    for i in 0..len {
-        output[i] = gamma * (input[i] - mean) * std_inv + beta;
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = gamma * (x - mean) * std_inv + beta);
+    } else {
+        for i in 0..len {
+            output[i] = gamma * (input[i] - mean) * std_inv + beta;
+        }
     }
     Ok(())
 }
@@ -92,18 +88,31 @@ pub fn layer_norm(
     }
 
     let num_rows = len / h;
-    for row in 0..num_rows {
-        let start = row * h;
-        let end = start + h;
-        let row_in = &input[start..end];
-        let row_out = &mut output[start..end];
+    if num_rows >= PAR_THRESHOLD / h.max(1) {
+        output.par_chunks_mut(h)
+            .zip(input.par_chunks(h))
+            .for_each(|(row_out, row_in): (&mut [f32], &[f32])| {
+                let mean: f32 = row_in.iter().sum::<f32>() / h as f32;
+                let var: f32 = row_in.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / h as f32 + epsilon;
+                let std_inv = 1.0 / var.sqrt();
+                for i in 0..h {
+                    row_out[i] = gamma[i] * (row_in[i] - mean) * std_inv + beta[i];
+                }
+            });
+    } else {
+        for row in 0..num_rows {
+            let start = row * h;
+            let end = start + h;
+            let row_in = &input[start..end];
+            let row_out = &mut output[start..end];
 
-        let mean: f32 = row_in.iter().sum::<f32>() / h as f32;
-        let var: f32 = row_in.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / h as f32 + epsilon;
-        let std_inv = 1.0 / var.sqrt();
+            let mean: f32 = row_in.iter().sum::<f32>() / h as f32;
+            let var: f32 = row_in.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / h as f32 + epsilon;
+            let std_inv = 1.0 / var.sqrt();
 
-        for i in 0..h {
-            row_out[i] = gamma[i] * (row_in[i] - mean) * std_inv + beta[i];
+            for i in 0..h {
+                row_out[i] = gamma[i] * (row_in[i] - mean) * std_inv + beta[i];
+            }
         }
     }
     Ok(())

@@ -338,7 +338,8 @@ impl CoelanoxPackager {
     /// * `auto` - Auto-detect backends
     /// * `backend_add` - Additional backends to add
     /// * `fallback_only` - Do not embed any backend code; container runs with scalar fallback only (for benchmarking)
-    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool) -> CoelanoxResult<CoelanoxContainer> {
+    /// * `max_workspace_mb` - If set, fail when (workspace + peak scratch) exceeds this many MB (global cap).
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace_mb: Option<u64>) -> CoelanoxResult<CoelanoxContainer> {
         // If directory given, use ResNet bundle inside it (no PyTorch needed at package time)
         let actual_path: std::path::PathBuf = if model_path.is_dir() {
             let bundle = model_path.join("resnet_tiny_mnist.bundle");
@@ -499,17 +500,24 @@ impl CoelanoxPackager {
                 }
                 w
             };
+            let weight_shapes: Vec<coelanox_core::ir::Shape> = optimized_ir
+                .shared_weights
+                .iter()
+                .map(|wt| wt.shape.clone())
+                .collect();
             let input_elements: usize = ir.metadata.input_shapes.iter().map(|s| s.total_elements()).sum();
             let output_elements: usize = ir.metadata.output_shapes.iter().map(|s| s.total_elements()).sum();
             let (plan, ws) = build_plan_from_ir(
                 &optimized_ir.optimized_nodes,
                 &optimized_ir.intermediate_tensors,
                 &weight_offsets,
+                &weight_shapes,
                 input_elements,
                 output_elements,
                 &node_order,
                 &op_ids,
                 &offsets_in_exec_order,
+                max_workspace_mb,
             )?;
             manifest.workspace_required_elements = Some(ws as u64);
             (Some(plan), ())
@@ -536,7 +544,7 @@ impl CoelanoxPackager {
     /// Package with automatic target detection
     pub fn package_auto(&self, model_path: &Path) -> CoelanoxResult<CoelanoxContainer> {
         let recommended_target = self.environment.recommended_target();
-        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None, false)
+        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None, false, None)
     }
     
     /// Detect model format from data

@@ -114,6 +114,10 @@ enum Commands {
         /// Package without any backend code (scalar fallback only at runtime; for benchmarking)
         #[arg(long)]
         fallback_only: bool,
+        
+        /// Max dynamic memory (workspace + scratch) in MB; build fails if model needs more (e.g. 64, 1024)
+        #[arg(long)]
+        max_workspace: Option<u64>,
     },
     
     /// Validate a COELANOX container
@@ -139,6 +143,9 @@ enum Commands {
         /// COELANOX file to inspect
         #[arg(short, long)]
         file: String,
+        /// Dump execution plan conv steps (step_ix, in_len, out_len, w_len, scratch_raw) to find bad steps
+        #[arg(long)]
+        dump_plan: bool,
     },
     
     /// Run inference on a COELANOX container
@@ -166,10 +173,6 @@ enum Commands {
         /// When using --audit, append audit log lines to this file
         #[arg(long)]
         audit_output: Option<String>,
-        
-        /// Skip container integrity verification (dev only; remove in later releases)
-        #[arg(long)]
-        no_verify: bool,
         
         /// Max workspace in MB (overrides COELANOX_MAX_WORKSPACE_MB). 0 = no cap.
         #[arg(long)]
@@ -249,8 +252,8 @@ fn main() -> CoelanoxResult<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only } => {
-            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only)
+        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only, max_workspace } => {
+            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only, max_workspace)
         }
         Commands::Validate { file } => {
             validate_command(&file)
@@ -258,11 +261,11 @@ fn main() -> CoelanoxResult<()> {
         Commands::Verify { file, verbose } => {
             verify_command(&file, verbose)
         }
-        Commands::Info { file } => {
-            info_command(&file)
+        Commands::Info { file, dump_plan } => {
+            info_command(&file, dump_plan)
         }
-        Commands::Run { file, input, output, backend, audit, audit_output, no_verify, max_workspace_mb } => {
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), no_verify, max_workspace_mb)
+        Commands::Run { file, input, output, backend, audit, audit_output, max_workspace_mb } => {
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), max_workspace_mb)
         }
         Commands::Benchmark { file, iterations, loop_iterations, output, max_workspace_mb } => {
             benchmark_command(&file, iterations, loop_iterations, &output, max_workspace_mb)
@@ -279,7 +282,7 @@ fn main() -> CoelanoxResult<()> {
     }
 }
 
-fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool) -> CoelanoxResult<()> {
+fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace: Option<u64>) -> CoelanoxResult<()> {
     info!("Packaging model: {} -> {}", input, output);
     info!("Model type: {}", model_type);
     
@@ -409,6 +412,7 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
         auto,
         backend_add,
         fallback_only,
+        max_workspace,
     )?;
     eprintln!("✅ packager.package() returned successfully");
     
@@ -466,10 +470,28 @@ fn verify_command(file: &str, verbose: bool) -> CoelanoxResult<()> {
     }
 }
 
-fn info_command(file: &str) -> CoelanoxResult<()> {
+fn info_command(file: &str, dump_plan: bool) -> CoelanoxResult<()> {
     info!("Getting info for COELANOX container: {}", file);
     
     let container = coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
+    
+    if dump_plan {
+        if let Some(ref plan) = container.execution_plan {
+            let steps = coelanox_executor::dump_plan_conv_steps(plan)?;
+            println!("=== Execution plan conv steps (op_id=30) ===");
+            println!("{:<8} {:>12} {:>12} {:>12} {:>14}  (scratch MB)", "step", "in_len", "out_len", "w_len", "scratch_el");
+            for (step_ix, in_len, out_len, w_len, scratch) in &steps {
+                let mb = (*scratch as u64 * 4 + 1024 * 1024 - 1) / (1024 * 1024);
+                println!("{:<8} {:>12} {:>12} {:>12} {:>14}  ~{}", step_ix, in_len, out_len, w_len, scratch, mb);
+            }
+            let max_scratch = steps.iter().map(|(_, _, _, _, s)| s).max().copied().unwrap_or(0);
+            println!();
+            println!("Conv steps: {}  max_scratch_elements: {}  (~{} MB)", steps.len(), max_scratch, (max_scratch as u64 * 4 + 1024 * 1024 - 1) / (1024 * 1024));
+            return Ok(());
+        } else {
+            return Err(CoelanoxError::Runtime("Container has no execution plan (--dump-plan requires a plan)".to_string()));
+        }
+    }
     
     println!("=== COELANOX Container Information ===");
     println!("File: {}", file);
@@ -505,7 +527,7 @@ fn info_command(file: &str) -> CoelanoxResult<()> {
     Ok(())
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, no_verify: bool, max_workspace_mb: Option<u64>) -> CoelanoxResult<()> {
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, max_workspace_mb: Option<u64>) -> CoelanoxResult<()> {
     info!("Running inference: {} -> {} (backend: {})", input.unwrap_or("auto"), output, backend);
     if audit {
         coelanox_orchestrator::audit::set_audit_mode(true, audit_output.map(std::path::Path::new));
@@ -513,24 +535,18 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
     
     let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
     
-    // TODO: Remove --no-verify bypass in later releases. Integrity verification must be required for production.
-    if !no_verify {
-        // Verify security hash first (pre-deployment check)
-        // This ensures container integrity before loading into memory tier
-        info!("Verifying container integrity...");
-        coelanox_core::format::verify_security_hash(std::path::Path::new(file))
-            .map_err(|e| {
-                error!("Container integrity verification failed: {}", e);
-                eprintln!("❌ Container verification failed - refusing to load");
-                eprintln!("Error: {}", e);
-                eprintln!("The container file may have been tampered with or corrupted.");
-                eprintln!("Do not execute this container.");
-                e
-            })?;
-        info!("✅ Container integrity verified");
-    } else {
-        info!("Container integrity verification skipped (--no-verify)");
-    }
+    // Always verify container integrity before load (demo and production path).
+    info!("Verifying container integrity...");
+    coelanox_core::format::verify_security_hash(std::path::Path::new(file))
+        .map_err(|e| {
+            error!("Container integrity verification failed: {}", e);
+            eprintln!("❌ Container verification failed - refusing to load");
+            eprintln!("Error: {}", e);
+            eprintln!("The container file may have been tampered with or corrupted.");
+            eprintln!("Do not execute this container.");
+            e
+        })?;
+    info!("✅ Container integrity verified");
     
     // Load runtime
     let mut runtime = CoelanoxRuntime::new();

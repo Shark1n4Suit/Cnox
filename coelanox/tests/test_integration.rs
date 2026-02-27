@@ -88,6 +88,7 @@ fn test_full_pipeline_package_verify_run() {
         false,
         None,
         false,
+        None,
     );
     
     // If packaging fails due to missing translator, that's acceptable for this test
@@ -171,6 +172,7 @@ fn test_aot_selection_slim_mode() {
         false, // auto = false
         None,  // backend_add = None
         false, // fallback_only = false
+        None,  // max_workspace_mb
     );
     
     // Result may fail if translator unavailable, but structure should be correct
@@ -209,6 +211,7 @@ fn test_aot_selection_fat_mode() {
         false, // auto = false
         None,
         false,
+        None,
     );
     
     if let Ok(container) = result {
@@ -246,6 +249,7 @@ fn test_aot_selection_auto_mode() {
         true,  // auto = true
         None,
         false,
+        None,
     );
     
     if let Ok(container) = result {
@@ -283,6 +287,7 @@ fn test_aot_selection_backend_add() {
         false, // auto = false
         Some("amd,intel"), // backend_add
         false,
+        None,
     );
     
     // Result may fail if backends don't exist, but that's expected
@@ -320,6 +325,7 @@ fn test_error_handling_package_stage() {
         false,
         None,
         false,
+        None,
     );
     
     assert!(result.is_err(), "Should return error for nonexistent file");
@@ -384,6 +390,7 @@ fn test_backend_manager_integration() {
         false,
         None,
         false,
+        None,
     );
     
     // If packaging succeeds, backend manager integration works

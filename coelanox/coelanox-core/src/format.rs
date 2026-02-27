@@ -659,7 +659,9 @@ impl CoelanoxContainer {
         self.header.container_size as usize
     }
     
-    /// Decompress weights (runtime - no external dependencies)
+    /// Load weights into a Vec<f32>. For CompressionType::None this is not decompression:
+    /// the payload is already raw LE f32 bytes; we copy/reinterpret into Vec<f32> for execution.
+    /// For Zstd/Lz4/Deflate this step actually decompresses then converts.
     pub fn decompress_weights(&self) -> CoelanoxResult<Vec<f32>> {
         match self.compression_type {
             CompressionType::Zstd => {
@@ -672,14 +674,20 @@ impl CoelanoxContainer {
                 self.decompress_deflate(&self.compressed_weights)
             }
             CompressionType::None => {
-                // Convert bytes to f32
-                let mut weights = Vec::new();
-                for chunk in self.compressed_weights.chunks(4) {
-                    if chunk.len() == 4 {
-                        let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
-                        weights.push(f32::from_le_bytes(bytes));
-                    }
+                // Not compressed: payload is raw little-endian f32. Single alloc + chunk conversion
+                // (no per-float push/realloc). Reinterpreting byte slice as f32 would require
+                // alignment guarantees we don't have from Vec<u8>, so we convert in chunks.
+                let data = &self.compressed_weights[..];
+                let n = data.len() / 4;
+                if data.len() != n * 4 {
+                    return Err(CoelanoxError::PayloadValidation(
+                        "Uncompressed weights length is not a multiple of 4".to_string(),
+                    ));
                 }
+                let mut weights = Vec::with_capacity(n);
+                weights.extend(
+                    data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())),
+                );
                 Ok(weights)
             }
         }

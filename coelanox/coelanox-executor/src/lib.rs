@@ -9,22 +9,38 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(target_arch = "x86_64")]
 use clf_kernels_simd::{
-    clf_simd_add, clf_simd_batchnorm, clf_simd_conv, clf_simd_global_avg_pool, clf_simd_matmul,
-    clf_simd_relu,
+    clf_simd_add, clf_simd_batchnorm, clf_simd_conv, clf_simd_gemm, clf_simd_gelu,
+    clf_simd_global_avg_pool, clf_simd_layernorm, clf_simd_matmul, clf_simd_relu, clf_simd_reshape,
+    clf_simd_softmax, clf_simd_transpose,
 };
 
+/// Plan format version 1: version(4) + workspace(4) + scratch(4) + num_nodes(4) + nodes + num_kernels(4) + kernel_offsets.
+/// Legacy (no version): workspace(4) + num_nodes(4) + nodes + num_kernels(4) + kernel_offsets; scratch computed from conv steps.
+pub const PLAN_VERSION_V1: u32 = 1;
+
 /// Execution plan layout (binary, little-endian):
-/// - workspace_elements: u32  (workspace size in f32 elements)
-/// - num_nodes: u32
-/// - For each node (7 * u32): op_id, in_off, out_off, w_off, in_len, out_len, w_len (all element counts/offsets)
-/// - num_kernels: u32
-/// - kernel_offset[0..num_kernels]: u32 (byte offset of each blob from code_base; node i uses kernel i)
-pub const PLAN_HEADER_SIZE: usize = 4 + 4; // workspace_elements + num_nodes
+/// - V1: version=1 (4), workspace_elements (4), scratch_elements (4), num_nodes (4), ...
+/// - Legacy: workspace_elements (4), num_nodes (4), ...
+/// - For each node (7 * u32): op_id, in_off, out_off, w_off, in_len, out_len, w_len
+/// - num_kernels: u32, kernel_offset[0..num_kernels]: u32
+pub const PLAN_HEADER_SIZE: usize = 4 + 4; // workspace_elements + num_nodes (legacy)
+pub const PLAN_HEADER_V1_SIZE: usize = 4 + 4 + 4 + 4; // version + workspace + scratch + num_nodes
 pub const PLAN_NODE_SIZE: usize = 7 * 4;  // 7 u32 per node
 pub const PLAN_KERNEL_HEADER: usize = 4;  // num_kernels
 
+/// Returns scratch elements for the plan: from V1 header if present, else computed from conv steps (legacy).
+pub fn scratch_elements_from_plan(plan: &[u8]) -> CoelanoxResult<usize> {
+    if plan.len() >= 12 {
+        let version = u32::from_le_bytes(plan[0..4].try_into().unwrap());
+        if version == PLAN_VERSION_V1 {
+            return Ok(u32::from_le_bytes(plan[8..12].try_into().unwrap()) as usize);
+        }
+    }
+    max_conv_scratch_elements(plan)
+}
+
 /// Parse execution plan and return (workspace_elements, node steps, kernel_offsets).
-/// Plan must be at least PLAN_HEADER_SIZE bytes.
+/// Supports V1 (version 1: version, workspace, scratch, num_nodes) and legacy (workspace, num_nodes).
 pub fn parse_plan(plan: &[u8]) -> CoelanoxResult<(u32, Vec<PlanStep>, Vec<u32>)> {
     if plan.len() < PLAN_HEADER_SIZE {
         return Err(CoelanoxError::Runtime(format!(
@@ -32,9 +48,22 @@ pub fn parse_plan(plan: &[u8]) -> CoelanoxResult<(u32, Vec<PlanStep>, Vec<u32>)>
             plan.len()
         )));
     }
-    let workspace_elements = u32::from_le_bytes([plan[0], plan[1], plan[2], plan[3]]);
-    let num_nodes = u32::from_le_bytes([plan[4], plan[5], plan[6], plan[7]]);
-    let mut offset = 8usize;
+    let (workspace_elements, num_nodes, mut offset) = if plan.len() >= 4 {
+        let version = u32::from_le_bytes(plan[0..4].try_into().unwrap());
+        if version == PLAN_VERSION_V1 && plan.len() >= PLAN_HEADER_V1_SIZE {
+            let workspace = u32::from_le_bytes(plan[4..8].try_into().unwrap());
+            let num_nodes = u32::from_le_bytes(plan[12..16].try_into().unwrap());
+            (workspace, num_nodes, 16usize)
+        } else {
+            let workspace = u32::from_le_bytes(plan[0..4].try_into().unwrap());
+            let num_nodes = u32::from_le_bytes(plan[4..8].try_into().unwrap());
+            (workspace, num_nodes, 8usize)
+        }
+    } else {
+        let workspace_elements = u32::from_le_bytes([plan[0], plan[1], plan[2], plan[3]]);
+        let num_nodes = u32::from_le_bytes([plan[4], plan[5], plan[6], plan[7]]);
+        (workspace_elements, num_nodes, 8usize)
+    };
     let mut steps = Vec::with_capacity(num_nodes as usize);
     for _ in 0..num_nodes {
         if offset + PLAN_NODE_SIZE > plan.len() {
@@ -67,15 +96,13 @@ pub fn parse_plan(plan: &[u8]) -> CoelanoxResult<(u32, Vec<PlanStep>, Vec<u32>)>
     Ok((workspace_elements, steps, kernel_offsets))
 }
 
-/// Maximum conv scratch elements we allow (prevents bad plan values from causing multi-GB allocation).
-const MAX_CONV_SCRATCH_ELEMENTS: usize = 16 * 1024 * 1024; // 16M elements = 64 MB
-
-/// Maximum workspace elements we allow in a plan (prevents bad layout from causing multi-GB allocation).
-const MAX_WORKSPACE_ELEMENTS: u32 = 256 * 1024 * 1024; // 256M = 1 GB
-
-/// Maximum conv scratch elements needed for any conv in the plan (for allocating scratch buffer).
-fn conv_scratch_from_lens(in_len: usize, out_len: usize, w_len: usize) -> usize {
-    let mut best = 0usize;
+/// Raw conv scratch from lengths (no caps). Used for legacy plan scratch and diagnostics.
+/// Multiple (c_in, spatial) decompositions can match the same in_len/out_len/w_len;
+/// we take the **minimum** scratch over all valid decompositions so allocation matches
+/// the actual NCHW layout the IR describes (e.g. 32 channels @ 14x14) instead of
+/// a degenerate interpretation that would require GB of scratch.
+pub fn conv_scratch_from_lens_raw(in_len: usize, out_len: usize, w_len: usize) -> usize {
+    let mut best = usize::MAX;
     for c_in in 1..=in_len {
         if in_len % c_in != 0 {
             continue;
@@ -107,12 +134,43 @@ fn conv_scratch_from_lens(in_len: usize, out_len: usize, w_len: usize) -> usize 
         let m = h_out * w_out;
         let k = c_in * k_h * k_w;
         let need = m * k + m * c_out;
-        if need > best {
+        if need < best {
             best = need;
         }
-        break; // first valid is enough for this step; we take max over steps
     }
-    best
+    if best == usize::MAX {
+        0
+    } else {
+        best
+    }
+}
+
+/// Maximum conv scratch elements needed for any conv in the plan (for allocating scratch buffer).
+/// Returns 0 if any length exceeds a reasonable conv size (plan/IR bug guard).
+fn conv_scratch_from_lens(in_len: usize, out_len: usize, w_len: usize) -> usize {
+    const REASONABLE_CONV_MAX: usize = 16 * 1024 * 1024; // 16M elements
+    if in_len > REASONABLE_CONV_MAX || out_len > REASONABLE_CONV_MAX || w_len > REASONABLE_CONV_MAX {
+        return 0;
+    }
+    conv_scratch_from_lens_raw(in_len, out_len, w_len)
+}
+
+/// Dump all conv steps with raw scratch (for finding bad step that blows allocation).
+/// Returns (step_index, in_len, out_len, w_len, scratch_elements_raw) for each step with op_id == 30.
+pub fn dump_plan_conv_steps(plan: &[u8]) -> CoelanoxResult<Vec<(usize, u32, u32, u32, usize)>> {
+    let (_, steps, _) = parse_plan(plan)?;
+    let mut out = Vec::new();
+    for (step_index, s) in steps.iter().enumerate() {
+        if s.op_id == 30 {
+            let scratch = conv_scratch_from_lens_raw(
+                s.in_len as usize,
+                s.out_len as usize,
+                s.w_len as usize,
+            );
+            out.push((step_index, s.in_len, s.out_len, s.w_len, scratch));
+        }
+    }
+    Ok(out)
 }
 
 pub fn max_conv_scratch_elements(plan: &[u8]) -> CoelanoxResult<usize> {
@@ -123,8 +181,7 @@ pub fn max_conv_scratch_elements(plan: &[u8]) -> CoelanoxResult<usize> {
         .map(|s| conv_scratch_from_lens(s.in_len as usize, s.out_len as usize, s.w_len as usize))
         .max()
         .unwrap_or(0);
-    // Cap to avoid bad plan / wrong lens blowing workspace to GB scale (see INVESTIGATION-backend-cpu-vs-auto-scalar-fallback.md)
-    Ok(raw.min(MAX_CONV_SCRATCH_ELEMENTS))
+    Ok(raw)
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +305,56 @@ pub fn run_with_plan(
                         clf_simd_batchnorm(out_ptr, in_ptr, scale, bias, mean, var, n, c, h, w);
                     }
                 }
+                13 => {
+                    // Softmax: over last dim. Plan: in_len=out_len; treat as 1D (rows=1, cols=in_len) or use w_len as cols if set.
+                    if in_len == 0 {
+                        return Err(CoelanoxError::Runtime("Softmax: in_len 0".to_string()));
+                    }
+                    let cols = if w_len > 0 && in_len % w_len == 0 { w_len } else { in_len };
+                    let rows = in_len / cols;
+                    clf_simd_softmax(out_ptr, in_ptr, rows, cols);
+                }
+                15 => {
+                    // Gelu: elementwise. out = gelu(x).
+                    clf_simd_gelu(out_ptr, in_ptr, in_len);
+                }
+                36 => {
+                    // LayerNorm: w = [gamma (C), beta (C)], w_len=2*C. in_len=out_len. C = w_len/2.
+                    if w_len == 0 || w_len % 2 != 0 {
+                        return Err(CoelanoxError::Runtime("LayerNorm: w_len must be 2*C (gamma, beta)".to_string()));
+                    }
+                    let c = w_len / 2;
+                    if in_len % c != 0 {
+                        return Err(CoelanoxError::Runtime("LayerNorm: in_len not divisible by C".to_string()));
+                    }
+                    let scale = w_ptr;
+                    let bias = w_ptr.add(c);
+                    clf_simd_layernorm(out_ptr, in_ptr, scale, bias, in_len, c);
+                }
+                40 => {
+                    // Reshape: copy in -> out (same element count).
+                    if in_len != out_len {
+                        return Err(CoelanoxError::Runtime("Reshape: in_len must equal out_len".to_string()));
+                    }
+                    clf_simd_reshape(out_ptr, in_ptr, in_len);
+                }
+                41 => {
+                    // Transpose 2D: out[col*rows+row] = in[row*cols+col]. w_len=0 => square (rows=sqrt(in_len)); else rows=w_len, cols=in_len/rows.
+                    if in_len != out_len {
+                        return Err(CoelanoxError::Runtime("Transpose: in_len must equal out_len".to_string()));
+                    }
+                    let (rows, cols) = if w_len > 0 && in_len % w_len == 0 {
+                        (w_len, in_len / w_len)
+                    } else {
+                        let r = (in_len as f64).sqrt() as usize;
+                        let c = if r > 0 { in_len / r } else { 0 };
+                        (r, c)
+                    };
+                    if rows == 0 || cols == 0 || rows * cols != in_len {
+                        return Err(CoelanoxError::Runtime("Transpose: cannot derive rows*cols".to_string()));
+                    }
+                    clf_simd_transpose(out_ptr, in_ptr, rows, cols);
+                }
                 50 => {
                     // MatMul: in_len=m*k, w_len=k*n, out_len=m*n => k^2=in_len*w_len/out_len, k=sqrt(...), m=in_len/k, n=out_len/m
                     if out_len == 0 {
@@ -261,6 +368,20 @@ pub fn run_with_plan(
                     let m = in_len / k;
                     let n = out_len / m;
                     clf_simd_matmul(out_ptr, in_ptr, w_ptr, m, k, n);
+                }
+                51 => {
+                    // Gemm: same as MatMul for SIMD (alpha handled in scalar or separate scale).
+                    if out_len == 0 {
+                        return Err(CoelanoxError::Runtime("Gemm: out_len 0".to_string()));
+                    }
+                    let k_sq = in_len * w_len / out_len;
+                    let k = (k_sq as f64).sqrt() as usize;
+                    if k == 0 {
+                        return Err(CoelanoxError::Runtime("Gemm: derived k=0".to_string()));
+                    }
+                    let m = in_len / k;
+                    let n = out_len / m;
+                    clf_simd_gemm(out_ptr, in_ptr, w_ptr, m, k, n);
                 }
                 _ => {
                     return Err(CoelanoxError::Runtime(format!(
@@ -399,33 +520,75 @@ where
                         clf_simd_batchnorm(out_ptr, in_ptr, scale, bias, mean, var, n, c, h, w);
                     }
                 }
+                13 => {
+                    if in_len == 0 {
+                        return Err(CoelanoxError::Runtime("Softmax: in_len 0".to_string()));
+                    }
+                    let cols = if w_len > 0 && in_len % w_len == 0 { w_len } else { in_len };
+                    let rows = in_len / cols;
+                    clf_simd_softmax(out_ptr, in_ptr, rows, cols);
+                }
+                15 => {
+                    clf_simd_gelu(out_ptr, in_ptr, in_len);
+                }
                 36 => {
-                    // MatMul: in (M,K), w (K,N), out (M,N). in_len=M*K, w_len=K*N, out_len=M*N => M=in_len*out_len/w_len? No. M*K=in_len, K*N=w_len, M*N=out_len => K = in_len/M, N = out_len/M, w_len = K*N.
-                    let (m, k, n) = {
-                        let mut found = None;
-                        for m_cand in 1..=in_len {
-                            if in_len % m_cand != 0 {
-                                continue;
-                            }
-                            let k_cand = in_len / m_cand;
-                            if w_len % k_cand != 0 {
-                                continue;
-                            }
-                            let n_cand = w_len / k_cand;
-                            if m_cand * n_cand != out_len {
-                                continue;
-                            }
-                            found = Some((m_cand, k_cand, n_cand));
-                            break;
-                        }
-                        found.ok_or_else(|| {
-                            CoelanoxError::Runtime(format!(
-                                "MatMul: cannot derive M,K,N in_len={} w_len={} out_len={}",
-                                in_len, w_len, out_len
-                            ))
-                        })?
+                    if w_len == 0 || w_len % 2 != 0 {
+                        return Err(CoelanoxError::Runtime("LayerNorm: w_len must be 2*C".to_string()));
+                    }
+                    let c = w_len / 2;
+                    if in_len % c != 0 {
+                        return Err(CoelanoxError::Runtime("LayerNorm: in_len not divisible by C".to_string()));
+                    }
+                    let scale = w_ptr;
+                    let bias = w_ptr.add(c);
+                    clf_simd_layernorm(out_ptr, in_ptr, scale, bias, in_len, c);
+                }
+                40 => {
+                    if in_len != out_len {
+                        return Err(CoelanoxError::Runtime("Reshape: in_len must equal out_len".to_string()));
+                    }
+                    clf_simd_reshape(out_ptr, in_ptr, in_len);
+                }
+                41 => {
+                    if in_len != out_len {
+                        return Err(CoelanoxError::Runtime("Transpose: in_len must equal out_len".to_string()));
+                    }
+                    let (rows, cols) = if w_len > 0 && in_len % w_len == 0 {
+                        (w_len, in_len / w_len)
+                    } else {
+                        let r = (in_len as f64).sqrt() as usize;
+                        (r, if r > 0 { in_len / r } else { 0 })
                     };
-                    clf_simd_matmul(out_ptr, in_ptr, w_ptr as *mut f32, m, k, n);
+                    if rows == 0 || cols == 0 || rows * cols != in_len {
+                        return Err(CoelanoxError::Runtime("Transpose: cannot derive rows*cols".to_string()));
+                    }
+                    clf_simd_transpose(out_ptr, in_ptr, rows, cols);
+                }
+                50 => {
+                    if out_len == 0 {
+                        return Err(CoelanoxError::Runtime("MatMul: out_len 0".to_string()));
+                    }
+                    let k_sq = in_len * w_len / out_len;
+                    let k = (k_sq as f64).sqrt() as usize;
+                    if k == 0 {
+                        return Err(CoelanoxError::Runtime("MatMul: derived k=0".to_string()));
+                    }
+                    let m = in_len / k;
+                    let n = out_len / m;
+                    clf_simd_matmul(out_ptr, in_ptr, w_ptr, m, k, n);
+                }
+                51 => {
+                    if out_len == 0 {
+                        return Err(CoelanoxError::Runtime("Gemm: out_len 0".to_string()));
+                    }
+                    let k_sq = in_len * w_len / out_len;
+                    let k = (k_sq as f64).sqrt() as usize;
+                    if k == 0 {
+                        return Err(CoelanoxError::Runtime("Gemm: derived k=0".to_string()));
+                    }
+                    let m = in_len / k;
+                    let n = out_len / m;
+                    clf_simd_gemm(out_ptr, in_ptr, w_ptr, m, k, n);
                 }
                 _ => {
                     return Err(CoelanoxError::Runtime(format!(
@@ -531,22 +694,35 @@ unsafe fn dispatch_conv(
     Ok(())
 }
 
+/// Find weight tensor index from (w_off, w_len) and weight_offsets (element offsets).
+fn weight_index_from_offset(w_off: u32, weight_offsets: &[usize]) -> Option<usize> {
+    let start = w_off as usize;
+    for i in 0..weight_offsets.len().saturating_sub(1) {
+        if weight_offsets[i] <= start && start < weight_offsets[i + 1] {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Build execution plan from optimized IR (topological order, workspace layout, kernel offsets).
-/// Used by the packager. Returns (plan_bytes, workspace_elements).
-/// - node_order: topological execution order (indices into optimized_nodes).
-/// - op_ids: op_id per node in same order as node_order (op_ids[i] = CLF op_id for node_order[i]).
-/// - kernel_byte_offsets: byte offset of each kernel blob in code section (same order as node_order).
+/// Uses shape-based peak scratch contract for all ops; writes V1 plan with scratch_elements.
+/// - weight_shapes: shapes of weight tensors in same order as weight_offsets (one per weight).
+/// - max_workspace_mb: if set, fail when (workspace + peak_scratch) * 4 > max_workspace_mb * 1024 * 1024.
 pub fn build_plan_from_ir(
     optimized_nodes: &[coelanox_core::ir::GraphNode],
     intermediate_tensors: &[coelanox_core::ir::IntermediateTensor],
     weight_offsets: &[usize],
+    weight_shapes: &[coelanox_core::ir::Shape],
     input_elements: usize,
     _output_elements: usize,
     node_order: &[usize],
     op_ids: &[u32],
     kernel_byte_offsets: &[u32],
+    max_workspace_mb: Option<u64>,
 ) -> CoelanoxResult<(Vec<u8>, u32)> {
     use coelanox_core::ir::{OpType, TensorId};
+    use coelanox_core::scratch::peak_scratch_elements_for_op;
 
     if node_order.len() != op_ids.len() || node_order.len() != kernel_byte_offsets.len() {
         return Err(CoelanoxError::Runtime(format!(
@@ -678,17 +854,63 @@ pub fn build_plan_from_ir(
 
     let workspace_elements = workspace_offset;
 
-    // Reject plans that would require multi-GB allocation (header/layout bug or bad IR).
-    if workspace_elements > MAX_WORKSPACE_ELEMENTS {
-        return Err(CoelanoxError::Runtime(format!(
-            "build_plan: workspace_elements {} exceeds limit {}; check IR intermediate tensor layout or duplicate slot assignment",
-            workspace_elements,
-            MAX_WORKSPACE_ELEMENTS
-        )));
+    // Shape-based peak scratch for all ops (contract).
+    let mut peak_scratch_elements: usize = 0;
+    for (step_index, &node_index) in node_order.iter().enumerate() {
+        let node = &optimized_nodes[node_index];
+        let (_, _, _, w_off, _, _, _) = steps[step_index];
+        let weight_idx = weight_index_from_offset(w_off, weight_offsets);
+        let input_shapes: Vec<_> = node
+            .input_tensors
+            .iter()
+            .filter(|tid| tid.is_intermediate())
+            .filter_map(|tid| intermediate_tensors.get(tid.index()).map(|t| t.shape.clone()))
+            .collect();
+        let output_shapes: Vec<_> = node
+            .output_tensors
+            .iter()
+            .filter_map(|tid| {
+                if tid.is_intermediate() {
+                    intermediate_tensors.get(tid.index()).map(|t| t.shape.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let node_weight_shapes: Vec<_> = weight_idx
+            .and_then(|i| weight_shapes.get(i))
+            .map(|s| s.clone())
+            .into_iter()
+            .collect();
+        let attributes: Vec<_> = node.attributes.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let scratch = peak_scratch_elements_for_op(
+            &node.op_type,
+            &input_shapes,
+            &output_shapes,
+            &node_weight_shapes,
+            &attributes,
+        );
+        if scratch > peak_scratch_elements {
+            peak_scratch_elements = scratch;
+        }
+    }
+
+    if let Some(cap_mb) = max_workspace_mb {
+        let total_bytes = (workspace_elements as u64 + peak_scratch_elements as u64) * 4;
+        let cap_bytes = cap_mb * 1024 * 1024;
+        if total_bytes > cap_bytes {
+            return Err(CoelanoxError::Runtime(format!(
+                "Build failed: model requires {} MB dynamic memory (workspace + scratch), but --max-workspace is {} MB. Increase --max-workspace or reduce model size.",
+                (total_bytes + 1024 * 1024 - 1) / (1024 * 1024),
+                cap_mb,
+            )));
+        }
     }
 
     let mut plan = Vec::new();
+    plan.extend_from_slice(&PLAN_VERSION_V1.to_le_bytes());
     plan.extend_from_slice(&workspace_elements.to_le_bytes());
+    plan.extend_from_slice(&(peak_scratch_elements as u32).to_le_bytes());
     plan.extend_from_slice(&(steps.len() as u32).to_le_bytes());
     for (op_id, in_off, out_off, w_off, in_len, out_len, w_len) in &steps {
         plan.extend_from_slice(&op_id.to_le_bytes());
@@ -702,16 +924,6 @@ pub fn build_plan_from_ir(
     plan.extend_from_slice(&(kernel_byte_offsets.len() as u32).to_le_bytes());
     for &k in kernel_byte_offsets {
         plan.extend_from_slice(&k.to_le_bytes());
-    }
-
-    // Reject plans whose conv scratch would exceed limit (bad step lengths or conv_scratch formula).
-    let scratch = max_conv_scratch_elements(&plan).unwrap_or(0);
-    if scratch > MAX_CONV_SCRATCH_ELEMENTS {
-        return Err(CoelanoxError::Runtime(format!(
-            "build_plan: conv scratch {} elements exceeds limit {}; check conv step in_len/out_len/w_len in IR or plan",
-            scratch,
-            MAX_CONV_SCRATCH_ELEMENTS
-        )));
     }
 
     Ok((plan, workspace_elements))

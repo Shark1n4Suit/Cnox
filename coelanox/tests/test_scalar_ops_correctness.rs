@@ -416,16 +416,22 @@ fn scalar_batchnorm_correctness() {
 
 #[test]
 fn scalar_layernorm_correctness() {
+    // LayerNorm normalizes over last dim H; weights = [gamma (H), beta (H)]. Use H=3 for one row of 3.
     let input = [1.0f32, 2.0f32, 3.0f32];
-    let weights = [1.0f32, 0.0f32];
+    let weights = [1.0f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 0.0f32]; // gamma=[1,1,1], beta=[0,0,0]
     let mut out = [0.0f32; 3];
+    let mut attrs = empty_attrs();
+    attrs.insert(
+        "normalized_shape".to_string(),
+        Attribute::IntArray(vec![3]),
+    );
     execute_scalar_op(
         &OpType::LayerNorm,
         &input,
         None,
         &mut out,
         Some(&weights),
-        &empty_attrs(),
+        &attrs,
     )
     .expect("LayerNorm should succeed");
     let mean = 2.0f32;
@@ -509,9 +515,13 @@ fn scalar_reshape_correctness() {
 
 #[test]
 fn scalar_transpose_correctness() {
+    // Transpose requires "shape" and "perm" attributes. Identity perm [0] for 1D leaves order unchanged.
     let input = [1.0f32, 2.0f32, 3.0f32];
     let mut out = [0.0f32; 3];
-    execute_scalar_op(&OpType::Transpose, &input, None, &mut out, None, &empty_attrs())
+    let mut attrs = empty_attrs();
+    attrs.insert("shape".to_string(), Attribute::IntArray(vec![3]));
+    attrs.insert("perm".to_string(), Attribute::IntArray(vec![0]));
+    execute_scalar_op(&OpType::Transpose, &input, None, &mut out, None, &attrs)
         .expect("Transpose should succeed");
     assert_slice_eq(&out, &[1.0, 2.0, 3.0], "Transpose");
 }

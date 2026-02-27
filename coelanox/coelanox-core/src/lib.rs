@@ -9,6 +9,7 @@ pub mod error;
 pub mod ir;
 pub mod plugins;
 pub mod scalar;
+pub mod scratch;
 pub mod optimization;
 pub mod memory_hal;
 pub mod protection_hal;

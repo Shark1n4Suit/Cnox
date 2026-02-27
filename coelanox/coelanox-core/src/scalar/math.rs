@@ -1,16 +1,13 @@
 //! Mathematical primitive operations
-//! 
-//! Pure Rust scalar implementations of mathematical primitives:
-//! - Sqrt: Square root
-//! - Pow: Power (x^y)
-//! - Cos: Cosine
-//! - Sin: Sine
-//! - Exp: Exponential (e^x)
-//! - Log: Natural logarithm
+//!
+//! Pure Rust scalar implementations with parallel iteration for large buffers.
 
 use crate::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
 use crate::ir::Attribute;
+use rayon::prelude::*;
+
+const PAR_THRESHOLD: usize = 64 * 1024;
 
 /// Execute square root: output = sqrt(input)
 pub fn sqrt(
@@ -19,16 +16,18 @@ pub fn sqrt(
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
-    for i in 0..len {
-        output[i] = input[i].sqrt();
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = x.sqrt());
+    } else {
+        for i in 0..len {
+            output[i] = input[i].sqrt();
+        }
     }
     Ok(())
 }
 
 /// Execute power: output = input^exponent
-/// 
-/// # Attributes
-/// * `exponent` - Power to raise input to (default: 2.0)
 pub fn pow(
     input: &[f32],
     output: &mut [f32],
@@ -42,8 +41,13 @@ pub fn pow(
         })
         .unwrap_or(2.0);
     let len = input.len().min(output.len());
-    for i in 0..len {
-        output[i] = input[i].powf(exponent);
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = x.powf(exponent));
+    } else {
+        for i in 0..len {
+            output[i] = input[i].powf(exponent);
+        }
     }
     Ok(())
 }
@@ -55,8 +59,13 @@ pub fn cos(
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
-    for i in 0..len {
-        output[i] = input[i].cos();
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = x.cos());
+    } else {
+        for i in 0..len {
+            output[i] = input[i].cos();
+        }
     }
     Ok(())
 }
@@ -68,8 +77,13 @@ pub fn sin(
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
-    for i in 0..len {
-        output[i] = input[i].sin();
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = x.sin());
+    } else {
+        for i in 0..len {
+            output[i] = input[i].sin();
+        }
     }
     Ok(())
 }
@@ -81,8 +95,13 @@ pub fn exp(
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
-    for i in 0..len {
-        output[i] = input[i].exp();
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = x.exp());
+    } else {
+        for i in 0..len {
+            output[i] = input[i].exp();
+        }
     }
     Ok(())
 }
@@ -94,8 +113,13 @@ pub fn log(
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
-    for i in 0..len {
-        output[i] = (input[i] + f32::EPSILON).ln();
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = (x + f32::EPSILON).ln());
+    } else {
+        for i in 0..len {
+            output[i] = (input[i] + f32::EPSILON).ln();
+        }
     }
     Ok(())
 }

@@ -5,7 +5,7 @@
 //! graph structure with efficient index-based lookups and clear separation
 //! between static weights and dynamic intermediate tensors.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use crate::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
 
@@ -308,6 +308,14 @@ impl Attribute {
     pub fn as_string(&self) -> Option<&String> {
         match self {
             Attribute::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Get integer array if this is an IntArray variant
+    pub fn as_int_array(&self) -> Option<&[i64]> {
+        match self {
+            Attribute::IntArray(a) => Some(a),
             _ => None,
         }
     }
@@ -1063,20 +1071,40 @@ impl UniversalIR {
         Ok(())
     }
     
-    /// Get all leaf nodes (nodes with no outputs)
+    /// Get all leaf nodes (nodes whose outputs are not consumed by any node in the graph).
     pub fn get_leaf_nodes(&self) -> Vec<NodeId> {
+        let consumed: HashSet<TensorId> = self
+            .nodes
+            .iter()
+            .flat_map(|n| n.input_tensors.iter().copied())
+            .collect();
         self.nodes
             .iter()
-            .filter(|node| node.output_tensors.is_empty())
+            .filter(|node| {
+                node.output_tensors.is_empty()
+                    || node
+                        .output_tensors
+                        .iter()
+                        .all(|t| !consumed.contains(t))
+            })
             .map(|node| node.id)
             .collect()
     }
-    
-    /// Get all root nodes (nodes with no inputs)
+
+    /// Get all root nodes (nodes whose inputs are only graph inputs or weights — no predecessor in the graph).
     pub fn get_root_nodes(&self) -> Vec<NodeId> {
+        let produced: HashSet<TensorId> = self
+            .nodes
+            .iter()
+            .flat_map(|n| n.output_tensors.iter().copied())
+            .collect();
         self.nodes
             .iter()
-            .filter(|node| node.input_tensors.is_empty())
+            .filter(|node| {
+                node.input_tensors
+                    .iter()
+                    .all(|tid| tid.is_weight() || !produced.contains(tid))
+            })
             .map(|node| node.id)
             .collect()
     }
@@ -1540,5 +1568,32 @@ mod tests {
             optimized_ir.shared_weights.as_ref(),
             optimized_ir2.shared_weights.as_ref()
         ));
+    }
+
+    /// Verifies that the "dimensions" attribute on MatMul/Gemm nodes round-trips through bincode
+    /// (packager serializes OptimizedIR → container → runtime deserializes). A bug where this
+    /// was lost would cause scalar matmul to infer (1, in_len, out_len) and run ~2500x slower.
+    #[test]
+    fn test_dimensions_attribute_roundtrip() {
+        use crate::ir::{GraphNode, NodeId, OpType, TensorId, Attribute};
+        let mut node = GraphNode::new(NodeId(0), OpType::MatMul);
+        node.add_input_tensor(TensorId::intermediate(0));
+        node.add_input_tensor(TensorId::weight(0));
+        node.add_output_tensor(TensorId::intermediate(1));
+        node.add_attribute(
+            "dimensions".to_string(),
+            Attribute::IntArray(vec![128_i64, 768, 768, 768]),
+        );
+        let bytes = bincode::serialize(&node).expect("serialize GraphNode");
+        let restored: GraphNode = bincode::deserialize(&bytes).expect("deserialize GraphNode");
+        let dims = restored
+            .attributes
+            .get("dimensions")
+            .and_then(|a| a.as_int_array());
+        assert!(
+            dims.is_some(),
+            "dimensions attribute must survive bincode round-trip (bug would cause 16min BERT scalar run)"
+        );
+        assert_eq!(dims.unwrap(), &[128, 768, 768, 768]);
     }
 }

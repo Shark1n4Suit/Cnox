@@ -32,6 +32,10 @@ pub fn reshape(
 ///
 /// Attributes: "shape" (IntArray) = input shape, "perm" (IntArray) = permutation of dimension indices.
 /// output[permuted_index] = input[index]. Agnostic: used by any op that reorders axes (e.g. matmul for K^T).
+///
+/// **Performance:** No heap allocation inside the hot loop. Strides and shapes are used only to compute
+/// indices; we reuse two small buffers (allocated once) for multi-index conversion to avoid the
+/// "millions of Vec allocations" that caused BERT scalar fallback to go from ~381ms to ~6 minutes.
 pub fn transpose(
     input: &[f32],
     output: &mut [f32],
@@ -65,9 +69,21 @@ pub fn transpose(
         )));
     }
 
-    // Output shape after perm: out_shape[i] = shape[perm[i]]
+    // Fast path: 2D transpose (e.g. [seq, dim] -> [dim, seq]). No div/mod in inner loop, no extra alloc.
+    let nd = shape.len();
+    if nd == 2 && perm[0] == 1 && perm[1] == 0 {
+        let rows = shape[0];
+        let cols = shape[1];
+        for row in 0..rows {
+            for col in 0..cols {
+                output[col * rows + row] = input[row * cols + col];
+            }
+        }
+        return Ok(());
+    }
+
+    // General N-D: compute strides once, reuse two buffers for multi-index (no alloc per element).
     let out_shape: Vec<usize> = perm.iter().map(|&p| shape[p]).collect();
-    // Strides for input (row-major)
     let in_strides: Vec<usize> = {
         let mut s = vec![1; shape.len()];
         for i in (0..shape.len().saturating_sub(1)).rev() {
@@ -75,7 +91,6 @@ pub fn transpose(
         }
         s
     };
-    // Strides for output (row-major)
     let out_strides: Vec<usize> = {
         let mut s = vec![1; out_shape.len()];
         for i in (0..out_shape.len().saturating_sub(1)).rev() {
@@ -84,16 +99,18 @@ pub fn transpose(
         s
     };
 
+    // Reused buffers: one allocation per transpose, not per element.
+    let mut out_multi = vec![0usize; out_shape.len()];
+    let mut in_multi = vec![0usize; shape.len()];
+
     for out_linear in 0..total {
-        // Output linear index -> output multi-index
-        let mut out_multi = vec![0; out_shape.len()];
+        // Output linear index -> output multi-index (div/rem, but no alloc).
         let mut rem = out_linear;
         for (i, &stride) in out_strides.iter().enumerate() {
             out_multi[i] = rem / stride;
             rem %= stride;
         }
-        // Input multi-index: in_multi[perm[i]] = out_multi[i] => in_multi[j] = out_multi[perm^{-1}[j]]
-        let mut in_multi = vec![0; shape.len()];
+        // Input multi-index: in_multi[perm[i]] = out_multi[i].
         for (i, &p) in perm.iter().enumerate() {
             in_multi[p] = out_multi[i];
         }

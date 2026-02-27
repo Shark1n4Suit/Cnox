@@ -1,25 +1,15 @@
 //! Miscellaneous operations
-//! 
-//! Pure Rust scalar implementations of miscellaneous operations:
-//! - Dropout: Random dropout for training
+//!
+//! Pure Rust scalar implementations with parallel iteration for large buffers.
 
 use crate::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
 use crate::ir::Attribute;
+use rayon::prelude::*;
 
-/// Execute dropout operation: Randomly zero out elements during training
-/// 
-/// # Arguments
-/// * `input` - Input tensor data
-/// * `output` - Output tensor buffer (must be pre-allocated)
-/// * `attributes` - Operation-specific attributes
-///   * `rate` - Dropout rate (0.0 to 1.0, default: 0.5)
-///   * `training` - Whether in training mode (default: true)
-///   * `seed` - Random seed for reproducibility (optional)
-/// 
-/// # Returns
-/// * `Ok(())` if operation succeeds
-/// * `Err(CoelanoxError)` if operation fails
+const PAR_THRESHOLD: usize = 64 * 1024;
+
+/// Execute dropout operation: scale or copy input to output
 pub fn dropout(
     input: &[f32],
     output: &mut [f32],
@@ -36,8 +26,14 @@ pub fn dropout(
         let rate = attributes.get("rate")
             .and_then(|a| match a { crate::ir::Attribute::Float(f) => Some(*f), _ => None })
             .unwrap_or(0.5);
-        for i in 0..len {
-            output[i] = input[i] / (1.0 - rate);
+        let scale = 1.0 / (1.0 - rate);
+        if len >= PAR_THRESHOLD {
+            output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+                .for_each(|(o, &x)| *o = x * scale);
+        } else {
+            for i in 0..len {
+                output[i] = input[i] / (1.0 - rate);
+            }
         }
     } else {
         output[..len].copy_from_slice(&input[..len]);
