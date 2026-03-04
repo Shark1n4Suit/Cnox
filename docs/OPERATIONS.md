@@ -114,7 +114,9 @@ When `COELANOX_CONFIG_FILE` is set, the file must be JSON with optional keys (un
 
 ### Execution timeout
 
-**Symptom:** Inference does not complete within the configured timeout.
+**Symptom:** Inference fails with "Execution timeout exceeded (COELANOX_EXECUTION_TIMEOUT_MS)" or does not complete within the configured timeout.
+
+The runtime enforces the deadline between execution steps (SIMD plan steps or scalar waves); if the deadline is exceeded, inference is aborted and an error is returned.
 
 **Steps:**
 

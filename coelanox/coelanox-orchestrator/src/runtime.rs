@@ -35,8 +35,40 @@ use serde::{Deserialize, Serialize};
 use anyhow::{Context, Result as AnyhowResult};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::fs::File;
+use std::cell::RefCell;
 use uuid::Uuid;
 use memmap2::{Advice, Mmap};
+
+/// Thread-local execution deadline for timeout enforcement. Set at start of run; checked between steps (SIMD) or waves (scalar).
+thread_local! {
+    static EXECUTION_DEADLINE: RefCell<Option<Instant>> = RefCell::new(None);
+}
+
+/// Set the execution deadline for the current thread (used by execute_with_backend). Clear with None when done.
+pub fn set_execution_deadline(deadline: Option<Instant>) {
+    EXECUTION_DEADLINE.with(|c| *c.borrow_mut() = deadline);
+}
+
+/// True if a deadline is set and it has been exceeded. Used by executor and scalar fallback to abort long runs.
+pub fn execution_deadline_expired() -> bool {
+    EXECUTION_DEADLINE.with(|c| c.borrow().map(|d| Instant::now() >= d).unwrap_or(false))
+}
+
+/// True if a deadline is currently set (so we can pass abort_check to the executor).
+fn has_execution_deadline() -> bool {
+    EXECUTION_DEADLINE.with(|c| c.borrow().is_some())
+}
+
+/// Lock helpers: map poisoned lock to Runtime error instead of panicking (battle-hardening).
+fn lock_rw_read<T>(r: &RwLock<T>) -> CoelanoxResult<std::sync::RwLockReadGuard<'_, T>> {
+    r.read().map_err(|e| CoelanoxError::Runtime(format!("runtime read lock poisoned: {}", e)))
+}
+fn lock_rw_write<T>(r: &RwLock<T>) -> CoelanoxResult<std::sync::RwLockWriteGuard<'_, T>> {
+    r.write().map_err(|e| CoelanoxError::Runtime(format!("runtime write lock poisoned: {}", e)))
+}
+fn lock_mutex<T>(m: &Mutex<T>) -> CoelanoxResult<std::sync::MutexGuard<'_, T>> {
+    m.lock().map_err(|e| CoelanoxError::Runtime(format!("runtime mutex poisoned: {}", e)))
+}
 
 /// Percentile from sorted latencies (0.0..=100.0). Returns 0 if empty.
 fn percentile(sorted: &[u64], pct: f64) -> u64 {
@@ -1048,20 +1080,18 @@ impl CoelanoxRuntime {
     }
     
     /// Get runtime configuration
-    pub fn get_config(&self) -> RuntimeConfig {
-        self.config.read().expect("runtime read lock").clone()
+    pub fn get_config(&self) -> CoelanoxResult<RuntimeConfig> {
+        Ok(lock_rw_read(&self.config)?.clone())
     }
-    
+
     /// Update runtime configuration
     pub fn update_config(&self, config: RuntimeConfig) -> CoelanoxResult<()> {
-        // Validate configuration
         self.validate_config(&config)?;
-        
-        // Update configuration
-        *self.config.write().expect("runtime write lock") = config;
+        *lock_rw_write(&self.config)? = config;
         
         // Recreate security validator with new config
-        let new_security_validator = Arc::new(SecurityValidator::new(&self.get_config()));
+        let config = self.get_config()?;
+        let new_security_validator = Arc::new(SecurityValidator::new(&config));
         // Note: We can't directly replace Arc<SecurityValidator> in the struct,
         // but we can update the internal configuration
         
@@ -1133,8 +1163,8 @@ impl CoelanoxRuntime {
             .map_err(|e| CoelanoxError::Runtime(format!("Container validation failed for: {}: {}", path, e)))?;
         
         // Check container cache limits
-        let config = self.get_config();
-        let mut containers = self.containers.write().expect("runtime write lock");
+        let config = self.get_config()?;
+        let mut containers = lock_rw_write(&self.containers)?;
         
         // Evict expired containers when TTL is set
         if config.container_cache_ttl_secs.is_some() {
@@ -1186,8 +1216,8 @@ impl CoelanoxRuntime {
         }
         container.validate()
             .map_err(|e| CoelanoxError::Runtime(format!("Container validation failed for: {}: {}", path, e)))?;
-        let config = self.get_config();
-        let mut containers = self.containers.write().expect("runtime write lock");
+        let config = self.get_config()?;
+        let mut containers = lock_rw_write(&self.containers)?;
         if config.container_cache_ttl_secs.is_some() {
             self.evict_expired_containers_inner(&mut containers, &config);
         }
@@ -1231,8 +1261,8 @@ impl CoelanoxRuntime {
             .map_err(|e| CoelanoxError::Runtime(format!("Container validation failed for: {}: {}", name, e)))?;
         
         // Check container cache limits
-        let config = self.get_config();
-        let mut containers = self.containers.write().expect("runtime write lock");
+        let config = self.get_config()?;
+        let mut containers = lock_rw_write(&self.containers)?;
         
         if config.container_cache_ttl_secs.is_some() {
             self.evict_expired_containers_inner(&mut containers, &config);
@@ -1270,7 +1300,7 @@ impl CoelanoxRuntime {
         
         // Register execution state
         {
-            let mut active_executions = self.active_executions.write().expect("runtime write lock");
+            let mut active_executions = lock_rw_write(&self.active_executions)?;
             active_executions.insert(execution_state.id.clone(), execution_state.clone());
         }
         
@@ -1278,7 +1308,7 @@ impl CoelanoxRuntime {
         
         // Clean up execution state
         {
-            let mut active_executions = self.active_executions.write().expect("runtime write lock");
+            let mut active_executions = lock_rw_write(&self.active_executions)?;
             active_executions.remove(&execution_state.id);
         }
         
@@ -1290,7 +1320,7 @@ impl CoelanoxRuntime {
     where
         F: Fn(f32) + Send + Sync,
     {
-        let config = self.get_config();
+        let config = self.get_config()?;
         let timeout = Duration::from_millis(config.execution_timeout_ms);
         let max_retries = 3;
         
@@ -1303,7 +1333,7 @@ impl CoelanoxRuntime {
         
         // Register execution state
         {
-            let mut active_executions = self.active_executions.write().expect("runtime write lock");
+            let mut active_executions = lock_rw_write(&self.active_executions)?;
             active_executions.insert(execution_state.id.clone(), execution_state.clone());
         }
         
@@ -1311,7 +1341,7 @@ impl CoelanoxRuntime {
         
         // Clean up execution state
         {
-            let mut active_executions = self.active_executions.write().expect("runtime write lock");
+            let mut active_executions = lock_rw_write(&self.active_executions)?;
             active_executions.remove(&execution_state.id);
         }
         
@@ -1653,7 +1683,7 @@ impl CoelanoxRuntime {
     pub fn warm_container(&self, container_name: &str) -> CoelanoxResult<()> {
         // Check if container is loaded
         {
-            let containers = self.containers.read().expect("runtime read lock");
+            let containers = lock_rw_read(&self.containers)?;
             if !containers.contains_key(container_name) {
                 return Err(CoelanoxError::Runtime(format!("Container not loaded: {}", container_name)));
             }
@@ -1661,7 +1691,7 @@ impl CoelanoxRuntime {
         
         // Mark container as warmed
         {
-            let mut warmed_containers = self.warmed_containers.write().expect("runtime write lock");
+            let mut warmed_containers = lock_rw_write(&self.warmed_containers)?;
             warmed_containers.insert(container_name.to_string(), Instant::now());
         }
         
@@ -1673,7 +1703,7 @@ impl CoelanoxRuntime {
     pub fn preload_container(&self, container_name: &str) -> CoelanoxResult<()> {
         // Check if container is already loaded
         {
-            let containers = self.containers.read().expect("runtime read lock");
+            let containers = lock_rw_read(&self.containers)?;
             if containers.contains_key(container_name) {
                 return Ok(()); // Already loaded
             }
@@ -1711,7 +1741,7 @@ impl CoelanoxRuntime {
         let active_executions = self.active_executions.read().expect("runtime read lock");
         active_executions.values().cloned().collect()
     }
-    
+
     /// Get execution state by ID
     pub fn get_execution_state(&self, execution_id: &str) -> Option<ExecutionState> {
         let active_executions = self.active_executions.read().expect("runtime read lock");
@@ -1720,7 +1750,7 @@ impl CoelanoxRuntime {
     
     /// Cancel execution by ID
     pub fn cancel_execution(&self, execution_id: &str) -> CoelanoxResult<()> {
-        let mut active_executions = self.active_executions.write().expect("runtime write lock");
+        let mut active_executions = lock_rw_write(&self.active_executions)?;
         if let Some(execution_state) = active_executions.get_mut(execution_id) {
             execution_state.set_status(ExecutionStatus::Cancelled);
             info!("🚫 Execution cancelled: {}", execution_id);
@@ -1892,7 +1922,7 @@ impl CoelanoxRuntime {
             let buffer_b_shared = Arc::new(Mutex::new(vec![0.0f32; max_w_len]));
             let len0 = steps[0].w_len as usize;
             if len0 > 0 && steps[0].w_off as usize + len0 <= weights.len() {
-                buffer_a_shared.lock().expect("runtime mutex lock")[..len0]
+                lock_mutex(buffer_a_shared.as_ref())?[..len0]
                     .copy_from_slice(&weights[steps[0].w_off as usize..steps[0].w_off as usize + len0]);
             }
             // Unbounded request channel so main thread doesn't block on send (prefetch receives when ready).
@@ -1907,7 +1937,7 @@ impl CoelanoxRuntime {
                         if buf_id >= 2 {
                             break;
                         }
-                        let mut guard = if buf_id == 0 { buf_a.lock().expect("runtime mutex lock") } else { buf_b.lock().expect("runtime mutex lock") };
+                        let mut guard = if buf_id == 0 { buf_a.lock().expect("double-ring buffer lock") } else { buf_b.lock().expect("double-ring buffer lock") };
                         let copy_len = data.len().min(guard.len());
                         guard[..copy_len].copy_from_slice(&data[..copy_len]);
                         drop(guard);
@@ -1916,15 +1946,15 @@ impl CoelanoxRuntime {
                 });
                 let mut weight_buffer = vec![0.0f32; max_w_len];
                 let len0 = steps[0].w_len as usize;
-                weight_buffer[..len0].copy_from_slice(&buffer_a_shared.lock().expect("runtime mutex lock")[..len0]);
+                weight_buffer[..len0].copy_from_slice(&lock_mutex(buffer_a_shared.as_ref())?[..len0]);
                 let mut weight_provider = |step_index: usize, _w_off: u32, w_len: u32, out: &mut [f32]| -> usize {
                     if step_index > 0 {
                         let _ = rx_done.recv();
                         let len = w_len as usize;
                         if step_index % 2 == 0 {
-                            out[..len].copy_from_slice(&buffer_a_shared.lock().expect("runtime mutex lock")[..len]);
+                            out[..len].copy_from_slice(&buffer_a_shared.lock().expect("double-ring buffer lock")[..len]);
                         } else {
-                            out[..len].copy_from_slice(&buffer_b_shared.lock().expect("runtime mutex lock")[..len]);
+                            out[..len].copy_from_slice(&buffer_b_shared.lock().expect("double-ring buffer lock")[..len]);
                         }
                     }
                     if step_index + 1 < steps.len() {
@@ -1952,6 +1982,11 @@ impl CoelanoxRuntime {
                         None
                     },
                     &mut weight_provider,
+                    if has_execution_deadline() {
+                        Some(&(|| execution_deadline_expired()) as &(dyn Fn() -> bool + '_))
+                    } else {
+                        None
+                    },
                 )?;
                 drop(tx_req);
                 Ok::<(), coelanox_core::CoelanoxError>(())
@@ -1970,6 +2005,11 @@ impl CoelanoxRuntime {
                 } else {
                     None
                 },
+                if has_execution_deadline() {
+                    Some(&(|| execution_deadline_expired()) as &(dyn Fn() -> bool + '_))
+                } else {
+                    None
+                },
             )?;
             debug!("SIMD path: run_with_plan (kernel execution) {} ms", t3.elapsed().as_millis());
         }
@@ -1982,7 +2022,7 @@ impl CoelanoxRuntime {
     /// Apply protection (configure + enable) to the last allocated executable block.
     /// Prefers container-embedded CLFMP when present; otherwise uses protection registry.
     fn apply_protection(&self, container: &CoelanoxContainer, _ptr: *mut u8) -> CoelanoxResult<()> {
-        let guard = self.executable_memory.lock().expect("runtime mutex lock");
+        let guard = lock_mutex(&self.executable_memory)?;
         let Some(block) = guard.last() else {
             return Ok(());
         };
@@ -1993,7 +2033,7 @@ impl CoelanoxRuntime {
             } else if let Err(e) = prot.enable_protection() {
                 warn!("Container CLFMP enable_protection failed: {:?}", e);
             }
-        } else if let Some((_, prot)) = self.protection_registry.read().expect("runtime read lock").default_backend() {
+        } else if let Some((_, prot)) = lock_rw_read(&self.protection_registry)?.default_backend() {
             if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
                 warn!("Protection HAL configure_region failed: {:?}", e);
             } else if let Err(e) = prot.enable_protection() {
@@ -2043,9 +2083,9 @@ impl CoelanoxRuntime {
         // 1. Container self-bootstrap via embedded CLFMM (container manages its own memory)
         if let Some((ptr, block)) = self.try_container_self_bootstrap(container, code_size, aligned_size, page_size) {
             let size = block.as_region_ref().size();
-            let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
+            let mut executable_memory = lock_mutex(&self.executable_memory)?;
             executable_memory.push(block);
-            let mut metrics = self.metrics.lock().expect("runtime mutex lock");
+            let mut metrics = lock_mutex(&self.metrics)?;
             metrics.update_memory_allocation(size);
             metrics.executable_blocks_count = executable_memory.len();
             drop(executable_memory);
@@ -2055,7 +2095,7 @@ impl CoelanoxRuntime {
         }
 
         // 2. Fallback: Memory HAL when an executable backend is registered
-        let registry = self.memory_registry.read().expect("runtime read lock");
+        let registry = lock_rw_read(&self.memory_registry)?;
         if let Some((target, backend)) = registry.default_for_executable() {
             let opts = RegionOptions {
                 size: aligned_size,
@@ -2076,9 +2116,9 @@ impl CoelanoxRuntime {
                             code_size,
                         );
                     }
-                    let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
+                    let mut executable_memory = lock_mutex(&self.executable_memory)?;
                     executable_memory.push(ExecutableMemoryBlock::new_hal(target, region));
-                    let mut metrics = self.metrics.lock().expect("runtime mutex lock");
+                    let mut metrics = lock_mutex(&self.metrics)?;
                     metrics.update_memory_allocation(size);
                     metrics.executable_blocks_count = executable_memory.len();
                     debug!("✅ Allocated executable memory via HAL: {} bytes", size);
@@ -2105,9 +2145,9 @@ impl CoelanoxRuntime {
                         code_size,
                     );
                 }
-                let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
+                let mut executable_memory = lock_mutex(&self.executable_memory)?;
                 executable_memory.push(ExecutableMemoryBlock::new_legacy(ptr, size));
-                let mut metrics = self.metrics.lock().expect("runtime mutex lock");
+                let mut metrics = lock_mutex(&self.metrics)?;
                 metrics.update_memory_allocation(size);
                 metrics.executable_blocks_count = executable_memory.len();
                 debug!("✅ Created function pointer: 0x{:x}", ptr as usize);
@@ -2196,11 +2236,19 @@ impl CoelanoxRuntime {
     ) -> CoelanoxResult<Vec<f32>> {
         let container = self.get_container_info(container_name)?;
         let warm_data = self.resolve_warm_data(container_name, container.as_ref())?;
+        let config = self.get_config()?;
+        let deadline = if config.execution_timeout_ms > 0 {
+            Some(Instant::now() + Duration::from_millis(config.execution_timeout_ms))
+        } else {
+            None
+        };
+        set_execution_deadline(deadline);
         let start = std::time::Instant::now();
         let result = self.run_backend_execution(container.as_ref(), input_data, backend, warm_data.as_ref());
+        set_execution_deadline(None);
         let elapsed_us = start.elapsed().as_micros() as u64;
         if let Ok(_) = &result {
-            let mut stats = self.stats.lock().expect("runtime mutex lock");
+            let mut stats = self.stats.lock().map_err(|e| CoelanoxError::Runtime(format!("runtime mutex poisoned: {}", e)))?;
             stats.update_execution(elapsed_us, 0);
         }
         result
@@ -2231,7 +2279,7 @@ impl CoelanoxRuntime {
         container: &CoelanoxContainer,
     ) -> CoelanoxResult<Option<ContainerWarmData>> {
         {
-            let cache = self.warm_cache.read().expect("runtime read lock");
+            let cache = lock_rw_read(&self.warm_cache)?;
             if let Some(warm) = cache.get(container_name) {
                 return Ok(Some(warm.clone()));
             }
@@ -2242,7 +2290,7 @@ impl CoelanoxRuntime {
             decompressed_weights,
             optimized_ir,
         };
-        self.warm_cache.write().expect("runtime write lock").insert(container_name.to_string(), warm.clone());
+        lock_rw_write(&self.warm_cache)?.insert(container_name.to_string(), warm.clone());
         Ok(Some(warm))
     }
 
@@ -2263,7 +2311,7 @@ impl CoelanoxRuntime {
         }
         // Discovered CPU CLF backends (e.g. "simd") use the same path as cpu: embedded code + execution plan
         let backend_normalized = backend.to_lowercase();
-        if let Some(info) = self.backend_manager.read().expect("runtime read lock").get_backend(&backend_normalized) {
+        if let Some(info) = lock_rw_read(&self.backend_manager)?.get_backend(&backend_normalized) {
             if info.kind == BackendKind::Clf && info.supported_targets.contains(&HardwareTarget::Cpu) {
                 return self.execute_machine_code(container, input_data, warm_data).or_else(|e| {
                     warn!("CLF backend '{}' machine code failed: {:?}, falling back to scalar", backend, e);
@@ -2304,7 +2352,7 @@ impl CoelanoxRuntime {
     ) -> CoelanoxResult<Vec<f32>> {
         // Try literal backend name first (e.g. "gpu")
         let result = {
-            let registry = self.runtime_backend_registry.read().expect("runtime read lock");
+            let registry = lock_rw_read(&self.runtime_backend_registry)?;
             registry.get(backend).map(|b| b.execute(container, input_data, warm_data))
         };
         if let Some(Ok(out)) = result {
@@ -2323,12 +2371,12 @@ impl CoelanoxRuntime {
             };
             if let Some(target) = target_opt {
                 let resolved_name = {
-                    let mgr = self.backend_manager.read().expect("runtime read lock");
+                    let mgr = lock_rw_read(&self.backend_manager)?;
                     mgr.find_backend_for_target(&target).map(|b| b.name.clone())
                 };
                 if let Some(name) = resolved_name {
                     let result = {
-                        let registry = self.runtime_backend_registry.read().expect("runtime read lock");
+                        let registry = lock_rw_read(&self.runtime_backend_registry)?;
                         registry.get(&name).map(|b| b.execute(container, input_data, warm_data))
                     };
                     if let Some(Ok(out)) = result {
@@ -2359,7 +2407,7 @@ impl CoelanoxRuntime {
         if container.execution_plan.is_none() {
             eprintln!("Note: Container has no CLF execution plan; using scalar fallback (interpreted ops). Large models will be slow.");
         }
-        let registry = self.runtime_backend_registry.read().expect("runtime read lock");
+        let registry = lock_rw_read(&self.runtime_backend_registry)?;
         let backend = registry.scalar_fallback().ok_or_else(|| {
             CoelanoxError::Runtime(
                 "Scalar fallback backend not registered in runtime backend registry".to_string(),
@@ -2388,7 +2436,7 @@ impl CoelanoxRuntime {
     
     /// Get container information (thread-safe). Returns Arc so callers avoid cloning full container.
     pub fn get_container_info(&self, container_name: &str) -> CoelanoxResult<Arc<CoelanoxContainer>> {
-        let containers = self.containers.read().expect("runtime read lock");
+        let containers = lock_rw_read(&self.containers)?;
         Ok(Arc::clone(&containers.get(container_name)
             .ok_or_else(|| CoelanoxError::Runtime(format!("Container not found: {}", container_name)))?.0))
     }
@@ -2416,7 +2464,7 @@ impl CoelanoxRuntime {
 
     /// Evict containers that have exceeded the configured TTL. No-op if container_cache_ttl_secs is None.
     pub fn evict_expired_containers(&self) {
-        let config = self.get_config();
+        let config = self.get_config().expect("runtime config read");
         if config.container_cache_ttl_secs.is_none() {
             return;
         }
@@ -2432,19 +2480,19 @@ impl CoelanoxRuntime {
         }
         removed
     }
-    
+
     /// List loaded containers (thread-safe)
     pub fn list_containers(&self) -> Vec<String> {
         let containers = self.containers.read().expect("runtime read lock");
         containers.keys().cloned().collect()
     }
-    
+
     /// Get runtime statistics (thread-safe)
     pub fn get_stats(&self) -> RuntimeStats {
         let stats = self.stats.lock().expect("runtime mutex lock");
         stats.clone()
     }
-    
+
     /// Get performance metrics (thread-safe)
     pub fn get_metrics(&self) -> PerformanceMetrics {
         let metrics = self.metrics.lock().expect("runtime mutex lock");
@@ -2465,7 +2513,7 @@ impl CoelanoxRuntime {
     pub fn get_memory_stats(&self) -> MemoryStats {
         let metrics = self.metrics.lock().expect("runtime mutex lock");
         let executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
-        
+
         MemoryStats {
             total_allocated: metrics.total_memory_allocated,
             current_usage: metrics.current_memory_usage,
@@ -2477,7 +2525,7 @@ impl CoelanoxRuntime {
     
     /// Check if runtime is healthy
     pub fn health_check(&self) -> HealthStatus {
-        let config = self.get_config();
+        let config = self.get_config().expect("runtime config read");
         let metrics = self.get_metrics();
         let memory_stats = self.get_memory_stats();
         
@@ -2540,7 +2588,7 @@ impl CoelanoxRuntime {
     /// Cleanup executable memory with proper thread safety. Handles both legacy
     /// (mmap/VirtualAlloc) and HAL-backed blocks.
     pub fn cleanup(&self) {
-        let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
+        let mut executable_memory = self.executable_memory.lock().expect("cleanup: executable_memory lock");
         let blocks = std::mem::take(&mut *executable_memory);
         let block_count = blocks.len();
         let mut total_freed = 0usize;
@@ -2569,7 +2617,7 @@ impl CoelanoxRuntime {
                 }
                 ExecutableMemoryBlock::Hal { target, region, .. } => {
                     let size = region.size();
-                    if let Some(backend) = self.memory_registry.read().expect("runtime read lock").get(&target) {
+                    if let Some(backend) = self.memory_registry.read().expect("cleanup: memory_registry read").get(&target) {
                         let _ = backend.deallocate_region(region);
                     }
                     total_freed += size;
@@ -2584,7 +2632,7 @@ impl CoelanoxRuntime {
             }
         }
 
-        let mut metrics = self.metrics.lock().expect("runtime mutex lock");
+        let mut metrics = self.metrics.lock().expect("cleanup: metrics lock");
         metrics.update_memory_deallocation(total_freed);
         metrics.executable_blocks_count = 0;
 
@@ -2637,7 +2685,7 @@ impl CoelanoxRuntime {
         // True cold: first run before any other work (no prior decompress = same as single "run" command).
         // Use the same metric as single "run" (run_backend_execution only), not full execute() time.
         self.execute_with_backend(container_name, &input_data, backend)?;
-        let true_cold_time_us = self.stats.lock().expect("runtime mutex lock").avg_execution_time;
+        let true_cold_time_us = lock_mutex(&self.stats)?.avg_execution_time;
 
         // Time single decompress and get weights size (after true cold so report has these metrics)
         let decompress_start = std::time::Instant::now();

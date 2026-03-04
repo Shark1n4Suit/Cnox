@@ -226,6 +226,7 @@ pub fn run_with_plan(
     _weights: &[f32],
     _workspace: &mut [f32],
     _audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    _abort_check: Option<&(dyn Fn() -> bool + '_)>,
 ) -> CoelanoxResult<()> {
     Err(CoelanoxError::Runtime(
         "CLF executor is only implemented for x86_64; use scalar fallback on this platform".to_string(),
@@ -241,6 +242,7 @@ pub fn run_with_plan(
     weights: &[f32],
     workspace: &mut [f32],
     mut audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    abort_check: Option<&(dyn Fn() -> bool + '_)>,
 ) -> CoelanoxResult<()> {
     let (workspace_elements, steps, _kernel_offsets) = parse_plan(plan)?;
     if workspace.len() < workspace_elements as usize {
@@ -255,6 +257,14 @@ pub fn run_with_plan(
     workspace[..input_len].copy_from_slice(&input[..input_len]);
 
     for (step_index, step) in steps.iter().enumerate() {
+        // Enforce execution timeout: abort between steps when deadline exceeded
+        if let Some(check) = abort_check {
+            if check() {
+                return Err(CoelanoxError::Runtime(
+                    "Execution timeout exceeded (COELANOX_EXECUTION_TIMEOUT_MS)".to_string(),
+                ));
+            }
+        }
         let in_ptr = workspace.as_ptr().wrapping_add(step.in_off as usize);
         let out_ptr = workspace.as_mut_ptr().wrapping_add(step.out_off as usize);
         let w_ptr = if (step.w_off & W_OFF_IN_WORKSPACE_MASK) != 0 {
@@ -543,6 +553,7 @@ pub fn run_with_plan_with_weight_provider<F>(
     _weight_buffer: &mut [f32],
     _audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
     _weight_provider: &mut F,
+    _abort_check: Option<&(dyn Fn() -> bool + '_)>,
 ) -> CoelanoxResult<()>
 where
     F: FnMut(usize, u32, u32, &mut [f32]) -> usize,
@@ -562,6 +573,7 @@ pub fn run_with_plan_with_weight_provider<F>(
     weight_buffer: &mut [f32],
     mut audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
     weight_provider: &mut F,
+    abort_check: Option<&(dyn Fn() -> bool + '_)>,
 ) -> CoelanoxResult<()>
 where
     F: FnMut(usize, u32, u32, &mut [f32]) -> usize,
@@ -578,6 +590,13 @@ where
     workspace[..input_len].copy_from_slice(&input[..input_len]);
 
     for (step_index, step) in steps.iter().enumerate() {
+        if let Some(check) = abort_check {
+            if check() {
+                return Err(CoelanoxError::Runtime(
+                    "Execution timeout exceeded (COELANOX_EXECUTION_TIMEOUT_MS)".to_string(),
+                ));
+            }
+        }
         let w_len = weight_provider(step_index, step.w_off, step.w_len, weight_buffer);
         if weight_buffer.len() < w_len {
             return Err(CoelanoxError::Runtime(format!(

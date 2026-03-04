@@ -10,10 +10,7 @@ use coelanox_core::format::ModelFormat;
 use coelanox_core::plugins::{TranslatorPlugin, PluginConfig, PluginMetadata, PluginCapabilities};
 use coelanox_core::ir::UniversalIR;
 
-// Import the ONNX translator from the translators directory
-// use onnx_translator::OnnxTranslator;  // Commented out - onnx-translator not available
-// Import the BERT translator from the translators directory
-use crate::translators::{BertTranslator, ResNetTinyMnistTranslator};
+use crate::translators::{BertTranslator, OnnxTranslator, ResNetTinyMnistTranslator};
 
 /// Plugin manager for loading and managing translator plugins
 pub struct PluginManager {
@@ -55,11 +52,12 @@ impl PluginManager {
     
     /// Load default plugins
     pub fn load_default_plugins(&mut self) -> CoelanoxResult<()> {
-        // Register ONNX translator from the translators directory
-        // Commented out - translators not available
-        // let onnx_translator = Box::new(OnnxTranslator::new());
-        // self.register_plugin_with_validation("onnx_translator".to_string(), onnx_translator)?;
-        
+        #[cfg(feature = "onnx-protobuf")]
+        {
+            let onnx_translator = Box::new(OnnxTranslator::new());
+            self.register_plugin("onnx".to_string(), onnx_translator);
+        }
+
         // BERT translator (bundle format: BRT1 + config + weights)
         let bert_translator = Box::new(BertTranslator::new());
         self.register_plugin("bert_base_uncased".to_string(), bert_translator);
@@ -110,9 +108,10 @@ impl PluginManager {
             println!("⚙️  Standard mode: Preferring general translators");
         }
         
-        // Default/preferred behavior: prefer general translators (onnx_translator)
-        // This ensures we get the full ONNX translator by default
-        // Note: onnx_translator not available, so general_plugins is empty for now
+        // Prefer general translators (e.g. ONNX) for standard format handling.
+        #[cfg(feature = "onnx-protobuf")]
+        let general_plugins: Vec<&str> = vec!["onnx"];
+        #[cfg(not(feature = "onnx-protobuf"))]
         let general_plugins: Vec<&str> = vec![];
         
         for plugin_name in general_plugins {

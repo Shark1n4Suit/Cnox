@@ -338,6 +338,7 @@ dependencies = [
  "num_cpus",
  "prost",
  "prost-types",
+ "rten-onnx",
  "serde",
  "serde_json",
  "tempfile",
@@ -866,6 +867,12 @@ name = "regex-syntax"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
+
+[[package]]
+name = "rten-onnx"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23086eef75bfb55278cb0b45cf9f5a877d466d914914aafebee4ffca9b24d20c"
 
 [[package]]
 name = "rustix"

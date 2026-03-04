@@ -39,6 +39,7 @@ pub fn peak_scratch_elements_for_op(
         | OpType::GlobalMaxPool | OpType::GlobalAvgPool
         | OpType::Equal | OpType::NotEqual | OpType::Greater | OpType::GreaterEqual
         | OpType::Less | OpType::LessEqual | OpType::And | OpType::Or | OpType::Not
+        | OpType::Min | OpType::Max | OpType::Identity
         | OpType::Custom(_) => 0,
     }
 }

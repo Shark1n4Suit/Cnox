@@ -119,3 +119,68 @@ pub fn divide(
     Ok(())
 }
 
+#[inline(always)]
+fn min_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
+    if len >= PAR_THRESHOLD {
+        out.par_iter_mut()
+            .take(len)
+            .zip(a.par_iter().take(len))
+            .zip(b.par_iter().take(len))
+            .for_each(|((o, &x), &y)| *o = x.min(y));
+    } else {
+        for i in 0..len {
+            out[i] = a[i].min(b[i]);
+        }
+    }
+}
+
+/// Execute element-wise minimum: output = min(input_a, input_b)
+pub fn min(
+    input_a: &[f32],
+    input_b: &[f32],
+    output: &mut [f32],
+    _attributes: &HashMap<String, Attribute>,
+) -> CoelanoxResult<()> {
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    min_impl(input_a, input_b, output, len);
+    Ok(())
+}
+
+#[inline(always)]
+fn max_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
+    if len >= PAR_THRESHOLD {
+        out.par_iter_mut()
+            .take(len)
+            .zip(a.par_iter().take(len))
+            .zip(b.par_iter().take(len))
+            .for_each(|((o, &x), &y)| *o = x.max(y));
+    } else {
+        for i in 0..len {
+            out[i] = a[i].max(b[i]);
+        }
+    }
+}
+
+/// Execute element-wise maximum: output = max(input_a, input_b)
+pub fn max(
+    input_a: &[f32],
+    input_b: &[f32],
+    output: &mut [f32],
+    _attributes: &HashMap<String, Attribute>,
+) -> CoelanoxResult<()> {
+    let len = input_a.len().min(input_b.len()).min(output.len());
+    max_impl(input_a, input_b, output, len);
+    Ok(())
+}
+
+/// Identity (pass-through): output = input_a. Used for ONNX Identity and wire passthrough.
+pub fn identity(
+    input_a: &[f32],
+    output: &mut [f32],
+    _attributes: &HashMap<String, Attribute>,
+) -> CoelanoxResult<()> {
+    let len = input_a.len().min(output.len());
+    output[..len].copy_from_slice(&input_a[..len]);
+    Ok(())
+}
+

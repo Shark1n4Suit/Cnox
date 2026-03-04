@@ -209,6 +209,10 @@ impl ScalarFallbackBackend {
             OpType::And,
             OpType::Or,
             OpType::Not,
+            // Element-wise min/max and pass-through
+            OpType::Min,
+            OpType::Max,
+            OpType::Identity,
             // Misc
             OpType::Dropout,
         ]
@@ -393,6 +397,11 @@ impl ScalarExecutionBackend {
         let audit_enabled = crate::audit::is_enabled();
 
         while in_degree.iter().any(|&d| d == 0) {
+            if crate::runtime::execution_deadline_expired() {
+                return Err(CoelanoxError::Runtime(
+                    "Execution timeout exceeded (COELANOX_EXECUTION_TIMEOUT_MS)".to_string(),
+                ));
+            }
             let ready: Vec<usize> = (0..nodes.len()).filter(|&i| in_degree[i] == 0).collect();
             if ready.is_empty() {
                 break;

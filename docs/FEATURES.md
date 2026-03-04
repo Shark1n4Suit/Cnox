@@ -35,7 +35,7 @@ Accurate feature list for the current beta. Items marked **Planned** are on the 
 | **benchmark**| ✅ | Repeated inference, latency/throughput; `--backend`, `--iterations`. |
 | **env**      | ✅ | System environment, CPU, SIMD, recommended target. |
 | **debug**    | ✅ | Run with diagnostics; optional GDB. |
-| **extract**  | ❌ Stub | Intended: runtime-only binary for deployment; currently prints “not yet implemented”. |
+| **extract**  | ✅ | Same-arch: copies current executable to --output for deployment (binary + .cnox only). Cross-arch (--arm/--target) planned. |
 
 ---
 
@@ -152,7 +152,7 @@ Accurate feature list for the current beta. Items marked **Planned** are on the 
 - **Documentation** — OPERATIONS.md (env vars, runbooks), SECURITY.md, ARCHITECTURE.md.
 
 ### Planned
-- **extract** — Runtime-only binary for deployment (stub).
+- **extract** — Same-arch runtime copy to `--output`; cross-arch (--arm/--target) planned.
 - Formal TensorRT/vendor benchmarks and vendor SDK documentation (roadmap).
 
 ---
@@ -171,7 +171,7 @@ Accurate feature list for the current beta. Items marked **Planned** are on the 
 | Codegen / executor| ✅ CPU codegen, CLF mini-executor, Memory HAL | Protection HAL wired, chunk streaming |
 | Storage           | ✅ Compression, unified layout | Full tiering, ring buffer |
 | Platform          | ✅ Linux, Windows; x86_64 scalar + CLF | macOS tested; GPU/NPU via vendor |
-| Deployment        | ✅ Full CLI; config and limits | extract (runtime-only binary) |
+| Deployment        | ✅ Full CLI; extract (same-arch runtime binary) | extract --arm/--target (cross-arch) |
 
 ---
 

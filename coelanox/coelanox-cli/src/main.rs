@@ -781,19 +781,37 @@ fn env_command() -> CoelanoxResult<()> {
     Ok(())
 }
 
-/// Extract command - Produce runtime-only binary for deployment (stub).
-/// Full implementation will write embedded or downloaded runtime for --output, optionally for --arm / --target.
+/// Extract command - Produce runtime-only binary for deployment.
+/// Same-arch: copies the current executable to --output so you can deploy that binary + .cnox files only.
+/// Cross-arch (--arm / --target): not yet implemented; use CI or release artifacts for ARM.
 fn extract_command(output: &str, arm: bool, target: Option<&str>) -> CoelanoxResult<()> {
-    info!("Extract runtime (stub): output={}, arm={}, target={:?}", output, arm, target);
+    info!("Extract runtime: output={}, arm={}, target={:?}", output, arm, target);
     let effective_target = target
         .map(|s| s.to_string())
         .or_else(|| if arm { Some("aarch64-unknown-linux-gnu".to_string()) } else { None });
-    println!("📤 Extract runtime (not yet implemented)");
-    println!("   Output path: {}", output);
-    println!("   Target: {}", effective_target.as_deref().unwrap_or("current"));
-    println!();
-    println!("   When implemented: a runtime binary will be written to '{}' for deployment.", output);
-    println!("   Deploy that binary + your .cnox file(s); no packager needed on the server.");
+
+    if effective_target.is_some() {
+        eprintln!("❌ Cross-arch extract (--arm / --target) is not yet implemented.");
+        eprintln!("   Use the same-arch extract without --arm/--target, or build the runtime for the target in CI.");
+        return Err(CoelanoxError::Runtime(
+            "Cross-arch extract not implemented; use same-arch extract or CI/release artifacts".to_string(),
+        ));
+    }
+
+    let current_exe = std::env::current_exe().map_err(CoelanoxError::FileSystem)?;
+    let out_path = Path::new(output);
+    fs::copy(&current_exe, out_path).map_err(CoelanoxError::FileSystem)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(out_path).map_err(CoelanoxError::FileSystem)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(out_path, perms).map_err(CoelanoxError::FileSystem)?;
+    }
+
+    println!("✅ Runtime extracted to {}", output);
+    println!("   Deploy this binary with your .cnox file(s); run, verify, and benchmark are supported.");
     Ok(())
 }
 

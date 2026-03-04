@@ -251,10 +251,17 @@ pub enum OpType {
     Less,
     LessEqual,
     
+    // Element-wise min/max (for Clip and general use)
+    Min,
+    Max,
+    
     // Logical operations
     And,
     Or,
     Not,
+    
+    // Pass-through (no-op; backend may optimize away)
+    Identity,
     
     // Custom primitive operation
     Custom(String),

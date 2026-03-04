@@ -77,6 +77,7 @@ fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
         Ir::And => Clf::And,
         Ir::Or => Clf::Or,
         Ir::Not => Clf::Not,
+        Ir::Min | Ir::Max | Ir::Identity => Clf::Unknown,
         Ir::Custom(s) => Clf::Custom(s.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32)) % 0xFE + 256),
     }
 }
