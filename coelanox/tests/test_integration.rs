@@ -10,7 +10,7 @@
 use coelanox_core::format::{verify_security_hash, HardwareTarget, ModelFormat};
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_packager::CoelanoxPackager;
-use coelanox_orchestrator::CoelanoxRuntime;
+use coelanox_orchestrator::{CoelanoxRuntime, RuntimeConfig};
 use tempfile::NamedTempFile;
 use std::fs;
 use std::io::Write;
@@ -149,6 +149,53 @@ fn test_security_hash_in_pipeline() {
     // Verify hash should fail
     let result = verify_security_hash(container_path);
     assert!(result.is_err(), "Security hash verification should fail for tampered container");
+}
+
+/// Production hardening: verify → load → run with config from env.
+/// Uses a minimal valid container (no real execution plan); verifies load and config path.
+#[test]
+fn test_verify_load_run_with_config_from_env() {
+    let container_file = create_test_container_file().expect("Failed to create container");
+    let container_path = container_file.path();
+    let path_str = container_path.to_str().expect("path");
+
+    // 1. Verify
+    let verify_result = verify_security_hash(container_path);
+    assert!(verify_result.is_ok(), "verify should succeed for valid container");
+
+    // 2. Runtime with config from env (production path)
+    let config = RuntimeConfig::from_env();
+    let runtime = CoelanoxRuntime::with_config(config);
+
+    // 3. Load (verify runs again inside load_container)
+    let load_result = runtime.load_container(path_str);
+    assert!(load_result.is_ok(), "load_container should succeed after verify: {:?}", load_result.err());
+
+    // 4. Get container info (smoke test)
+    let info = runtime.get_container_info(path_str).expect("get_container_info");
+    assert_eq!(info.manifest.name, "test_model");
+    assert_eq!(info.manifest.input_shapes, vec![vec![1, 3, 224, 224]]);
+
+    // 5. Execute may fail for minimal container (no real plan); we only require load succeeded
+    let input_data = vec![0.0f32; 3 * 224 * 224];
+    let _ = runtime.execute(path_str, &input_data);
+}
+
+#[test]
+fn test_runtime_config_from_env_and_file() {
+    // RuntimeConfig::from_env() returns valid default-like config
+    let from_env = RuntimeConfig::from_env();
+    assert!(from_env.max_containers > 0);
+    assert!(from_env.max_memory_bytes > 0);
+    assert!(from_env.execution_timeout_ms > 0);
+
+    // RuntimeConfig::from_file() with valid JSON
+    let json = r#"{"max_containers": 10, "execution_timeout_ms": 5000}"#;
+    let file = NamedTempFile::new().expect("temp file");
+    fs::write(file.path(), json).expect("write");
+    let from_file = RuntimeConfig::from_file(file.path()).expect("from_file");
+    assert_eq!(from_file.max_containers, 10);
+    assert_eq!(from_file.execution_timeout_ms, 5000);
 }
 
 #[test]

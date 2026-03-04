@@ -2382,6 +2382,20 @@ Items here are non-blocking; consider when touching related code or when package
 - **Scope:** In the runtime audit closure (or audit module), add op_id → name mapping and pass the name to `log_after_op`. Keep mapping in the audit path only so executor hot path has zero change and no performance impact.
 - **Priority:** Optional; look later when touching audit or SIMD logging.
 
+### **Dictionary-based CLF code section (op_id reuse)**
+
+- **Goal:** Avoid duplicating the same CLF kernel blob for every node in the graph (e.g. many MatMuls in BERT) so the code section size does not grow linearly with node count.
+- **Rationale:** Today the packager appends a blob per node; large models (BERT) repeat the same MatMul/Add/LayerNorm kernel many times. Instead, the code section should behave like a dictionary: one blob per unique `op_id`, plan walks `50, 1, 50, ...` and reuses the same offsets.
+- **Scope:** In `coelanox-packager` CLF codegen, build `machine_code` by collecting unique `op_id`s and appending each blob once; for each node in execution order, record the same offset when the `op_id` repeats. Keep the current plan format initially (one kernel offset per node) so executor and `build_plan_from_ir` stay unchanged; only the code section is deduplicated.
+- **Priority:** Optional but high impact when touching CLF codegen or BERT-sized models (significant container size reduction).
+
+### **Parameterized optimizations at package time (tile sizes, unroll, SIMD)**
+
+- **Goal:** Allow vendors (or Coelanox) to ship parameterized kernels (e.g. MatMul with tile sizes 32/64/128, unroll factors, SIMD width) and select/instantiate them **at package time**, while keeping the runtime/CLF path \"locked\" (no runtime interpretation of parameters).
+- **Rationale:** Different models and hardware benefit from different tilings/unroll factors, but we want all complexity at package time, not at runtime. Parameters are chosen and validated when building the container; the container still carries only concrete machine code, not tunable knobs.
+- **Scope:** Use the existing `OptimizationParams` / CSV pipeline in `coelanox-packager` as the single source of truth for tile sizes, unroll factors, SIMD width, and precision. For each op type (e.g. MatMul, Conv), either (a) select from a small set of prebuilt variants (e.g. `MatMul_t32`, `MatMul_t64`) based on `OptimizationParams`, or (b) instantiate from a template at package time (no runtime patching). Deduplicate at the code-section level so the container holds at most one blob per (op_id, variant) actually used. Runtime/CLF executor contract remains unchanged: it receives a code section and an execution plan with concrete offsets.
+- **Priority:** Optional; implement when focusing on per-model/hardware performance, after dictionary-based code section is in place.
+
 ---
 
 ## 🚀 **Next Steps**

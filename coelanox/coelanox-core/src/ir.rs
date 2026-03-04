@@ -433,7 +433,7 @@ pub struct WeightTensor {
 }
 
 impl WeightTensor {
-    /// Create a new weight tensor
+    /// Create a new weight tensor (allocates zeroed buffer of shape size; use for in-memory IR with data).
     pub fn new(name: String, shape: Shape, data_type: DataType) -> Self {
         let data_size = shape.total_elements() * data_type.size();
         Self {
@@ -443,7 +443,19 @@ impl WeightTensor {
             data: vec![0; data_size],
         }
     }
-    
+
+    /// Create a weight tensor with only metadata (no data buffer). Use when serializing IR for the
+    /// container: weights are stored separately in compressed_weights; runtime uses shape/elements()
+    /// for layout and decompressed_weights for actual data. Avoids bloating ir_data by ~hundreds of MB.
+    pub fn metadata_only(name: String, shape: Shape, data_type: DataType) -> Self {
+        Self {
+            name,
+            shape,
+            data_type,
+            data: Vec::new(),
+        }
+    }
+
     /// Create a weight tensor with data
     pub fn with_data(name: String, shape: Shape, data_type: DataType, data: Vec<u8>) -> Self {
         Self {

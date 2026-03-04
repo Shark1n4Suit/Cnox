@@ -9,9 +9,16 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(target_arch = "x86_64")]
 use clf_kernels_simd::{
-    clf_simd_add, clf_simd_batchnorm, clf_simd_conv, clf_simd_gemm, clf_simd_gelu,
-    clf_simd_global_avg_pool, clf_simd_layernorm, clf_simd_matmul, clf_simd_relu, clf_simd_reshape,
-    clf_simd_softmax, clf_simd_transpose,
+    clf_simd_add, clf_simd_avg_pool, clf_simd_batchnorm, clf_simd_conv, clf_simd_cos, clf_simd_divide,
+    clf_simd_dropout, clf_simd_equal, clf_simd_exp, clf_simd_gather, clf_simd_gemm, clf_simd_gelu,
+    clf_simd_global_avg_pool, clf_simd_global_max_pool, clf_simd_greater, clf_simd_greater_equal,
+    clf_simd_layernorm, clf_simd_less, clf_simd_less_equal, clf_simd_log, clf_simd_log_softmax,
+    clf_simd_matmul, clf_simd_max_pool, clf_simd_multiply, clf_simd_not, clf_simd_not_equal,
+    clf_simd_or, clf_simd_and, clf_simd_permute, clf_simd_concatenate, clf_simd_split, clf_simd_slice,
+    clf_simd_scatter, clf_simd_pow, clf_simd_reduce_mean, clf_simd_reduce_max, clf_simd_reduce_min,
+    clf_simd_reduce_prod, clf_simd_reduce_sum, clf_simd_relu, clf_simd_reshape, clf_simd_sigmoid,
+    clf_simd_sin, clf_simd_softmax, clf_simd_sqrt, clf_simd_subtract, clf_simd_swish, clf_simd_tanh,
+    clf_simd_transpose,
 };
 
 /// Plan format version 1: version(4) + workspace(4) + scratch(4) + num_nodes(4) + nodes + num_kernels(4) + kernel_offsets.
@@ -250,7 +257,11 @@ pub fn run_with_plan(
     for (step_index, step) in steps.iter().enumerate() {
         let in_ptr = workspace.as_ptr().wrapping_add(step.in_off as usize);
         let out_ptr = workspace.as_mut_ptr().wrapping_add(step.out_off as usize);
-        let w_ptr = weights.as_ptr().wrapping_add(step.w_off as usize);
+        let w_ptr = if (step.w_off & W_OFF_IN_WORKSPACE_MASK) != 0 {
+            workspace.as_ptr().wrapping_add((step.w_off & !W_OFF_IN_WORKSPACE_MASK) as usize)
+        } else {
+            weights.as_ptr().wrapping_add(step.w_off as usize)
+        };
         let in_len = step.in_len as usize;
         let out_len = step.out_len as usize;
         let w_len = step.w_len as usize;
@@ -383,6 +394,112 @@ pub fn run_with_plan(
                     let n = out_len / m;
                     clf_simd_gemm(out_ptr, in_ptr, w_ptr, m, k, n);
                 }
+                // Arithmetic 2–4
+                2 => clf_simd_subtract(out_ptr, in_ptr, w_ptr, in_len),
+                3 => clf_simd_multiply(out_ptr, in_ptr, w_ptr, in_len),
+                4 => clf_simd_divide(out_ptr, in_ptr, w_ptr, in_len),
+                // Activations 11–16
+                11 => clf_simd_sigmoid(out_ptr, in_ptr, in_len),
+                12 => clf_simd_tanh(out_ptr, in_ptr, in_len),
+                14 => {
+                    let cols = if w_len > 0 && in_len % w_len == 0 { w_len } else { in_len };
+                    let rows = in_len / cols;
+                    clf_simd_log_softmax(out_ptr, in_ptr, rows, cols);
+                }
+                16 => clf_simd_swish(out_ptr, in_ptr, in_len),
+                // Math 20–25 (Pow uses first weight as exponent if w_len >= 1)
+                20 => clf_simd_sqrt(out_ptr, in_ptr, in_len),
+                21 => {
+                    let exp = if w_len > 0 { *w_ptr } else { 2.0 };
+                    clf_simd_pow(out_ptr, in_ptr, in_len, exp);
+                }
+                22 => clf_simd_cos(out_ptr, in_ptr, in_len),
+                23 => clf_simd_sin(out_ptr, in_ptr, in_len),
+                24 => clf_simd_exp(out_ptr, in_ptr, in_len),
+                25 => clf_simd_log(out_ptr, in_ptr, in_len),
+                // Pool 31–33, Dropout 37
+                31 | 32 => {
+                    // 2x2 pool: in_len = n*c*h*w, out_len = n*c*(h/2)*(w/2) => in_len == 4*out_len.
+                    if out_len == 0 || in_len != 4 * out_len {
+                        return Err(CoelanoxError::Runtime("MaxPool/AvgPool: need in_len == 4*out_len".to_string()));
+                    }
+                    let n = 1usize;
+                    let c = 1usize;
+                    let hw = in_len;
+                    let h = (hw as f64).sqrt() as usize;
+                    let w = if h > 0 { hw / h } else { 0 };
+                    if h < 2 || w < 2 {
+                        return Err(CoelanoxError::Runtime("MaxPool/AvgPool: spatial dims must be >= 2".to_string()));
+                    }
+                    if step.op_id == 31 {
+                        clf_simd_max_pool(out_ptr, in_ptr, n, c, h, w);
+                    } else {
+                        clf_simd_avg_pool(out_ptr, in_ptr, n, c, h, w);
+                    }
+                }
+                33 => {
+                    let n = 1usize;
+                    let c = out_len;
+                    if c == 0 {
+                        return Err(CoelanoxError::Runtime("GlobalMaxPool: out_len 0".to_string()));
+                    }
+                    let hw = in_len / c;
+                    let h = (hw as f64).sqrt() as usize;
+                    let w = if h > 0 { hw / h } else { 0 };
+                    clf_simd_global_max_pool(out_ptr, in_ptr, n, c, h, w);
+                }
+                37 => clf_simd_dropout(out_ptr, in_ptr, in_len),
+                // Tensor 42–47
+                42 => {
+                    let rows = if w_len > 0 && in_len % w_len == 0 { w_len } else { (in_len as f64).sqrt() as usize };
+                    clf_simd_permute(out_ptr, in_ptr, in_len, out_len, rows);
+                }
+                43 => clf_simd_concatenate(out_ptr, in_ptr, in_len),
+                44 => clf_simd_split(out_ptr, in_ptr, out_len),
+                45 => clf_simd_slice(out_ptr, in_ptr, out_len.min(in_len)),
+                46 => clf_simd_gather(out_ptr, in_ptr, w_ptr, out_len, in_len),
+                47 => clf_simd_scatter(out_ptr, in_ptr, w_ptr, in_len, out_len),
+                // Reductions 60–64
+                60 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceSum: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_sum(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                61 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceMean: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_mean(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                62 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceMax: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_max(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                63 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceMin: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_min(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                64 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceProd: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_prod(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                // Comparisons 80–85, Logical 90–92
+                80 => clf_simd_equal(out_ptr, in_ptr, w_ptr, in_len),
+                81 => clf_simd_not_equal(out_ptr, in_ptr, w_ptr, in_len),
+                82 => clf_simd_greater(out_ptr, in_ptr, w_ptr, in_len),
+                83 => clf_simd_greater_equal(out_ptr, in_ptr, w_ptr, in_len),
+                84 => clf_simd_less(out_ptr, in_ptr, w_ptr, in_len),
+                85 => clf_simd_less_equal(out_ptr, in_ptr, w_ptr, in_len),
+                90 => clf_simd_and(out_ptr, in_ptr, w_ptr, in_len),
+                91 => clf_simd_or(out_ptr, in_ptr, w_ptr, in_len),
+                92 => clf_simd_not(out_ptr, in_ptr, in_len),
                 _ => {
                     return Err(CoelanoxError::Runtime(format!(
                         "Unsupported op_id {} in execution plan (use scalar fallback)",
@@ -590,6 +707,104 @@ where
                     let n = out_len / m;
                     clf_simd_gemm(out_ptr, in_ptr, w_ptr, m, k, n);
                 }
+                2 => clf_simd_subtract(out_ptr, in_ptr, w_ptr, in_len),
+                3 => clf_simd_multiply(out_ptr, in_ptr, w_ptr, in_len),
+                4 => clf_simd_divide(out_ptr, in_ptr, w_ptr, in_len),
+                11 => clf_simd_sigmoid(out_ptr, in_ptr, in_len),
+                12 => clf_simd_tanh(out_ptr, in_ptr, in_len),
+                14 => {
+                    let cols = if w_len > 0 && in_len % w_len == 0 { w_len } else { in_len };
+                    let rows = in_len / cols;
+                    clf_simd_log_softmax(out_ptr, in_ptr, rows, cols);
+                }
+                16 => clf_simd_swish(out_ptr, in_ptr, in_len),
+                20 => clf_simd_sqrt(out_ptr, in_ptr, in_len),
+                21 => {
+                    let exp = if w_len > 0 { *w_ptr } else { 2.0 };
+                    clf_simd_pow(out_ptr, in_ptr, in_len, exp);
+                }
+                22 => clf_simd_cos(out_ptr, in_ptr, in_len),
+                23 => clf_simd_sin(out_ptr, in_ptr, in_len),
+                24 => clf_simd_exp(out_ptr, in_ptr, in_len),
+                25 => clf_simd_log(out_ptr, in_ptr, in_len),
+                31 | 32 => {
+                    if out_len == 0 || in_len != 4 * out_len {
+                        return Err(CoelanoxError::Runtime("MaxPool/AvgPool: need in_len == 4*out_len".to_string()));
+                    }
+                    let n = 1usize;
+                    let c = 1usize;
+                    let hw = in_len;
+                    let h = (hw as f64).sqrt() as usize;
+                    let w = if h > 0 { hw / h } else { 0 };
+                    if h < 2 || w < 2 {
+                        return Err(CoelanoxError::Runtime("MaxPool/AvgPool: spatial dims must be >= 2".to_string()));
+                    }
+                    if step.op_id == 31 {
+                        clf_simd_max_pool(out_ptr, in_ptr, n, c, h, w);
+                    } else {
+                        clf_simd_avg_pool(out_ptr, in_ptr, n, c, h, w);
+                    }
+                }
+                33 => {
+                    let n = 1usize;
+                    let c = out_len;
+                    if c == 0 {
+                        return Err(CoelanoxError::Runtime("GlobalMaxPool: out_len 0".to_string()));
+                    }
+                    let hw = in_len / c;
+                    let h = (hw as f64).sqrt() as usize;
+                    let w = if h > 0 { hw / h } else { 0 };
+                    clf_simd_global_max_pool(out_ptr, in_ptr, n, c, h, w);
+                }
+                37 => clf_simd_dropout(out_ptr, in_ptr, in_len),
+                42 => {
+                    let rows = if w_len > 0 && in_len % w_len == 0 { w_len } else { (in_len as f64).sqrt() as usize };
+                    clf_simd_permute(out_ptr, in_ptr, in_len, out_len, rows);
+                }
+                43 => clf_simd_concatenate(out_ptr, in_ptr, in_len),
+                44 => clf_simd_split(out_ptr, in_ptr, out_len),
+                45 => clf_simd_slice(out_ptr, in_ptr, out_len.min(in_len)),
+                46 => clf_simd_gather(out_ptr, in_ptr, w_ptr, out_len, in_len),
+                47 => clf_simd_scatter(out_ptr, in_ptr, w_ptr, in_len, out_len),
+                60 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceSum: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_sum(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                61 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceMean: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_mean(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                62 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceMax: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_max(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                63 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceMin: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_min(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                64 => {
+                    if out_len == 0 || in_len % out_len != 0 {
+                        return Err(CoelanoxError::Runtime("ReduceProd: out_len must divide in_len".to_string()));
+                    }
+                    clf_simd_reduce_prod(out_ptr, in_ptr, out_len, in_len / out_len);
+                }
+                80 => clf_simd_equal(out_ptr, in_ptr, w_ptr, in_len),
+                81 => clf_simd_not_equal(out_ptr, in_ptr, w_ptr, in_len),
+                82 => clf_simd_greater(out_ptr, in_ptr, w_ptr, in_len),
+                83 => clf_simd_greater_equal(out_ptr, in_ptr, w_ptr, in_len),
+                84 => clf_simd_less(out_ptr, in_ptr, w_ptr, in_len),
+                85 => clf_simd_less_equal(out_ptr, in_ptr, w_ptr, in_len),
+                90 => clf_simd_and(out_ptr, in_ptr, w_ptr, in_len),
+                91 => clf_simd_or(out_ptr, in_ptr, w_ptr, in_len),
+                92 => clf_simd_not(out_ptr, in_ptr, in_len),
                 _ => {
                     return Err(CoelanoxError::Runtime(format!(
                         "Unsupported op_id {} at step {}",
@@ -694,9 +909,11 @@ unsafe fn dispatch_conv(
     Ok(())
 }
 
+/// High bit in w_off means second matrix is in workspace (activation×activation MatMul).
+const W_OFF_IN_WORKSPACE_MASK: u32 = 1 << 31;
 /// Find weight tensor index from (w_off, w_len) and weight_offsets (element offsets).
 fn weight_index_from_offset(w_off: u32, weight_offsets: &[usize]) -> Option<usize> {
-    let start = w_off as usize;
+    let start = (w_off & !W_OFF_IN_WORKSPACE_MASK) as usize;
     for i in 0..weight_offsets.len().saturating_sub(1) {
         if weight_offsets[i] <= start && start < weight_offsets[i + 1] {
             return Some(i);
@@ -824,14 +1041,49 @@ pub fn build_plan_from_ir(
                 (off, out_len)
             });
 
-        let (w_off, w_len) = weight_range_for_node(node, weight_offsets);
-        if w_len == 0 && matches!(node.op_type, OpType::Convolution | OpType::MatMul) {
+        let (w_off, w_len) = {
+            let from_weights = weight_range_for_node(node, weight_offsets);
+            if from_weights.1 > 0 {
+                from_weights
+            } else if node.op_type == OpType::MatMul || node.op_type == OpType::Gemm {
+                // MatMul/Gemm can be activation × activation (e.g. BERT: Q@K^T, attn_weights@V).
+                // Use second intermediate input as the "B" matrix; mark with W_OFF_IN_WORKSPACE_MASK so executor reads from workspace.
+                let intermediate_inputs: Vec<_> = node.input_tensors.iter()
+                    .filter(|tid| tid.is_intermediate())
+                    .filter_map(|tid| tensor_to_offset.get(tid).copied())
+                    .collect();
+                if intermediate_inputs.len() >= 2 {
+                    let (off, len) = intermediate_inputs[1];
+                    (off | W_OFF_IN_WORKSPACE_MASK, len)
+                } else {
+                    (0, 0)
+                }
+            } else if node.op_type == OpType::Transpose && from_weights.1 == 0 {
+                // Transpose 2D: executor needs rows; pass first dim in w_len so rows=w_len, cols=in_len/rows.
+                let rows = node.input_tensors.iter()
+                    .find(|tid| tid.is_intermediate())
+                    .and_then(|tid| intermediate_tensors.get(tid.index()))
+                    .and_then(|t| t.shape.dimensions.first().copied())
+                    .map(|d| d as u32)
+                    .unwrap_or(0);
+                (0, rows)
+            } else {
+                from_weights
+            }
+        };
+        if w_len == 0 && node.op_type == OpType::Convolution {
             return Err(CoelanoxError::Runtime(format!(
                 "Plan build: node index {} (op {:?}) has no valid weight range (weight_offsets len {}); \
-                 ensure every Conv/MatMul has a weight input indexed in 0..weight_tensors.len()",
+                 ensure every Conv has a weight input indexed in 0..weight_tensors.len()",
                 node_index,
                 node.op_type,
                 weight_offsets.len().saturating_sub(1),
+            )));
+        }
+        if w_len == 0 && (node.op_type == OpType::MatMul || node.op_type == OpType::Gemm) {
+            return Err(CoelanoxError::Runtime(format!(
+                "Plan build: node index {} (op {:?}) has no weight and not two intermediate inputs",
+                node_index, node.op_type,
             )));
         }
 

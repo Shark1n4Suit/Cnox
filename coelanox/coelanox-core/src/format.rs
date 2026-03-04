@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use sha2::{Sha256, Digest};
+use zerocopy::Ref;
 use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
 
 /// COELANOX binary format constants
@@ -674,21 +675,32 @@ impl CoelanoxContainer {
                 self.decompress_deflate(&self.compressed_weights)
             }
             CompressionType::None => {
-                // Not compressed: payload is raw little-endian f32. Single alloc + chunk conversion
-                // (no per-float push/realloc). Reinterpreting byte slice as f32 would require
-                // alignment guarantees we don't have from Vec<u8>, so we convert in chunks.
+                // Not compressed: payload is raw little-endian f32. Use zerocopy for
+                // OS-independent, safe reinterpret (Pod semantics; no per-byte work).
+                // Aligned path (typical for Vec<u8> from allocator): Ref::new_slice → one bulk copy.
+                // Misaligned fallback (e.g. mmap at arbitrary offset): chunk conversion.
+                // Same contract on all OSes; hybrid interpreter/CLF can share this path.
                 let data = &self.compressed_weights[..];
-                let n = data.len() / 4;
-                if data.len() != n * 4 {
+                if data.len() % 4 != 0 {
                     return Err(CoelanoxError::PayloadValidation(
                         "Uncompressed weights length is not a multiple of 4".to_string(),
                     ));
                 }
-                let mut weights = Vec::with_capacity(n);
-                weights.extend(
-                    data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())),
-                );
-                Ok(weights)
+                let n = data.len() / 4;
+                if let Some(ref_slice) = Ref::<_, [f32]>::new_slice(data) {
+                    // Aligned: zerocopy view, then one bulk copy into Vec for current API.
+                    let view = &*ref_slice;
+                    let mut weights = Vec::with_capacity(view.len());
+                    weights.extend_from_slice(view);
+                    Ok(weights)
+                } else {
+                    // Misaligned (e.g. mmap or OS-specific buffer): chunk conversion fallback.
+                    let mut weights = Vec::with_capacity(n);
+                    weights.extend(
+                        data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())),
+                    );
+                    Ok(weights)
+                }
             }
         }
     }
@@ -1004,6 +1016,38 @@ impl CoelanoxValidator {
     }
 }
 
+/// Verify container security hash from in-memory data (e.g. mmap slice).
+/// Use this when you already have the container bytes to avoid a second read.
+/// Same semantics as `verify_security_hash(path)` but operates on a slice.
+pub fn verify_security_hash_from_slice(container_data: &[u8]) -> CoelanoxResult<()> {
+    if container_data.len() < COELANOX_HEADER_SIZE {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container file too small to contain valid header".to_string()
+        ));
+    }
+    if container_data.len() < COELANOX_HEADER_SECURITY_HASH_OFFSET + 32 {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container file too small to contain security hash".to_string()
+        ));
+    }
+    let stored_hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
+        .try_into()
+        .map_err(|_| CoelanoxError::SecurityValidation(
+            "Failed to extract security hash from header".to_string()
+        ))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&container_data[..COELANOX_HEADER_SECURITY_HASH_OFFSET]);
+    hasher.update(&[0u8; 32]);
+    hasher.update(&container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..]);
+    let calculated_hash: [u8; 32] = hasher.finalize().into();
+    if calculated_hash != stored_hash {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container hash mismatch - file may have been tampered with".to_string()
+        ));
+    }
+    Ok(())
+}
+
 /// Verify container security hash (pre-deployment check)
 /// 
 /// This function reads a container file from disk (cold storage), calculates its SHA-256 hash,
@@ -1021,41 +1065,5 @@ pub fn verify_security_hash(container_path: &Path) -> CoelanoxResult<()> {
     // Read entire container file from cold storage
     let container_data = std::fs::read(container_path)
         .map_err(CoelanoxError::FileSystem)?;
-    
-    // Verify minimum size (must be at least header size)
-    if container_data.len() < COELANOX_HEADER_SIZE {
-        return Err(CoelanoxError::SecurityValidation(
-            "Container file too small to contain valid header".to_string()
-        ));
-    }
-    
-    // Extract stored hash from header
-    if container_data.len() < COELANOX_HEADER_SECURITY_HASH_OFFSET + 32 {
-        return Err(CoelanoxError::SecurityValidation(
-            "Container file too small to contain security hash".to_string()
-        ));
-    }
-    
-    let stored_hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
-        .try_into()
-        .map_err(|_| CoelanoxError::SecurityValidation(
-            "Failed to extract security hash from header".to_string()
-        ))?;
-    
-    // Hash the container as if the 32-byte hash field were zeros (no second copy of the file).
-    // For large containers (e.g. 5GB) this avoids doubling RAM (read + to_vec).
-    let mut hasher = Sha256::new();
-    hasher.update(&container_data[..COELANOX_HEADER_SECURITY_HASH_OFFSET]);
-    hasher.update(&[0u8; 32]);
-    hasher.update(&container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..]);
-    let calculated_hash: [u8; 32] = hasher.finalize().into();
-    
-    // Compare hashes
-    if calculated_hash != stored_hash {
-        return Err(CoelanoxError::SecurityValidation(
-            "Container hash mismatch - file may have been tampered with".to_string()
-        ));
-    }
-    
-    Ok(())
+    verify_security_hash_from_slice(&container_data)
 }

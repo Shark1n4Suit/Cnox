@@ -22,3 +22,4 @@ prost-types = "0.12"
 num_cpus = "1.16"
 matrixmultiply = { version = "0.3", features = ["threading"] }
 rayon = "1.8"
+zerocopy = { workspace = true }

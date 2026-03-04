@@ -366,6 +366,7 @@ coelanox run container.cnox --input data.bin
 
 ## References
 
+- [Operations Guide](OPERATIONS.md) — Environment variables, config file, and runbooks (verification failed, timeout, fallback, etc.)
 - [Architecture Documentation](ARCHITECTURE.md)
 - [Production MVP Roadmap](../roadmaps/PRODUCTION_MVP_ROADMAP.md)
 - [COELANOX Reference](../COELANOX_REFERENCE.md)

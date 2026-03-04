@@ -2,6 +2,10 @@
 target/
 **/target/
 
+# CLF compiler / CLFC build outputs
+clfc_build/
+**/clfc_build/
+
 # Cargo.lock should be tracked for applications, but not libraries
 # Cargo.lock
 
@@ -44,6 +48,13 @@ models/output/
 *.onnx
 *.cnox
 *.bin
+
+# Generated / output files (containers, audit logs, inference outputs)
+*.txt
+*.json
+# Keep docs and test fixtures
+!docs/*.json
+!**/test*input*.json
 *.pth
 *.pt
 *.h5

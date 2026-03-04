@@ -12,7 +12,7 @@
 //! - Multi-backend execution support
 
 use crate::{
-    backend_manager::BackendManager,
+    backend_manager::{BackendKind, BackendManager},
     container_clfmm_backend::ContainerClfmmBackend,
     container_clfmp_backend::ContainerClfmpBackend,
     execution_backend::ContainerWarmData,
@@ -21,7 +21,7 @@ use crate::{
 };
 use coelanox_executor::{parse_plan, run_with_plan, run_with_plan_with_weight_provider, scratch_elements_from_plan};
 use coelanox_core::{
-    format::{CoelanoxContainer, HardwareTarget},
+    format::{verify_security_hash_from_slice, CoelanoxContainer, HardwareTarget},
     ir::{deserialize_optimized_ir, Attribute, OpType},
     memory_hal::{MemoryBackendRegistry, MemoryHAL, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
     protection_hal::{ProtectionBackendRegistry, ProtectionHAL, RegionPermissions},
@@ -34,7 +34,9 @@ use tracing::{debug, error, info, warn, instrument, Level};
 use serde::{Deserialize, Serialize};
 use anyhow::{Context, Result as AnyhowResult};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs::File;
 use uuid::Uuid;
+use memmap2::{Advice, Mmap};
 
 /// Percentile from sorted latencies (0.0..=100.0). Returns 0 if empty.
 fn percentile(sorted: &[u64], pct: f64) -> u64 {
@@ -139,11 +141,11 @@ impl InputDescriptor {
 
 /// Production-ready runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RuntimeConfig {
     /// Maximum number of containers to cache (LRU eviction when exceeded)
     pub max_containers: usize,
     /// Optional TTL in seconds; containers not used within this period are evicted (None = no TTL)
-    #[serde(default)]
     pub container_cache_ttl_secs: Option<u64>,
     /// Maximum memory usage in bytes
     pub max_memory_bytes: usize,
@@ -163,6 +165,100 @@ pub struct RuntimeConfig {
     pub max_input_size_bytes: usize,
     /// Enable input validation
     pub enable_input_validation: bool,
+    /// Allow absolute container paths (set to false in production to reject paths starting with / or \)
+    pub allow_absolute_paths: bool,
+    /// Maximum container file size in bytes (enforced on load)
+    pub max_container_size_bytes: usize,
+}
+
+fn default_allow_absolute_paths() -> bool {
+    true
+}
+fn default_max_container_size_bytes() -> usize {
+    1024 * 1024 * 1024 // 1GB
+}
+
+impl RuntimeConfig {
+    /// Parse optional u64 from env; returns None if unset or invalid.
+    fn env_u64(key: &str) -> Option<u64> {
+        std::env::var(key).ok().and_then(|s| s.parse().ok())
+    }
+    /// Parse optional usize from env; returns None if unset or invalid.
+    fn env_usize(key: &str) -> Option<usize> {
+        std::env::var(key).ok().and_then(|s| s.parse().ok())
+    }
+    /// Parse optional bool from env (1, true, yes => true; 0, false, no => false).
+    fn env_bool(key: &str) -> Option<bool> {
+        std::env::var(key).ok().map(|s| {
+            let s = s.to_lowercase();
+            matches!(s.as_str(), "1" | "true" | "yes" | "on")
+        })
+    }
+
+    /// Build config from environment variables. Unset vars keep Default values.
+    /// Env vars: COELANOX_MAX_CONTAINERS, COELANOX_MAX_MEMORY_BYTES, COELANOX_EXECUTION_TIMEOUT_MS,
+    /// COELANOX_MAX_INPUT_SIZE_BYTES, COELANOX_CONTAINER_CACHE_TTL_SECS, COELANOX_LOG_LEVEL,
+    /// COELANOX_DEFAULT_BACKEND, COELANOX_ALLOW_ABSOLUTE_PATHS, COELANOX_MAX_CONTAINER_SIZE_BYTES,
+    /// COELANOX_ENABLE_SECURITY_VALIDATION, COELANOX_ENABLE_INPUT_VALIDATION.
+    pub fn from_env() -> Self {
+        let mut c = Self::default();
+        if let Some(v) = Self::env_usize("COELANOX_MAX_CONTAINERS") {
+            c.max_containers = v;
+        }
+        if let Some(v) = Self::env_u64("COELANOX_CONTAINER_CACHE_TTL_SECS") {
+            c.container_cache_ttl_secs = Some(v);
+        }
+        if let Some(v) = Self::env_usize("COELANOX_MAX_MEMORY_BYTES") {
+            c.max_memory_bytes = v;
+        }
+        if let Some(v) = Self::env_u64("COELANOX_EXECUTION_TIMEOUT_MS") {
+            c.execution_timeout_ms = v;
+        }
+        if let Some(v) = Self::env_usize("COELANOX_MAX_INPUT_SIZE_BYTES") {
+            c.max_input_size_bytes = v;
+        }
+        if let Some(v) = Self::env_usize("COELANOX_MAX_CONTAINER_SIZE_BYTES") {
+            c.max_container_size_bytes = v;
+        }
+        if let Some(v) = std::env::var("COELANOX_LOG_LEVEL").ok() {
+            c.log_level = v;
+        }
+        if let Some(v) = std::env::var("COELANOX_DEFAULT_BACKEND").ok() {
+            c.default_backend = v;
+        }
+        if let Some(v) = Self::env_bool("COELANOX_ALLOW_ABSOLUTE_PATHS") {
+            c.allow_absolute_paths = v;
+        }
+        if let Some(v) = Self::env_bool("COELANOX_ENABLE_SECURITY_VALIDATION") {
+            c.enable_security_validation = v;
+        }
+        if let Some(v) = Self::env_bool("COELANOX_ENABLE_INPUT_VALIDATION") {
+            c.enable_input_validation = v;
+        }
+        c
+    }
+
+    /// Load config from a JSON file. Missing fields keep Default values.
+    pub fn from_file(path: &std::path::Path) -> CoelanoxResult<Self> {
+        let data = std::fs::read_to_string(path).map_err(CoelanoxError::FileSystem)?;
+        let mut c: Self = serde_json::from_str(&data).map_err(|e| {
+            CoelanoxError::Runtime(format!("Invalid config JSON: {}", e))
+        })?;
+        // Ensure sensible bounds
+        if c.max_containers == 0 {
+            c.max_containers = 1;
+        }
+        if c.max_memory_bytes == 0 {
+            c.max_memory_bytes = Self::default().max_memory_bytes;
+        }
+        if c.execution_timeout_ms == 0 {
+            c.execution_timeout_ms = 30000;
+        }
+        if c.max_input_size_bytes == 0 {
+            c.max_input_size_bytes = Self::default().max_input_size_bytes;
+        }
+        Ok(c)
+    }
 }
 
 impl Default for RuntimeConfig {
@@ -179,6 +275,8 @@ impl Default for RuntimeConfig {
             enable_memory_pooling: true,
             max_input_size_bytes: 100 * 1024 * 1024, // 100MB
             enable_input_validation: true,
+            allow_absolute_paths: true,
+            max_container_size_bytes: 1024 * 1024 * 1024, // 1GB
         }
     }
 }
@@ -733,21 +831,24 @@ impl PerformanceMetrics {
 pub struct SecurityValidator {
     /// Maximum input size in bytes
     max_input_size_bytes: usize,
-    /// Maximum container size in bytes
+    /// Maximum container size in bytes (enforced on load)
     max_container_size_bytes: usize,
     /// Enable path traversal protection
     enable_path_traversal_protection: bool,
     /// Enable memory bounds checking
     enable_memory_bounds_checking: bool,
+    /// If false, absolute paths (e.g. /path or \path) are rejected (production hardening)
+    allow_absolute_paths: bool,
 }
 
 impl SecurityValidator {
     pub fn new(config: &RuntimeConfig) -> Self {
         Self {
             max_input_size_bytes: config.max_input_size_bytes,
-            max_container_size_bytes: config.max_memory_bytes,
+            max_container_size_bytes: config.max_container_size_bytes,
             enable_path_traversal_protection: config.enable_security_validation,
             enable_memory_bounds_checking: config.enable_security_validation,
+            allow_absolute_paths: config.allow_absolute_paths,
         }
     }
     
@@ -800,12 +901,19 @@ impl SecurityValidator {
                 ));
             }
             
-            // Check for absolute paths (security risk)
+            // Absolute paths: error when disallowed (production), else warning
             if path.starts_with('/') || path.starts_with('\\') {
-                result.add_warning(format!(
-                    "Absolute path detected: {} (consider using relative paths)",
-                    path
-                ));
+                if !self.allow_absolute_paths {
+                    result.add_error(format!(
+                        "Absolute path not allowed: {} (set COELANOX_ALLOW_ABSOLUTE_PATHS=true to allow)",
+                        path
+                    ));
+                } else {
+                    result.add_warning(format!(
+                        "Absolute path detected: {} (consider using relative paths; set COELANOX_ALLOW_ABSOLUTE_PATHS=false to reject in production)",
+                        path
+                    ));
+                }
             }
         }
         
@@ -909,39 +1017,39 @@ impl CoelanoxRuntime {
 
     /// Access the runtime backend registry (fallback execution backends).
     pub fn runtime_backend_registry(&self) -> std::sync::RwLockReadGuard<'_, RuntimeBackendRegistry> {
-        self.runtime_backend_registry.read().unwrap()
+        self.runtime_backend_registry.read().expect("runtime read lock")
     }
 
     /// Mutable access to the runtime backend registry.
     pub fn runtime_backend_registry_mut(&self) -> std::sync::RwLockWriteGuard<'_, RuntimeBackendRegistry> {
-        self.runtime_backend_registry.write().unwrap()
+        self.runtime_backend_registry.write().expect("runtime write lock")
     }
 
     /// Access the protection HAL registry. When a backend is registered, it is invoked
     /// after allocate_and_copy_code to configure region permissions (Load & Lock).
     pub fn protection_registry(&self) -> std::sync::RwLockReadGuard<'_, ProtectionBackendRegistry> {
-        self.protection_registry.read().unwrap()
+        self.protection_registry.read().expect("runtime read lock")
     }
 
     /// Mutable access to the protection HAL registry.
     pub fn protection_registry_mut(&self) -> std::sync::RwLockWriteGuard<'_, ProtectionBackendRegistry> {
-        self.protection_registry.write().unwrap()
+        self.protection_registry.write().expect("runtime write lock")
     }
 
     /// Access the memory HAL registry to register executable/storage backends.
     /// When a backend is registered for executable, allocation uses HAL.
     pub fn memory_registry(&self) -> std::sync::RwLockReadGuard<'_, MemoryBackendRegistry> {
-        self.memory_registry.read().unwrap()
+        self.memory_registry.read().expect("runtime read lock")
     }
 
     /// Mutable access to the memory HAL registry (e.g. to register backends).
     pub fn memory_registry_mut(&self) -> std::sync::RwLockWriteGuard<'_, MemoryBackendRegistry> {
-        self.memory_registry.write().unwrap()
+        self.memory_registry.write().expect("runtime write lock")
     }
     
     /// Get runtime configuration
     pub fn get_config(&self) -> RuntimeConfig {
-        self.config.read().unwrap().clone()
+        self.config.read().expect("runtime read lock").clone()
     }
     
     /// Update runtime configuration
@@ -950,7 +1058,7 @@ impl CoelanoxRuntime {
         self.validate_config(&config)?;
         
         // Update configuration
-        *self.config.write().unwrap() = config;
+        *self.config.write().expect("runtime write lock") = config;
         
         // Recreate security validator with new config
         let new_security_validator = Arc::new(SecurityValidator::new(&self.get_config()));
@@ -981,14 +1089,15 @@ impl CoelanoxRuntime {
         Ok(())
     }
     
-    /// Load a COELANOX container from file with security validation
+    /// Load a COELANOX container from file with security validation.
+    /// Uses mmap when possible to avoid a full file read + second read for verify (single map, verify from slice, parse from slice).
     pub fn load_container(&self, path: &str) -> CoelanoxResult<()> {
         // Security validation
         let path_validation = self.security_validator.validate_container_path(path);
         if !path_validation.is_valid {
-            return Err(CoelanoxError::SecurityValidation(
-                path_validation.errors.join("; ")
-            ));
+            let msg = path_validation.errors.join("; ");
+            error!(path = %path, "security: path validation failed: {}", msg);
+            return Err(CoelanoxError::SecurityValidation(msg));
         }
         
         // Log warnings if any
@@ -996,16 +1105,27 @@ impl CoelanoxRuntime {
             warn!("Security warning: {}", warning);
         }
         
-        // Load container
-        let container = CoelanoxContainer::read_binary_file(std::path::Path::new(path))
-            .map_err(|e| CoelanoxError::Runtime(format!("Failed to load container from path: {}: {}", path, e)))?;
+        // Mmap path: one mapping, verify from slice then parse from slice (no 1GB copy for verify, no double read).
+        let container = {
+            let file = File::open(path).map_err(CoelanoxError::FileSystem)?;
+            let mmap = unsafe { Mmap::map(&file) }.map_err(CoelanoxError::FileSystem)?;
+            // Hint that we will access the whole mapping (hash + parse); helps kernel readahead.
+            let _ = mmap.advise(Advice::WillNeed);
+            verify_security_hash_from_slice(&mmap).map_err(|e| {
+                error!(path = %path, err = %e, "security: container integrity verification failed (hash mismatch or tampering)");
+                CoelanoxError::Runtime(format!("Container verification failed for {}: {}", path, e))
+            })?;
+            CoelanoxContainer::from_binary(&mmap).map_err(|e| {
+                CoelanoxError::Runtime(format!("Failed to load container from path: {}: {}", path, e))
+            })?
+        };
         
         // Validate container size
         let size_validation = self.security_validator.validate_container_size(container.total_size());
         if !size_validation.is_valid {
-            return Err(CoelanoxError::SecurityValidation(
-                size_validation.errors.join("; ")
-            ));
+            let msg = size_validation.errors.join("; ");
+            error!(path = %path, size = container.total_size(), "security: container size exceeds limit: {}", msg);
+            return Err(CoelanoxError::SecurityValidation(msg));
         }
         
         // Validate container integrity
@@ -1014,7 +1134,7 @@ impl CoelanoxRuntime {
         
         // Check container cache limits
         let config = self.get_config();
-        let mut containers = self.containers.write().unwrap();
+        let mut containers = self.containers.write().expect("runtime write lock");
         
         // Evict expired containers when TTL is set
         if config.container_cache_ttl_secs.is_some() {
@@ -1035,6 +1155,52 @@ impl CoelanoxRuntime {
         
         info!("Successfully loaded container: {} ({} bytes)", path, total_size);
         
+        Ok(())
+    }
+    
+    /// Load a COELANOX container from file without integrity (hash) verification.
+    /// Same as load_container but skips verify_security_hash_from_slice. Use only for trusted/dev (e.g. --no-verify).
+    pub fn load_container_no_verify(&self, path: &str) -> CoelanoxResult<()> {
+        let path_validation = self.security_validator.validate_container_path(path);
+        if !path_validation.is_valid {
+            return Err(CoelanoxError::SecurityValidation(
+                path_validation.errors.join("; ")
+            ));
+        }
+        for warning in &path_validation.warnings {
+            warn!("Security warning: {}", warning);
+        }
+        let container = {
+            let file = File::open(path).map_err(CoelanoxError::FileSystem)?;
+            let mmap = unsafe { Mmap::map(&file) }.map_err(CoelanoxError::FileSystem)?;
+            let _ = mmap.advise(Advice::WillNeed);
+            CoelanoxContainer::from_binary(&mmap).map_err(|e| {
+                CoelanoxError::Runtime(format!("Failed to load container from path: {}: {}", path, e))
+            })?
+        };
+        let size_validation = self.security_validator.validate_container_size(container.total_size());
+        if !size_validation.is_valid {
+            return Err(CoelanoxError::SecurityValidation(
+                size_validation.errors.join("; ")
+            ));
+        }
+        container.validate()
+            .map_err(|e| CoelanoxError::Runtime(format!("Container validation failed for: {}: {}", path, e)))?;
+        let config = self.get_config();
+        let mut containers = self.containers.write().expect("runtime write lock");
+        if config.container_cache_ttl_secs.is_some() {
+            self.evict_expired_containers_inner(&mut containers, &config);
+        }
+        if containers.len() >= config.max_containers {
+            if let Some(oldest_key) = containers.keys().next().cloned() {
+                containers.remove(&oldest_key);
+                info!("Removed container from cache (max_containers): {}", oldest_key);
+            }
+        }
+        let container = Arc::new(container);
+        let total_size = container.total_size();
+        containers.insert(path.to_string(), (container, Instant::now()));
+        info!("Successfully loaded container (no-verify): {} ({} bytes)", path, total_size);
         Ok(())
     }
     
@@ -1066,7 +1232,7 @@ impl CoelanoxRuntime {
         
         // Check container cache limits
         let config = self.get_config();
-        let mut containers = self.containers.write().unwrap();
+        let mut containers = self.containers.write().expect("runtime write lock");
         
         if config.container_cache_ttl_secs.is_some() {
             self.evict_expired_containers_inner(&mut containers, &config);
@@ -1104,7 +1270,7 @@ impl CoelanoxRuntime {
         
         // Register execution state
         {
-            let mut active_executions = self.active_executions.write().unwrap();
+            let mut active_executions = self.active_executions.write().expect("runtime write lock");
             active_executions.insert(execution_state.id.clone(), execution_state.clone());
         }
         
@@ -1112,7 +1278,7 @@ impl CoelanoxRuntime {
         
         // Clean up execution state
         {
-            let mut active_executions = self.active_executions.write().unwrap();
+            let mut active_executions = self.active_executions.write().expect("runtime write lock");
             active_executions.remove(&execution_state.id);
         }
         
@@ -1137,7 +1303,7 @@ impl CoelanoxRuntime {
         
         // Register execution state
         {
-            let mut active_executions = self.active_executions.write().unwrap();
+            let mut active_executions = self.active_executions.write().expect("runtime write lock");
             active_executions.insert(execution_state.id.clone(), execution_state.clone());
         }
         
@@ -1145,7 +1311,7 @@ impl CoelanoxRuntime {
         
         // Clean up execution state
         {
-            let mut active_executions = self.active_executions.write().unwrap();
+            let mut active_executions = self.active_executions.write().expect("runtime write lock");
             active_executions.remove(&execution_state.id);
         }
         
@@ -1298,7 +1464,7 @@ impl CoelanoxRuntime {
         
         // Get container from cache (Arc clone, not full container clone)
         let container = {
-            let containers = self.containers.read().unwrap();
+            let containers = self.containers.read().expect("runtime read lock");
             match containers.get(&execution_state.container_name) {
                 Some((container, _)) => Arc::clone(container),
                 None => {
@@ -1354,7 +1520,7 @@ impl CoelanoxRuntime {
         // Warm container if not already warmed
         let container_name = &execution_state.container_name;
         let is_warmed = {
-            let warmed_containers = self.warmed_containers.read().unwrap();
+            let warmed_containers = self.warmed_containers.read().expect("runtime read lock");
             warmed_containers.contains_key(container_name)
         };
         
@@ -1394,8 +1560,19 @@ impl CoelanoxRuntime {
         
         // Get container from cache (Arc clone, not full container clone)
         let container = {
-            let containers = self.containers.read().unwrap();
-            Arc::clone(&containers.get(&execution_state.container_name).unwrap().0)
+            let containers = self.containers.read().expect("runtime read lock");
+            match containers.get(&execution_state.container_name) {
+                Some((arc, _)) => Arc::clone(arc),
+                None => {
+                    return StageResult {
+                        stage_name: "execution".to_string(),
+                        duration: stage_start.elapsed(),
+                        success: false,
+                        error: Some(format!("Container not found: {}", execution_state.container_name)),
+                        metrics: HashMap::new(),
+                    };
+                }
+            }
         };
         let warm_data = self.resolve_warm_data(&execution_state.container_name, container.as_ref()).ok().flatten();
         // Execute using backend selection (auto = backend manager chooses from detected hardware)
@@ -1476,7 +1653,7 @@ impl CoelanoxRuntime {
     pub fn warm_container(&self, container_name: &str) -> CoelanoxResult<()> {
         // Check if container is loaded
         {
-            let containers = self.containers.read().unwrap();
+            let containers = self.containers.read().expect("runtime read lock");
             if !containers.contains_key(container_name) {
                 return Err(CoelanoxError::Runtime(format!("Container not loaded: {}", container_name)));
             }
@@ -1484,7 +1661,7 @@ impl CoelanoxRuntime {
         
         // Mark container as warmed
         {
-            let mut warmed_containers = self.warmed_containers.write().unwrap();
+            let mut warmed_containers = self.warmed_containers.write().expect("runtime write lock");
             warmed_containers.insert(container_name.to_string(), Instant::now());
         }
         
@@ -1496,7 +1673,7 @@ impl CoelanoxRuntime {
     pub fn preload_container(&self, container_name: &str) -> CoelanoxResult<()> {
         // Check if container is already loaded
         {
-            let containers = self.containers.read().unwrap();
+            let containers = self.containers.read().expect("runtime read lock");
             if containers.contains_key(container_name) {
                 return Ok(()); // Already loaded
             }
@@ -1531,19 +1708,19 @@ impl CoelanoxRuntime {
     
     /// Get active execution states
     pub fn get_active_executions(&self) -> Vec<ExecutionState> {
-        let active_executions = self.active_executions.read().unwrap();
+        let active_executions = self.active_executions.read().expect("runtime read lock");
         active_executions.values().cloned().collect()
     }
     
     /// Get execution state by ID
     pub fn get_execution_state(&self, execution_id: &str) -> Option<ExecutionState> {
-        let active_executions = self.active_executions.read().unwrap();
+        let active_executions = self.active_executions.read().expect("runtime read lock");
         active_executions.get(execution_id).cloned()
     }
     
     /// Cancel execution by ID
     pub fn cancel_execution(&self, execution_id: &str) -> CoelanoxResult<()> {
-        let mut active_executions = self.active_executions.write().unwrap();
+        let mut active_executions = self.active_executions.write().expect("runtime write lock");
         if let Some(execution_state) = active_executions.get_mut(execution_id) {
             execution_state.set_status(ExecutionStatus::Cancelled);
             info!("🚫 Execution cancelled: {}", execution_id);
@@ -1715,7 +1892,7 @@ impl CoelanoxRuntime {
             let buffer_b_shared = Arc::new(Mutex::new(vec![0.0f32; max_w_len]));
             let len0 = steps[0].w_len as usize;
             if len0 > 0 && steps[0].w_off as usize + len0 <= weights.len() {
-                buffer_a_shared.lock().unwrap()[..len0]
+                buffer_a_shared.lock().expect("runtime mutex lock")[..len0]
                     .copy_from_slice(&weights[steps[0].w_off as usize..steps[0].w_off as usize + len0]);
             }
             // Unbounded request channel so main thread doesn't block on send (prefetch receives when ready).
@@ -1730,7 +1907,7 @@ impl CoelanoxRuntime {
                         if buf_id >= 2 {
                             break;
                         }
-                        let mut guard = if buf_id == 0 { buf_a.lock().unwrap() } else { buf_b.lock().unwrap() };
+                        let mut guard = if buf_id == 0 { buf_a.lock().expect("runtime mutex lock") } else { buf_b.lock().expect("runtime mutex lock") };
                         let copy_len = data.len().min(guard.len());
                         guard[..copy_len].copy_from_slice(&data[..copy_len]);
                         drop(guard);
@@ -1739,15 +1916,15 @@ impl CoelanoxRuntime {
                 });
                 let mut weight_buffer = vec![0.0f32; max_w_len];
                 let len0 = steps[0].w_len as usize;
-                weight_buffer[..len0].copy_from_slice(&buffer_a_shared.lock().unwrap()[..len0]);
+                weight_buffer[..len0].copy_from_slice(&buffer_a_shared.lock().expect("runtime mutex lock")[..len0]);
                 let mut weight_provider = |step_index: usize, _w_off: u32, w_len: u32, out: &mut [f32]| -> usize {
                     if step_index > 0 {
                         let _ = rx_done.recv();
                         let len = w_len as usize;
                         if step_index % 2 == 0 {
-                            out[..len].copy_from_slice(&buffer_a_shared.lock().unwrap()[..len]);
+                            out[..len].copy_from_slice(&buffer_a_shared.lock().expect("runtime mutex lock")[..len]);
                         } else {
-                            out[..len].copy_from_slice(&buffer_b_shared.lock().unwrap()[..len]);
+                            out[..len].copy_from_slice(&buffer_b_shared.lock().expect("runtime mutex lock")[..len]);
                         }
                     }
                     if step_index + 1 < steps.len() {
@@ -1805,7 +1982,7 @@ impl CoelanoxRuntime {
     /// Apply protection (configure + enable) to the last allocated executable block.
     /// Prefers container-embedded CLFMP when present; otherwise uses protection registry.
     fn apply_protection(&self, container: &CoelanoxContainer, _ptr: *mut u8) -> CoelanoxResult<()> {
-        let guard = self.executable_memory.lock().unwrap();
+        let guard = self.executable_memory.lock().expect("runtime mutex lock");
         let Some(block) = guard.last() else {
             return Ok(());
         };
@@ -1816,7 +1993,7 @@ impl CoelanoxRuntime {
             } else if let Err(e) = prot.enable_protection() {
                 warn!("Container CLFMP enable_protection failed: {:?}", e);
             }
-        } else if let Some((_, prot)) = self.protection_registry.read().unwrap().default_backend() {
+        } else if let Some((_, prot)) = self.protection_registry.read().expect("runtime read lock").default_backend() {
             if let Err(e) = prot.configure_region(region, RegionPermissions::code()) {
                 warn!("Protection HAL configure_region failed: {:?}", e);
             } else if let Err(e) = prot.enable_protection() {
@@ -1866,9 +2043,9 @@ impl CoelanoxRuntime {
         // 1. Container self-bootstrap via embedded CLFMM (container manages its own memory)
         if let Some((ptr, block)) = self.try_container_self_bootstrap(container, code_size, aligned_size, page_size) {
             let size = block.as_region_ref().size();
-            let mut executable_memory = self.executable_memory.lock().unwrap();
+            let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
             executable_memory.push(block);
-            let mut metrics = self.metrics.lock().unwrap();
+            let mut metrics = self.metrics.lock().expect("runtime mutex lock");
             metrics.update_memory_allocation(size);
             metrics.executable_blocks_count = executable_memory.len();
             drop(executable_memory);
@@ -1878,7 +2055,7 @@ impl CoelanoxRuntime {
         }
 
         // 2. Fallback: Memory HAL when an executable backend is registered
-        let registry = self.memory_registry.read().unwrap();
+        let registry = self.memory_registry.read().expect("runtime read lock");
         if let Some((target, backend)) = registry.default_for_executable() {
             let opts = RegionOptions {
                 size: aligned_size,
@@ -1899,9 +2076,9 @@ impl CoelanoxRuntime {
                             code_size,
                         );
                     }
-                    let mut executable_memory = self.executable_memory.lock().unwrap();
+                    let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
                     executable_memory.push(ExecutableMemoryBlock::new_hal(target, region));
-                    let mut metrics = self.metrics.lock().unwrap();
+                    let mut metrics = self.metrics.lock().expect("runtime mutex lock");
                     metrics.update_memory_allocation(size);
                     metrics.executable_blocks_count = executable_memory.len();
                     debug!("✅ Allocated executable memory via HAL: {} bytes", size);
@@ -1928,9 +2105,9 @@ impl CoelanoxRuntime {
                         code_size,
                     );
                 }
-                let mut executable_memory = self.executable_memory.lock().unwrap();
+                let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
                 executable_memory.push(ExecutableMemoryBlock::new_legacy(ptr, size));
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock().expect("runtime mutex lock");
                 metrics.update_memory_allocation(size);
                 metrics.executable_blocks_count = executable_memory.len();
                 debug!("✅ Created function pointer: 0x{:x}", ptr as usize);
@@ -2023,7 +2200,7 @@ impl CoelanoxRuntime {
         let result = self.run_backend_execution(container.as_ref(), input_data, backend, warm_data.as_ref());
         let elapsed_us = start.elapsed().as_micros() as u64;
         if let Ok(_) = &result {
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock().expect("runtime mutex lock");
             stats.update_execution(elapsed_us, 0);
         }
         result
@@ -2054,7 +2231,7 @@ impl CoelanoxRuntime {
         container: &CoelanoxContainer,
     ) -> CoelanoxResult<Option<ContainerWarmData>> {
         {
-            let cache = self.warm_cache.read().unwrap();
+            let cache = self.warm_cache.read().expect("runtime read lock");
             if let Some(warm) = cache.get(container_name) {
                 return Ok(Some(warm.clone()));
             }
@@ -2065,7 +2242,7 @@ impl CoelanoxRuntime {
             decompressed_weights,
             optimized_ir,
         };
-        self.warm_cache.write().unwrap().insert(container_name.to_string(), warm.clone());
+        self.warm_cache.write().expect("runtime write lock").insert(container_name.to_string(), warm.clone());
         Ok(Some(warm))
     }
 
@@ -2083,6 +2260,16 @@ impl CoelanoxRuntime {
                 warn!("CPU machine code failed: {:?}, falling back to scalar", e);
                 self.try_scalar_fallback(container, input_data, warm_data)
             });
+        }
+        // Discovered CPU CLF backends (e.g. "simd") use the same path as cpu: embedded code + execution plan
+        let backend_normalized = backend.to_lowercase();
+        if let Some(info) = self.backend_manager.read().expect("runtime read lock").get_backend(&backend_normalized) {
+            if info.kind == BackendKind::Clf && info.supported_targets.contains(&HardwareTarget::Cpu) {
+                return self.execute_machine_code(container, input_data, warm_data).or_else(|e| {
+                    warn!("CLF backend '{}' machine code failed: {:?}, falling back to scalar", backend, e);
+                    self.try_scalar_fallback(container, input_data, warm_data)
+                });
+            }
         }
         if backend.eq_ignore_ascii_case("scalar") {
             return self.try_scalar_fallback(container, input_data, warm_data);
@@ -2117,7 +2304,7 @@ impl CoelanoxRuntime {
     ) -> CoelanoxResult<Vec<f32>> {
         // Try literal backend name first (e.g. "gpu")
         let result = {
-            let registry = self.runtime_backend_registry.read().unwrap();
+            let registry = self.runtime_backend_registry.read().expect("runtime read lock");
             registry.get(backend).map(|b| b.execute(container, input_data, warm_data))
         };
         if let Some(Ok(out)) = result {
@@ -2136,12 +2323,12 @@ impl CoelanoxRuntime {
             };
             if let Some(target) = target_opt {
                 let resolved_name = {
-                    let mgr = self.backend_manager.read().unwrap();
+                    let mgr = self.backend_manager.read().expect("runtime read lock");
                     mgr.find_backend_for_target(&target).map(|b| b.name.clone())
                 };
                 if let Some(name) = resolved_name {
                     let result = {
-                        let registry = self.runtime_backend_registry.read().unwrap();
+                        let registry = self.runtime_backend_registry.read().expect("runtime read lock");
                         registry.get(&name).map(|b| b.execute(container, input_data, warm_data))
                     };
                     if let Some(Ok(out)) = result {
@@ -2172,7 +2359,7 @@ impl CoelanoxRuntime {
         if container.execution_plan.is_none() {
             eprintln!("Note: Container has no CLF execution plan; using scalar fallback (interpreted ops). Large models will be slow.");
         }
-        let registry = self.runtime_backend_registry.read().unwrap();
+        let registry = self.runtime_backend_registry.read().expect("runtime read lock");
         let backend = registry.scalar_fallback().ok_or_else(|| {
             CoelanoxError::Runtime(
                 "Scalar fallback backend not registered in runtime backend registry".to_string(),
@@ -2201,7 +2388,7 @@ impl CoelanoxRuntime {
     
     /// Get container information (thread-safe). Returns Arc so callers avoid cloning full container.
     pub fn get_container_info(&self, container_name: &str) -> CoelanoxResult<Arc<CoelanoxContainer>> {
-        let containers = self.containers.read().unwrap();
+        let containers = self.containers.read().expect("runtime read lock");
         Ok(Arc::clone(&containers.get(container_name)
             .ok_or_else(|| CoelanoxError::Runtime(format!("Container not found: {}", container_name)))?.0))
     }
@@ -2222,7 +2409,7 @@ impl CoelanoxRuntime {
             .collect();
         for name in expired {
             containers.remove(&name);
-            self.warm_cache.write().unwrap().remove(&name);
+            self.warm_cache.write().expect("runtime write lock").remove(&name);
             info!("Evicted container from cache (TTL): {}", name);
         }
     }
@@ -2233,34 +2420,34 @@ impl CoelanoxRuntime {
         if config.container_cache_ttl_secs.is_none() {
             return;
         }
-        let mut containers = self.containers.write().unwrap();
+        let mut containers = self.containers.write().expect("runtime write lock");
         self.evict_expired_containers_inner(&mut containers, &config);
     }
 
     /// Evict a specific container from the cache by name.
     pub fn evict_container(&self, container_name: &str) -> bool {
-        let removed = self.containers.write().unwrap().remove(container_name).is_some();
+        let removed = self.containers.write().expect("runtime write lock").remove(container_name).is_some();
         if removed {
-            self.warm_cache.write().unwrap().remove(container_name);
+            self.warm_cache.write().expect("runtime write lock").remove(container_name);
         }
         removed
     }
     
     /// List loaded containers (thread-safe)
     pub fn list_containers(&self) -> Vec<String> {
-        let containers = self.containers.read().unwrap();
+        let containers = self.containers.read().expect("runtime read lock");
         containers.keys().cloned().collect()
     }
     
     /// Get runtime statistics (thread-safe)
     pub fn get_stats(&self) -> RuntimeStats {
-        let stats = self.stats.lock().unwrap();
+        let stats = self.stats.lock().expect("runtime mutex lock");
         stats.clone()
     }
     
     /// Get performance metrics (thread-safe)
     pub fn get_metrics(&self) -> PerformanceMetrics {
-        let metrics = self.metrics.lock().unwrap();
+        let metrics = self.metrics.lock().expect("runtime mutex lock");
         metrics.clone()
     }
     
@@ -2276,8 +2463,8 @@ impl CoelanoxRuntime {
     
     /// Get memory usage statistics
     pub fn get_memory_stats(&self) -> MemoryStats {
-        let metrics = self.metrics.lock().unwrap();
-        let executable_memory = self.executable_memory.lock().unwrap();
+        let metrics = self.metrics.lock().expect("runtime mutex lock");
+        let executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
         
         MemoryStats {
             total_allocated: metrics.total_memory_allocated,
@@ -2353,7 +2540,7 @@ impl CoelanoxRuntime {
     /// Cleanup executable memory with proper thread safety. Handles both legacy
     /// (mmap/VirtualAlloc) and HAL-backed blocks.
     pub fn cleanup(&self) {
-        let mut executable_memory = self.executable_memory.lock().unwrap();
+        let mut executable_memory = self.executable_memory.lock().expect("runtime mutex lock");
         let blocks = std::mem::take(&mut *executable_memory);
         let block_count = blocks.len();
         let mut total_freed = 0usize;
@@ -2382,7 +2569,7 @@ impl CoelanoxRuntime {
                 }
                 ExecutableMemoryBlock::Hal { target, region, .. } => {
                     let size = region.size();
-                    if let Some(backend) = self.memory_registry.read().unwrap().get(&target) {
+                    if let Some(backend) = self.memory_registry.read().expect("runtime read lock").get(&target) {
                         let _ = backend.deallocate_region(region);
                     }
                     total_freed += size;
@@ -2397,7 +2584,7 @@ impl CoelanoxRuntime {
             }
         }
 
-        let mut metrics = self.metrics.lock().unwrap();
+        let mut metrics = self.metrics.lock().expect("runtime mutex lock");
         metrics.update_memory_deallocation(total_freed);
         metrics.executable_blocks_count = 0;
 
@@ -2409,11 +2596,13 @@ impl CoelanoxRuntime {
     
     /// Benchmark a container with full latency, memory, and optional long-run stability metrics.
     /// `load_time_ms` can be set by the caller (e.g. CLI) after measuring load_container() duration.
+    /// `backend` selects execution path: "scalar" for interpreted ops, "auto"/"cpu"/"simd" for plan (SIMD).
     pub fn benchmark(
         &mut self,
         container_name: &str,
         iterations: usize,
         load_time_ms: Option<u64>,
+        backend: &str,
     ) -> CoelanoxResult<BenchmarkResult> {
         const WARM_UP_RUNS: usize = 10;
         let container = self.get_container_info(container_name)?;
@@ -2427,13 +2616,14 @@ impl CoelanoxRuntime {
             0
         };
 
-        // Backend label
-        let backend_used = if container.execution_plan.is_some() {
-            "plan"
+        // Backend label for report (scalar = interpreted, else plan/SIMD)
+        let backend_used = if backend.eq_ignore_ascii_case("scalar") {
+            "scalar".to_string()
+        } else if container.execution_plan.is_some() {
+            "plan".to_string()
         } else {
-            "legacy"
-        }
-        .to_string();
+            "legacy".to_string()
+        };
 
         // Generate dummy input data
         let input_size: usize = container
@@ -2446,8 +2636,8 @@ impl CoelanoxRuntime {
 
         // True cold: first run before any other work (no prior decompress = same as single "run" command).
         // Use the same metric as single "run" (run_backend_execution only), not full execute() time.
-        self.execute(container_name, &input_data)?;
-        let true_cold_time_us = self.stats.lock().unwrap().avg_execution_time;
+        self.execute_with_backend(container_name, &input_data, backend)?;
+        let true_cold_time_us = self.stats.lock().expect("runtime mutex lock").avg_execution_time;
 
         // Time single decompress and get weights size (after true cold so report has these metrics)
         let decompress_start = std::time::Instant::now();
@@ -2457,14 +2647,14 @@ impl CoelanoxRuntime {
 
         // Warm up
         for _ in 0..WARM_UP_RUNS {
-            self.execute(container_name, &input_data)?;
+            self.execute_with_backend(container_name, &input_data, backend)?;
         }
 
         // Timed iterations: record every latency for percentiles and stability
         let mut times: Vec<u64> = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             let start = std::time::Instant::now();
-            self.execute(container_name, &input_data)?;
+            self.execute_with_backend(container_name, &input_data, backend)?;
             times.push(start.elapsed().as_micros() as u64);
         }
 

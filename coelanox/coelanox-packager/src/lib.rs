@@ -423,12 +423,11 @@ impl CoelanoxPackager {
         
         // For serialization, we need to create a copy without Arc
         // Create weight tensors WITHOUT data (weights are already in compressed_weights)
-        // This saves significant space - weights are stored once, compressed
+        // This saves significant space - weights are stored once, compressed. Use metadata_only
+        // so we don't serialize hundreds of MB of zeros (WeightTensor::new allocates full-size buffer).
         let weight_tensors_metadata: Vec<WeightTensor> = optimized_ir.shared_weights.as_ref().iter()
             .map(|wt| {
-                // Create a new WeightTensor with same metadata but empty data
-                // Runtime will reconstruct weights from compressed_weights
-                WeightTensor::new(wt.name.clone(), wt.shape.clone(), wt.data_type.clone())
+                WeightTensor::metadata_only(wt.name.clone(), wt.shape.clone(), wt.data_type.clone())
             })
             .collect();
         
@@ -664,24 +663,50 @@ impl CoelanoxPackager {
         target: &HardwareTarget,
         input_shapes: &[coelanox_core::ir::Shape],
     ) -> CoelanoxResult<(Vec<u8>, Option<Vec<u32>>)> {
-        if let Some(backend_info) = self.backend_manager.find_backend_for_target(target) {
+        // For CPU target, prefer "simd" CLF when available (full op set for BERT etc.); else any CPU CLF
+        let backend_info = if *target == HardwareTarget::Cpu {
+            self.backend_manager
+                .get_backend("simd")
+                .or_else(|| self.backend_manager.find_backend_for_target(target))
+        } else {
+            self.backend_manager.find_backend_for_target(target)
+        };
+
+        if let Some(backend_info) = backend_info {
             if backend_info.kind == BackendKind::Clf {
+                // Dictionary-style CLF code section:
+                // - code: one blob per unique op_id (per container)
+                // - kernel_byte_offsets: one offset per node, reusing offsets when op_id repeats
                 let mut reader = ClfFileReader::open(backend_info.library_path.as_path())
                     .map_err(|e| CoelanoxError::format(&format!("CLF load failed: {}", e)))?;
+
                 let op_ids: Vec<u32> = optimized_ir
                     .optimized_nodes
                     .iter()
                     .map(|node| clf_op_type_to_clf_id(ir_op_type_to_clf_op_type(&node.op_type)))
                     .collect();
+
+                use std::collections::HashMap;
                 let mut code = Vec::new();
                 let mut kernel_byte_offsets = Vec::with_capacity(op_ids.len());
+                let mut op_offset_cache: HashMap<u32, u32> = HashMap::new();
+
                 for op_id in &op_ids {
-                    if let Ok(Some(blob)) = reader.get_blob(*op_id) {
-                        kernel_byte_offsets.push(code.len() as u32);
+                    if let Some(&existing_off) = op_offset_cache.get(op_id) {
+                        // Reuse existing kernel offset for this op_id
+                        kernel_byte_offsets.push(existing_off);
+                    } else if let Ok(Some(blob)) = reader.get_blob(*op_id) {
+                        let off = code.len() as u32;
                         code.extend_from_slice(&blob);
+                        op_offset_cache.insert(*op_id, off);
+                        kernel_byte_offsets.push(off);
+                    } else {
+                        // Missing blob for this op_id; abort CLF path for this model
+                        return Ok((Vec::new(), None));
                     }
                 }
-                // Only return kernel offsets when we have a blob for every node (required for execution plan)
+
+                // Only return kernel offsets when we have a blob offset for every node (required for execution plan)
                 let offsets = if kernel_byte_offsets.len() == op_ids.len() {
                     Some(kernel_byte_offsets)
                 } else {

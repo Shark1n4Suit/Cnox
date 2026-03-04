@@ -476,7 +476,9 @@ impl ScalarExecutionBackend {
                 })
                 .collect();
 
-            let results: Vec<Result<(usize, Vec<f32>, Vec<TensorId>), CoelanoxError>> = jobs
+            // Return audit data from workers so we log from the main thread (thread_local audit only sees main thread otherwise)
+            type JobResult = Result<(usize, Vec<f32>, Vec<TensorId>, Option<(OpType, usize, Vec<f32>)>), CoelanoxError>;
+            let results: Vec<JobResult> = jobs
                 .into_par_iter()
                 .map(|(node_index, input_a, input_b, weight_range, output_size, op_type, attributes, out_tids)| {
                     let input_a_slice = input_a.as_slice();
@@ -491,15 +493,21 @@ impl ScalarExecutionBackend {
                         weight_slice,
                         &attributes,
                     )?;
-                    if audit_enabled {
-                        crate::audit::log_after_op(node_index, &op_type, output_size, &output);
-                    }
-                    Ok((node_index, output, out_tids))
+                    let audit_data = if audit_enabled {
+                        let sample: Vec<f32> = output.iter().take(4).copied().collect();
+                        Some((op_type, output_size, sample))
+                    } else {
+                        None
+                    };
+                    Ok((node_index, output, out_tids, audit_data))
                 })
                 .collect();
 
             for res in results {
-                let (node_index, output, out_tids) = res?;
+                let (node_index, output, out_tids, audit_data) = res?;
+                if let Some((ref op_type, output_size, ref sample)) = audit_data {
+                    crate::audit::log_after_op(node_index, op_type, output_size, sample);
+                }
                 let out_arc = Arc::new(output);
                 for tid in &out_tids {
                     tensor_data.insert(*tid, Arc::clone(&out_arc));

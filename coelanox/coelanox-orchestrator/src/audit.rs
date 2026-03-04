@@ -34,10 +34,15 @@ pub fn set_audit_mode(enabled: bool, log_path: Option<&Path>) {
             if !entries.is_empty() {
                 let is_json = path.extension().map_or(false, |e| e == "json");
                 if is_json {
+                    let mut entries = entries;
+                    entries.sort_by_key(|e| e.op_index);
                     if let Ok(s) = serde_json::to_string_pretty(&entries) {
                         let _ = std::fs::write(&path, s);
                     }
                 } else {
+                    // Sort by op_index so scalar (multi-thread) audit matches plan order and is comparable to SIMD audit
+                    let mut entries = entries;
+                    entries.sort_by_key(|e| e.op_index);
                     let lines: Vec<String> = entries.iter()
                         .map(|e| {
                             let sample: String = e.out_sample.iter().map(|v| format!("{:.4}", v)).collect::<Vec<_>>().join(", ");

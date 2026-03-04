@@ -6,10 +6,27 @@ use clap::{Parser, Subcommand};
 use tracing::{info, warn, error};
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
 use coelanox_packager::CoelanoxPackager;
-use coelanox_orchestrator::CoelanoxRuntime;
+use coelanox_orchestrator::{CoelanoxRuntime, RuntimeConfig};
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::process::Command;
+
+/// Load runtime config: from COELANOX_CONFIG_FILE if set, else from environment (COELANOX_* vars).
+fn load_runtime_config() -> RuntimeConfig {
+    if let Ok(path) = std::env::var("COELANOX_CONFIG_FILE") {
+        let p = Path::new(&path);
+        match RuntimeConfig::from_file(p) {
+            Ok(c) => {
+                info!("Loaded runtime config from {}", path);
+                return c;
+            }
+            Err(e) => {
+                warn!("Failed to load config from {}: {}; using env/defaults", path, e);
+            }
+        }
+    }
+    RuntimeConfig::from_env()
+}
 
 /// Ensure output directory exists and return proper output path
 fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<PathBuf> {
@@ -177,6 +194,10 @@ enum Commands {
         /// Max workspace in MB (overrides COELANOX_MAX_WORKSPACE_MB). 0 = no cap.
         #[arg(long)]
         max_workspace_mb: Option<u64>,
+        
+        /// Skip container integrity (hash) verification. Faster load; use only for trusted/dev.
+        #[arg(long)]
+        no_verify: bool,
     },
     
     /// Benchmark a COELANOX container
@@ -190,12 +211,18 @@ enum Commands {
         /// Loop for N iterations (long-run stability); overrides --iterations when set
         #[arg(long)]
         loop_iterations: Option<usize>,
+        /// Backend to use: auto (default), scalar, cpu, simd. Use scalar for interpreted ops; auto/cpu/simd for plan (SIMD).
+        #[arg(long, default_value = "auto")]
+        backend: String,
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         output: String,
         /// Max workspace in MB (overrides COELANOX_MAX_WORKSPACE_MB). 0 = no cap.
         #[arg(long)]
         max_workspace_mb: Option<u64>,
+        /// Skip container integrity (hash) verification for faster load
+        #[arg(long)]
+        no_verify: bool,
     },
     
     /// Show system environment information
@@ -264,11 +291,11 @@ fn main() -> CoelanoxResult<()> {
         Commands::Info { file, dump_plan } => {
             info_command(&file, dump_plan)
         }
-        Commands::Run { file, input, output, backend, audit, audit_output, max_workspace_mb } => {
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), max_workspace_mb)
+        Commands::Run { file, input, output, backend, audit, audit_output, max_workspace_mb, no_verify } => {
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), max_workspace_mb, no_verify)
         }
-        Commands::Benchmark { file, iterations, loop_iterations, output, max_workspace_mb } => {
-            benchmark_command(&file, iterations, loop_iterations, &output, max_workspace_mb)
+        Commands::Benchmark { file, iterations, loop_iterations, backend, output, max_workspace_mb, no_verify } => {
+            benchmark_command(&file, iterations, loop_iterations, &backend, &output, max_workspace_mb, no_verify)
         }
         Commands::Env => {
             env_command()
@@ -513,6 +540,8 @@ fn info_command(file: &str, dump_plan: bool) -> CoelanoxResult<()> {
     println!("Header size: {} bytes", coelanox_core::format::COELANOX_HEADER_SIZE);
     println!("Manifest size: ~{} bytes", serde_json::to_string(&container.manifest).unwrap_or_default().len());
     println!("Machine code size: {} bytes", container.optimized_code.len());
+    println!("Compressed weights size: {} bytes", container.compressed_weights.len());
+    println!("IR data size: {} bytes", container.ir_data.len());
     if let Some(elements) = container.manifest.workspace_required_elements {
         let mb = (elements * 4 + 1024 * 1024 - 1) / (1024 * 1024);
         println!("Workspace required: {} elements (~{} MB)", elements, mb);
@@ -527,7 +556,7 @@ fn info_command(file: &str, dump_plan: bool) -> CoelanoxResult<()> {
     Ok(())
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, max_workspace_mb: Option<u64>) -> CoelanoxResult<()> {
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, max_workspace_mb: Option<u64>, no_verify: bool) -> CoelanoxResult<()> {
     info!("Running inference: {} -> {} (backend: {})", input.unwrap_or("auto"), output, backend);
     if audit {
         coelanox_orchestrator::audit::set_audit_mode(true, audit_output.map(std::path::Path::new));
@@ -535,27 +564,27 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
     
     let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
     
-    // Always verify container integrity before load (demo and production path).
-    info!("Verifying container integrity...");
-    coelanox_core::format::verify_security_hash(std::path::Path::new(file))
-        .map_err(|e| {
-            error!("Container integrity verification failed: {}", e);
-            eprintln!("❌ Container verification failed - refusing to load");
-            eprintln!("Error: {}", e);
-            eprintln!("The container file may have been tampered with or corrupted.");
-            eprintln!("Do not execute this container.");
-            e
-        })?;
-    info!("✅ Container integrity verified");
-    
-    // Load runtime
-    let mut runtime = CoelanoxRuntime::new();
+    // Load runtime (config from COELANOX_CONFIG_FILE or COELANOX_* env vars)
+    let config = load_runtime_config();
+    let mut runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
     }
-    
-    // Load container (now trusted, already verified)
-    runtime.load_container(file)?;
+    if no_verify {
+        info!("Loading container (--no-verify: skipping integrity hash)...");
+        runtime.load_container_no_verify(file)?;
+        info!("✅ Container loaded (verification skipped)");
+    } else {
+        info!("Loading container (verify + parse from mmap)...");
+        runtime.load_container(file).map_err(|e| {
+            if e.to_string().contains("verification") || e.to_string().contains("hash") {
+                eprintln!("❌ Container verification failed - refusing to load");
+                eprintln!("The container file may have been tampered with or corrupted.");
+            }
+            e
+        })?;
+        info!("✅ Container loaded and verified");
+    }
     
     // Load input data
     let input_data = if let Some(input_file) = input {
@@ -608,29 +637,36 @@ fn benchmark_command(
     file: &str,
     iterations: usize,
     loop_iterations: Option<usize>,
+    backend: &str,
     output_format: &str,
     max_workspace_mb: Option<u64>,
+    no_verify: bool,
 ) -> CoelanoxResult<()> {
     let effective_iterations = loop_iterations.unwrap_or(iterations);
     let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
     let is_long_run = effective_iterations >= 1000;
     info!(
-        "Benchmarking COELANOX container: {} ({} iterations{})",
+        "Benchmarking COELANOX container: {} ({} iterations, backend: {}{})",
         file,
         effective_iterations,
+        backend,
         if is_long_run { ", long-run stability" } else { "" }
     );
 
-    let mut runtime = CoelanoxRuntime::new();
+    let config = load_runtime_config();
+    let mut runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
     }
-    // Measure load time (to first execute-ready)
     let load_start = std::time::Instant::now();
-    runtime.load_container(file)?;
+    if no_verify {
+        runtime.load_container_no_verify(file)?;
+    } else {
+        runtime.load_container(file)?;
+    }
     let load_time_ms = load_start.elapsed().as_millis() as u64;
 
-    let result = runtime.benchmark(file, effective_iterations, Some(load_time_ms))?;
+    let result = runtime.benchmark(file, effective_iterations, Some(load_time_ms), backend)?;
 
     if output_format.eq_ignore_ascii_case("json") {
         println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
@@ -776,8 +812,8 @@ fn debug_command(
         return debug_with_gdb(file, input, output);
     }
     
-    // Load runtime
-    let mut runtime = CoelanoxRuntime::new();
+    let config = load_runtime_config();
+    let mut runtime = CoelanoxRuntime::with_config(config);
     
     // Load container
     info!("📦 Loading container: {}", file);

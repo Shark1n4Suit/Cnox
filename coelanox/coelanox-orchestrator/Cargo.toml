@@ -25,6 +25,7 @@ thiserror = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
 rayon = "1.7"
 num_cpus = "1.0"
+memmap2 = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
