@@ -13,9 +13,8 @@ Accurate feature list for the current beta. Items marked **Planned** are on the 
 - **Format-agnostic payload** — Container can hold any model representation; translation is done by packager translators.
 
 ### Model input (packaging)
-- **In-tree translators:** BERT (BRT1 bundle; `--model-type nlp`, `--use-demo-translator`), ResNet-tiny-MNIST (config + weights; CV demo).
-- **No default ONNX translator** — ONNX translator is not registered in-tree; add/register a translator for ONNX.
-- **Plugin system** — Translator plugins (trait-based); new formats can be added via plugins.
+- **In-tree translators:** BERT (BRT1 bundle; `--model-type nlp`, `--use-demo-translator`), ResNet-tiny-MNIST (config + weights; CV demo), **ONNX (opset 13)** in `coelanox-packager` with feature `onnx-protobuf`; register via plugins to package ONNX models.
+- **Plugin system** — Translator plugins (trait-based); new formats can be added via plugins. See [ONNX decomposition tree](../coelanox/coelanox-packager/docs/ONNX_DECOMPOSITION_TREE.md) for ONNX → IR mapping.
 
 ### Not implemented / planned
 - Generic ONNX/PyTorch/TensorFlow translators are **not** shipped in-tree (planned or community).
