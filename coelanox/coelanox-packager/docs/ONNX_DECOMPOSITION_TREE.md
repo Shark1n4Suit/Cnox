@@ -81,7 +81,7 @@ Logical
   Not                      →  Not
 
 Other
-  Identity                 →  Identity
+  Identity                 →  (rewire: output name → input tensor; no node)
 ```
 
 ---
@@ -252,10 +252,10 @@ Constant(value: TensorProto)
    │
    ▼
    weight = materialize(value)
-   weight ──────► Identity ──► output
+   weight ──────────────────────► output (name_to_id)
 ```
 
-**IR:** One weight tensor from the `value` attribute, then one `Identity(weight)` → output. Only float32 value supported.
+**IR:** One weight tensor from the `value` attribute; output name is wired directly to that weight (no Identity node). Only float32 value supported.
 
 ---
 

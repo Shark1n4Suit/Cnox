@@ -1,10 +1,10 @@
 # COELANOX Operations Guide
 
-Production deployment, configuration, and runbooks for the COELANOX runtime and CLI.
+This document covers production deployment, configuration, runbooks, and operational procedures for the COELANOX runtime and CLI.
 
 ---
 
-## How it works in the CLI
+## How the CLI uses configuration
 
 Commands that **load and run** a container (`run`, `benchmark`, `debug`) use production config every time:
 
@@ -54,8 +54,8 @@ Loaded in order: `COELANOX_CONFIG_FILE` (if set, JSON file overrides); otherwise
 
 | Variable | Description |
 |----------|-------------|
-| `COELANOX_CLF_PATH` | Directory (or file) for CLF backend discovery (e.g. path to `.clfc` or directory containing CLF artifacts). |
-| `COELANOX_BACKEND_PATH` | Colon-separated paths for backend discovery. |
+| `COELANOX_CLF_PATH` | Override for CLF backend root. If unset, default is `~/.coelanox/clf/` (see Backend discovery below). |
+| `COELANOX_BACKEND_PATH` | Colon-separated list of additional paths for backend discovery. Appended after the CLF paths. |
 | `COELANOX_MAX_WORKSPACE_MB` | Max workspace size in MB for plan execution (0 = no cap). Overridable by `--max-workspace-mb`. |
 | `COELANOX_DOUBLE_RING` | Set to `1` or `true` to force double ring buffer for testing. |
 | `RUST_LOG` | Control tracing/log level (e.g. `coelanox=info`, `coelanox_orchestrator=debug`). |
@@ -79,6 +79,27 @@ When `COELANOX_CONFIG_FILE` is set, the file must be JSON with optional keys (un
   "default_backend": "cpu"
 }
 ```
+
+---
+
+## Backend discovery and CLF path
+
+Backends (e.g. `.clfc` compute libraries) are discovered from a fixed layout so that no environment variable is required for normal use.
+
+**Default (no override):** The CLI uses `~/.coelanox/clf/` as the root. Under it, four subdirectories are used:
+
+| Subdirectory | Purpose |
+|--------------|---------|
+| `clfc` | Compute backends (e.g. `simd.clfc`). Place `.clfc` and compatible libraries here. |
+| `clfmm` | Memory movement (CLFMM) artifacts. Reserved for future use. |
+| `clfmp` | Memory protection (CLFMP) artifacts. Reserved for future use. |
+| `clfe` | Extensions (CLFE). Reserved for future use. |
+
+The root and these subdirectories are created automatically when the default path is used. Place compute backends in `~/.coelanox/clf/clfc/` so they are discovered without setting any environment variable.
+
+**Override:** Set `COELANOX_CLF_PATH` to a directory (the new root for the four subdirectories) or to the path of a single `.clfc` file (its parent directory is used for discovery). Use this for development or custom installs.
+
+**Additional paths:** Set `COELANOX_BACKEND_PATH` to a colon-separated list of directories to search in addition to the default or overridden CLF path.
 
 ---
 
@@ -173,7 +194,9 @@ The runtime enforces the deadline between execution steps (SIMD plan steps or sc
 | **Hardening** | ✅ Done | Lock expect() instead of unwrap(), security event logging, optional strict path policy, container size cap. |
 | **Vendor / multi-backend** | ⚠️ Roadmap | Backend manager and CLF path work; AMD reference and full vendor SDK still on roadmap. |
 
-**Verdict:** Coelanox is **ready for production in a “batch or scripted” sense**: verify then run (or benchmark) with explicit config and limits, in CI or on a server where you control the environment. For a **long-lived inference service** with health checks and metrics, you would run the CLI from your own process (or use the orchestrator as a library) and add your API and observability layer.
+### Summary
+
+COELANOX is **ready for production in a “batch or scripted” sense**: verify then run (or benchmark) with explicit config and limits, in CI or on a server where you control the environment. For a **long-lived inference service** with health checks and metrics, you would run the CLI from your own process (or use the orchestrator as a library) and add your API and observability layer.
 
 ---
 

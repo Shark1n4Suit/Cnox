@@ -1,8 +1,9 @@
-# Coelanox CLI Reference (Full Command Tree)
+# COELANOX CLI Reference
 
-Complete reference for **every branch and option** so you can build an interactive website.  
-CLI version: **0.6.0-beta**.  
-Invocation: `coelanox [COMMAND] [OPTIONS]`.
+Complete reference for all commands and options.
+
+- **CLI version:** 0.6.0-beta  
+- **Invocation:** `coelanox [COMMAND] [OPTIONS]`
 
 ---
 

@@ -172,15 +172,3 @@ pub fn max(
     max_impl(input_a, input_b, output, len);
     Ok(())
 }
-
-/// Identity (pass-through): output = input_a. Used for ONNX Identity and wire passthrough.
-pub fn identity(
-    input_a: &[f32],
-    output: &mut [f32],
-    _attributes: &HashMap<String, Attribute>,
-) -> CoelanoxResult<()> {
-    let len = input_a.len().min(output.len());
-    output[..len].copy_from_slice(&input_a[..len]);
-    Ok(())
-}
-

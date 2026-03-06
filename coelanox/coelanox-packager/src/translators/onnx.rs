@@ -13,6 +13,7 @@ mod impl_ {
     use coelanox_core::{CoelanoxError, CoelanoxResult};
     use rten_onnx::onnx::{ModelProto, DataType as OnnxDataType};
     use std::collections::HashMap;
+    use std::path::Path;
 
     /// ONNX translator plugin (opset 13 semantics).
     pub struct OnnxTranslator;
@@ -97,8 +98,8 @@ mod impl_ {
                 // Logical (opset 13)
                 "And" => OpType::And,
                 "Or" => OpType::Or,
-                // Identity (single-node pass-through)
-                "Identity" => OpType::Identity,
+                // Identity: handled by rewiring in node loop (no IR node)
+                "Identity" => unreachable!("Identity handled by rewire in build_ir"),
                 // Broadcast: ONNX uses Expand or Mul with broadcast; map if present
                 "Broadcast" => OpType::Broadcast,
                 other => OpType::Custom(other.to_string()),
@@ -107,6 +108,36 @@ mod impl_ {
 
         fn tensor_shape(dims: &[i64]) -> Shape {
             Shape::new(dims.iter().map(|&d| d.max(0) as usize).collect())
+        }
+
+        /// Convert IEEE 754 binary16 to f32 (no external crate).
+        fn f16_to_f32(u: u16) -> f32 {
+            let sign = (u >> 15) & 1;
+            let exp = (u >> 10) & 0x1F;
+            let frac = u & 0x3FF;
+            if exp == 0 {
+                let v = (frac as f32) * 2.0_f32.powi(-24);
+                if sign != 0 {
+                    -v
+                } else {
+                    v
+                }
+            } else if exp == 31 {
+                if frac == 0 {
+                    if sign != 0 {
+                        f32::NEG_INFINITY
+                    } else {
+                        f32::INFINITY
+                    }
+                } else {
+                    f32::NAN
+                }
+            } else {
+                let bits = (sign as u32) << 31
+                    | ((exp as u32 + 112) << 23)
+                    | ((frac as u32) << 13);
+                f32::from_bits(bits)
+            }
         }
 
         fn tensor_float_data(t: &rten_onnx::onnx::TensorProto) -> CoelanoxResult<Vec<f32>> {
@@ -125,6 +156,75 @@ mod impl_ {
             Err(CoelanoxError::format(
                 "Tensor has no float_data or raw_data",
             ))
+        }
+
+        /// Read initializer data: from embedded (float_data/raw_data) or from external buffer at running offset.
+        /// Supports FLOAT (4 bytes) and FLOAT16 (2 bytes, converted to f32). Advances *external_offset when using external.
+        fn initializer_float_data(
+            init: &rten_onnx::onnx::TensorProto,
+            external_bytes: Option<&[u8]>,
+            external_offset: &mut usize,
+        ) -> CoelanoxResult<Vec<f32>> {
+            if !init.float_data.is_empty() {
+                return Ok(init.float_data.clone());
+            }
+            if let Some(ref raw) = init.raw_data {
+                let data = raw.borrow();
+                let dtype = init.data_type.as_ref().copied().unwrap_or(OnnxDataType::FLOAT);
+                if dtype == OnnxDataType::FLOAT16 {
+                    let n = data.len() / 2;
+                    let mut out = Vec::with_capacity(n);
+                    for chunk in data.chunks_exact(2) {
+                        let u = u16::from_le_bytes(chunk.try_into().unwrap());
+                        out.push(Self::f16_to_f32(u));
+                    }
+                    return Ok(out);
+                }
+                let n = data.len() / 4;
+                let mut out = Vec::with_capacity(n);
+                for chunk in data.chunks_exact(4) {
+                    out.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+                }
+                return Ok(out);
+            }
+            // External data: require external_bytes and use running offset (contiguous layout in initializer order).
+            let external = match external_bytes {
+                Some(b) => b,
+                None => {
+                    return Err(CoelanoxError::format(
+                        "Tensor has external data but no external weights file was provided (use --weights)",
+                    ));
+                }
+            };
+            let dims = &init.dims;
+            let num_elements: usize = dims.iter().map(|&d| d.max(0) as usize).product();
+            let dtype = init.data_type.as_ref().copied().unwrap_or(OnnxDataType::FLOAT);
+            let elem_size = if dtype == OnnxDataType::FLOAT16 { 2 } else { 4 };
+            let byte_len = num_elements * elem_size;
+            if *external_offset + byte_len > external.len() {
+                return Err(CoelanoxError::format(&format!(
+                    "External weights file too small for initializer (need {} bytes, have {} remaining)",
+                    byte_len,
+                    external.len().saturating_sub(*external_offset)
+                )));
+            }
+            let slice = &external[*external_offset..*external_offset + byte_len];
+            *external_offset += byte_len;
+            let out = if dtype == OnnxDataType::FLOAT16 {
+                let mut v = Vec::with_capacity(num_elements);
+                for chunk in slice.chunks_exact(2) {
+                    let u = u16::from_le_bytes(chunk.try_into().unwrap());
+                    v.push(Self::f16_to_f32(u));
+                }
+                v
+            } else {
+                let mut v = Vec::with_capacity(num_elements);
+                for chunk in slice.chunks_exact(4) {
+                    v.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+                }
+                v
+            };
+            Ok(out)
         }
 
         /// Get a node attribute by name (from ONNX AttributeProto list).
@@ -409,7 +509,7 @@ mod impl_ {
                     return Ok(true);
                 }
                 "Constant" => {
-                    // Constant node: value in attribute "value" (TensorProto). Materialize as weight + Identity.
+                    // Constant node: value in attribute "value" (TensorProto). Materialize as weight; wire output name to it (no Identity node).
                     let value_attr = node
                         .attribute
                         .iter()
@@ -439,9 +539,9 @@ mod impl_ {
                         DataType::Float32,
                         data,
                     );
-                    let id_node = ir.add_node(OpType::Identity);
-                    ir.add_node_input(id_node, weight_tid)?;
-                    ir.add_node_output(id_node, out_id)?;
+                    if let Some(out_name) = node.output.first() {
+                        name_to_id.insert(out_name.clone(), weight_tid);
+                    }
                     return Ok(true);
                 }
                 _ => {}
@@ -449,7 +549,7 @@ mod impl_ {
             Ok(false)
         }
 
-        fn build_ir(model: ModelProto) -> CoelanoxResult<UniversalIR> {
+        fn build_ir(model: ModelProto, external_weights: Option<&[u8]>) -> CoelanoxResult<UniversalIR> {
             let graph = model
                 .graph
                 .as_ref()
@@ -463,8 +563,9 @@ mod impl_ {
 
             let mut ir = UniversalIR::new(name);
             let mut name_to_id: HashMap<String, TensorId> = HashMap::new();
+            let mut external_offset = 0usize;
 
-            // 1) Initializers as weight tensors.
+            // 1) Initializers as weight tensors (embedded or from external file; FLOAT/FLOAT16 supported).
             for init in &graph.initializer {
                 let onnx_name = init
                     .name
@@ -476,17 +577,14 @@ mod impl_ {
                     continue;
                 }
                 let shape = Self::tensor_shape(&init.dims);
-                let is_float = init
-                    .data_type
-                    .as_ref()
-                    .map(|dt| *dt == OnnxDataType::FLOAT)
-                    .unwrap_or(true);
-                if !is_float {
+                let dtype = init.data_type.as_ref().copied().unwrap_or(OnnxDataType::FLOAT);
+                if dtype != OnnxDataType::FLOAT && dtype != OnnxDataType::FLOAT16 {
                     return Err(CoelanoxError::format(
-                        "Only float32 initializers supported",
+                        "Only float32 and float16 initializers supported",
                     ));
                 }
-                let data = Self::tensor_float_data(init)?
+                let floats = Self::initializer_float_data(init, external_weights, &mut external_offset)?;
+                let data = floats
                     .into_iter()
                     .flat_map(f32::to_le_bytes)
                     .collect::<Vec<u8>>();
@@ -575,6 +673,16 @@ mod impl_ {
                     ));
                 }
 
+                // Identity: rewire output name to input tensor (no node; avoids dead code).
+                if op_type_str == "Identity" {
+                    if node.input.len() >= 1 && node.output.len() >= 1 {
+                        if let Some(&tid) = name_to_id.get(&node.input[0]) {
+                            name_to_id.insert(node.output[0].clone(), tid);
+                        }
+                    }
+                    continue;
+                }
+
                 // Decompose composite ops into IR primitives.
                 if Self::decompose_node(&mut ir, &mut name_to_id, node, op_type_str)? {
                     continue;
@@ -599,6 +707,25 @@ mod impl_ {
                         if let Some(n) = ir.get_node_mut(node_id) {
                             n.add_attribute(k, v);
                         }
+                    }
+                }
+            }
+
+            // 5) Policy checks on the constructed IR.
+            //
+            // Treat ONNX Cast as a preprocessing/export concern for now. We don't support
+            // mixed-precision execution in the Coelanox runtime: everything runs as f32.
+            // If a model still contains Cast, fail fast with a clear, actionable error
+            // instead of letting it reach the scalar backend as Custom("Cast").
+            for node in &ir.nodes {
+                if let OpType::Custom(name) = &node.op_type {
+                    if name == "Cast" {
+                        return Err(CoelanoxError::format(
+                            "ONNX Cast is not supported in the Coelanox runtime. \
+                             This beta build executes models in a single numeric type (f32). \
+                             Please normalize your model to f32 (e.g., convert weights and activations) \
+                             or remove Cast in your preprocessing/export pipeline before packaging.",
+                        ));
                     }
                 }
             }
@@ -633,18 +760,49 @@ mod impl_ {
     impl TranslatorPlugin for OnnxTranslator {
         fn translate(&self, model_data: &[u8]) -> CoelanoxResult<UniversalIR> {
             let model = Self::parse_model(model_data)?;
-            Self::build_ir(model)
+            Self::build_ir(model, None)
+        }
+
+        fn translate_from_path_with_weights(&self, input_path: &Path, external_weights_path: Option<&Path>) -> CoelanoxResult<UniversalIR> {
+            let model_data = std::fs::read(input_path)
+                .map_err(|e| CoelanoxError::format(&format!("Failed to read model file {}: {}", input_path.display(), e)))?;
+            let model = Self::parse_model(&model_data)?;
+            let external_bytes = match external_weights_path {
+                None => None,
+                Some(p) => {
+                    let bytes = std::fs::read(p)
+                        .map_err(|e| CoelanoxError::format(&format!("Failed to read weights file {}: {}", p.display(), e)))?;
+                    Some(bytes)
+                }
+            };
+            // build_ir needs Option<&[u8]>; we own the Vec in external_bytes so pass a reference.
+            let ext_ref = external_bytes.as_deref();
+            Self::build_ir(model, ext_ref)
         }
 
         fn extract_weights(&self, model_data: &[u8]) -> CoelanoxResult<Vec<f32>> {
+            self.extract_weights_with_external(model_data, None)
+        }
+
+        fn extract_weights_with_external(&self, model_data: &[u8], external_weights_path: Option<&Path>) -> CoelanoxResult<Vec<f32>> {
             let model = Self::parse_model(model_data)?;
             let graph = model
                 .graph
                 .as_ref()
                 .ok_or_else(|| CoelanoxError::format("ONNX model has no graph"))?;
+            let external_bytes = match external_weights_path {
+                None => None,
+                Some(p) => {
+                    let bytes = std::fs::read(p)
+                        .map_err(|e| CoelanoxError::format(&format!("Failed to read weights file {}: {}", p.display(), e)))?;
+                    Some(bytes)
+                }
+            };
+            let ext_ref = external_bytes.as_deref();
+            let mut external_offset = 0usize;
             let mut out = Vec::new();
             for init in &graph.initializer {
-                let floats = Self::tensor_float_data(init)?;
+                let floats = Self::initializer_float_data(init, ext_ref, &mut external_offset)?;
                 out.extend(floats);
             }
             Ok(out)

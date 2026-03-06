@@ -135,6 +135,10 @@ enum Commands {
         /// Max dynamic memory (workspace + scratch) in MB; build fails if model needs more (e.g. 64, 1024)
         #[arg(long)]
         max_workspace: Option<u64>,
+        
+        /// Optional external weights file (e.g. for ONNX models with separate fp16/f32 weight file)
+        #[arg(long)]
+        weights: Option<String>,
     },
     
     /// Validate a COELANOX container
@@ -163,6 +167,9 @@ enum Commands {
         /// Dump execution plan conv steps (step_ix, in_len, out_len, w_len, scratch_raw) to find bad steps
         #[arg(long)]
         dump_plan: bool,
+        /// List op types in the IR; show Custom ops (unsupported in scalar backend)
+        #[arg(long)]
+        list_ops: bool,
     },
     
     /// Run inference on a COELANOX container
@@ -279,8 +286,8 @@ fn main() -> CoelanoxResult<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only, max_workspace } => {
-            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only, max_workspace)
+        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only, max_workspace, weights } => {
+            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only, max_workspace, weights.as_deref())
         }
         Commands::Validate { file } => {
             validate_command(&file)
@@ -288,8 +295,8 @@ fn main() -> CoelanoxResult<()> {
         Commands::Verify { file, verbose } => {
             verify_command(&file, verbose)
         }
-        Commands::Info { file, dump_plan } => {
-            info_command(&file, dump_plan)
+        Commands::Info { file, dump_plan, list_ops } => {
+            info_command(&file, dump_plan, list_ops)
         }
         Commands::Run { file, input, output, backend, audit, audit_output, max_workspace_mb, no_verify } => {
             run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), max_workspace_mb, no_verify)
@@ -309,7 +316,7 @@ fn main() -> CoelanoxResult<()> {
     }
 }
 
-fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace: Option<u64>) -> CoelanoxResult<()> {
+fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace: Option<u64>, weights: Option<&str>) -> CoelanoxResult<()> {
     info!("Packaging model: {} -> {}", input, output);
     info!("Model type: {}", model_type);
     
@@ -394,7 +401,7 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
         env.recommended_target() // Temporary, will be overridden
     } else {
         match target.to_lowercase().as_str() {
-            "cpu" => HardwareTarget::Cpu,
+            "cpu" | "simd" => HardwareTarget::Cpu,
             "gpu" => HardwareTarget::Gpu,
             "edge" => HardwareTarget::Edge,
             "auto" => {
@@ -427,6 +434,7 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     eprintln!("   Target: {:?}", hardware_target);
     eprintln!("   Model type: {}", model_type);
     
+    let weights_path = weights.map(std::path::Path::new);
     let container = packager.package(
         std::path::Path::new(input),
         hardware_target,
@@ -440,6 +448,7 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
         backend_add,
         fallback_only,
         max_workspace,
+        weights_path.as_deref(),
     )?;
     eprintln!("✅ packager.package() returned successfully");
     
@@ -497,10 +506,40 @@ fn verify_command(file: &str, verbose: bool) -> CoelanoxResult<()> {
     }
 }
 
-fn info_command(file: &str, dump_plan: bool) -> CoelanoxResult<()> {
+fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<()> {
     info!("Getting info for COELANOX container: {}", file);
     
     let container = coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
+    
+    if list_ops {
+        use coelanox_core::ir::{deserialize_optimized_ir, OpType};
+        let ir = deserialize_optimized_ir(&container.ir_data)?;
+        let mut custom_ops: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut all_types: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for node in &ir.optimized_nodes {
+            let key = format!("{:?}", node.op_type);
+            *all_types.entry(key.clone()).or_insert(0) += 1;
+            if let OpType::Custom(name) = &node.op_type {
+                *custom_ops.entry(name.clone()).or_insert(0) += 1;
+            }
+        }
+        println!("=== Op types in IR (total nodes: {}) ===", ir.optimized_nodes.len());
+        let mut types: Vec<_> = all_types.into_iter().collect();
+        types.sort_by(|a, b| b.1.cmp(&a.1));
+        for (op, count) in &types {
+            println!("  {}: {}", op, count);
+        }
+        if !custom_ops.is_empty() {
+            println!();
+            println!("=== Custom ops (not supported in scalar backend) ===");
+            let mut customs: Vec<_> = custom_ops.into_iter().collect();
+            customs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (name, count) in &customs {
+                println!("  {}: {} occurrence(s)", name, count);
+            }
+        }
+        return Ok(());
+    }
     
     if dump_plan {
         if let Some(ref plan) = container.execution_plan {

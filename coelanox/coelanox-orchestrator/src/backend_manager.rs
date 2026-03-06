@@ -334,45 +334,54 @@ impl BackendManager {
         self.discovered_backends.values().collect()
     }
     
-    /// Get default search paths for backend discovery
-    /// 
-    /// Returns a list of paths to search for backend libraries, in order of priority:
-    /// 0. `COELANOX_CLF_PATH` (single path for testing; CLF/mnist or .clfc file dir)
-    /// 1. `./backends/` (current directory)
-    /// 2. `~/.coelanox/backends/` (user directory)
-    /// 3. `COELANOX_BACKEND_PATH` environment variable (colon-separated)
-    /// 
+    /// CLF subdirectory names under the single root (compute, memory, protection, extensions).
+    const CLF_SUBDIRS: &[&str] = &["clfc", "clfmm", "clfmp", "clfe"];
+
+    /// Get default search paths for backend discovery.
+    ///
+    /// Uses a single locked layout so you do not need to set any env for normal use:
+    /// - **Default:** `~/.coelanox/clf/` with subdirs `clfc/`, `clfmm/`, `clfmp/`, `clfe/`.
+    ///   Compute backends (.clfc, .so) go in `clfc/`. Root and subdirs are created if missing.
+    /// - **Override:** `COELANOX_CLF_PATH` = directory (root for the four subdirs) or path to a
+    ///   single .clfc file (its parent directory is used so the file is discovered).
+    /// - **Extra:** `COELANOX_BACKEND_PATH` (colon-separated) is appended for additional paths.
+    ///
     /// # Returns
-    /// * Vector of search paths
+    /// * Vector of directory paths to search for backend libraries
     pub fn default_search_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        
-        // 0. Testing: explicit CLF path (directory containing .clfc or path to .clfc's directory)
+
         if let Ok(clf_path) = std::env::var("COELANOX_CLF_PATH") {
             let p = PathBuf::from(&clf_path);
             if p.exists() {
-                paths.push(p);
+                let root = if p.is_file() {
+                    p.parent().map(PathBuf::from).unwrap_or_else(|| p.clone())
+                } else {
+                    p.clone()
+                };
+                paths.push(root.clone());
+                for sub in Self::CLF_SUBDIRS {
+                    paths.push(root.join(sub));
+                }
+            }
+        } else if let Some(home) = std::env::var_os("HOME") {
+            let root = PathBuf::from(home).join(".coelanox").join("clf");
+            for sub in Self::CLF_SUBDIRS {
+                let subdir = root.join(sub);
+                let _ = std::fs::create_dir_all(&subdir);
+                paths.push(subdir);
             }
         }
-        
-        // 1. Current directory
-        paths.push(PathBuf::from("./backends"));
-        
-        // 2. User directory
-        if let Some(home) = std::env::var_os("HOME") {
-            let mut user_path = PathBuf::from(home);
-            user_path.push(".coelanox");
-            user_path.push("backends");
-            paths.push(user_path);
-        }
-        
-        // 3. Environment variable
+
         if let Ok(env_path) = std::env::var("COELANOX_BACKEND_PATH") {
             for path_str in env_path.split(':') {
-                paths.push(PathBuf::from(path_str));
+                let path_str = path_str.trim();
+                if !path_str.is_empty() {
+                    paths.push(PathBuf::from(path_str));
+                }
             }
         }
-        
+
         paths
     }
     

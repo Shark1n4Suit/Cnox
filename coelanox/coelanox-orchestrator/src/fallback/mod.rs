@@ -209,10 +209,9 @@ impl ScalarFallbackBackend {
             OpType::And,
             OpType::Or,
             OpType::Not,
-            // Element-wise min/max and pass-through
+            // Element-wise min/max
             OpType::Min,
             OpType::Max,
-            OpType::Identity,
             // Misc
             OpType::Dropout,
         ]

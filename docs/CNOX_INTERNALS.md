@@ -1,6 +1,6 @@
-# Coelanox .cnox Container Internals
+# COELANOX Container Internals
 
-Summary of the binary layout and contents of `resnet_tiny_mnist.cnox` (and the general .cnox format).
+This document describes the binary layout and contents of the `.cnox` container format. The structure is illustrated with a ResNet-tiny-MNIST example; the layout applies to all COELANOX containers.
 
 ## File layout (byte order)
 

@@ -11,7 +11,7 @@ use crate::ir::Attribute;
 // Re-export all scalar operations
 use super::{
     // Arithmetic
-    add, subtract, multiply, divide, min, max, identity,
+    add, subtract, multiply, divide, min, max,
     // Activations
     relu, sigmoid, tanh, softmax, log_softmax, gelu, swish,
     // Math
@@ -83,8 +83,7 @@ pub fn execute_scalar_op(
             let input_b = input_b.ok_or_else(|| CoelanoxError::Internal("Max requires input_b".to_string()))?;
             max(input_a, input_b, output, attributes)
         }
-        OpType::Identity => identity(input_a, output, attributes),
-        
+
         // Activation functions
         OpType::Relu => relu(input_a, output, attributes),
         OpType::Sigmoid => sigmoid(input_a, output, attributes),

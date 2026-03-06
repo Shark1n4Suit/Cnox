@@ -260,9 +260,6 @@ pub enum OpType {
     Or,
     Not,
     
-    // Pass-through (no-op; backend may optimize away)
-    Identity,
-    
     // Custom primitive operation
     Custom(String),
 }

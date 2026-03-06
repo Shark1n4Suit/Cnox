@@ -5,7 +5,7 @@
 
 use coelanox_core::{
     CoelanoxError, CoelanoxResult,
-    format::{BackendMetadata, BackendSelectionMode, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, OptimizationLevel},
+    format::{BackendMetadata, BackendSelectionMode, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat, OptimizationLevel},
     ir::{GraphNode, IntermediateTensor, OpType as IrOpType, UniversalIR, WeightTensor},
     memory_hal::MemoryBackendRegistry,
     optimization::MaxShapeReader,
@@ -77,7 +77,8 @@ fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
         Ir::And => Clf::And,
         Ir::Or => Clf::Or,
         Ir::Not => Clf::Not,
-        Ir::Min | Ir::Max | Ir::Identity => Clf::Unknown,
+        Ir::Min => Clf::Min,
+        Ir::Max => Clf::Max,
         Ir::Custom(s) => Clf::Custom(s.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32)) % 0xFE + 256),
     }
 }
@@ -305,19 +306,21 @@ impl CoelanoxPackager {
     
     /// Extract weights from model data
     fn extract_weights(&self, model_data: &[u8], format: &coelanox_core::format::ModelFormat) -> CoelanoxResult<Vec<f32>> {
+        self.extract_weights_with_external(model_data, format, None)
+    }
+
+    /// Extract weights from model data with optional external weights file (e.g. ONNX external data).
+    fn extract_weights_with_external(&self, model_data: &[u8], format: &coelanox_core::format::ModelFormat, weights_path: Option<&Path>) -> CoelanoxResult<Vec<f32>> {
         match format {
             coelanox_core::format::ModelFormat::Onnx => {
-                // Get ONNX plugin
                 let onnx_plugin = self.plugin_manager.find_plugin(coelanox_core::format::ModelFormat::Onnx)
                     .ok_or_else(|| CoelanoxError::format("ONNX plugin not found"))?;
-                
-                // Extract weights using ONNX plugin (which has its own fallback mechanism)
-                onnx_plugin.extract_weights(model_data)
+                onnx_plugin.extract_weights_with_external(model_data, weights_path)
             }
             coelanox_core::format::ModelFormat::Custom(_) => {
                 let plugin = self.plugin_manager.find_plugin(format.clone())
                     .ok_or_else(|| CoelanoxError::format(&format!("No plugin found for format: {:?}", format)))?;
-                plugin.extract_weights(model_data)
+                plugin.extract_weights_with_external(model_data, weights_path)
             }
             _ => {
                 Err(CoelanoxError::format(&format!("Weight extraction not supported for format: {:?}", format)))
@@ -340,7 +343,8 @@ impl CoelanoxPackager {
     /// * `backend_add` - Additional backends to add
     /// * `fallback_only` - Do not embed any backend code; container runs with scalar fallback only (for benchmarking)
     /// * `max_workspace_mb` - If set, fail when (workspace + peak scratch) exceeds this many MB (global cap).
-    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace_mb: Option<u64>) -> CoelanoxResult<CoelanoxContainer> {
+    /// * `weights_path` - Optional path to external weights file (e.g. ONNX model with separate fp16/f32 weight file).
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace_mb: Option<u64>, weights_path: Option<&Path>) -> CoelanoxResult<CoelanoxContainer> {
         // If directory given, use ResNet bundle inside it (no PyTorch needed at package time)
         let actual_path: std::path::PathBuf = if model_path.is_dir() {
             let bundle = model_path.join("resnet_tiny_mnist.bundle");
@@ -382,9 +386,14 @@ impl CoelanoxPackager {
             .ok_or_else(|| CoelanoxError::UnsupportedModelFormat(format!("No translator for format: {:?}", format)))?;
         println!("✅ Found translator: {} ({})", translator.name(), if use_demo_translator { "demo/custom translator" } else { "standard translator" });
         
-        // Translate model to Universal IR using file path (supports sharded models)
+        // Translate model to Universal IR (with optional external weights file)
         println!("🔄 Starting translation from path: {}", model_path.display());
-        let mut ir = translator.translate_from_path(model_path)?;
+        let mut ir = if let Some(wp) = weights_path {
+            println!("📎 Using external weights file: {}", wp.display());
+            translator.translate_from_path_with_weights(model_path, Some(wp))?
+        } else {
+            translator.translate_from_path(model_path)?
+        };
         println!("✅ Translation complete");
 
         // Sort IR into topological (execution) order before optimization
@@ -405,19 +414,36 @@ impl CoelanoxPackager {
             self.generate_machine_code(&optimized_ir, &target, &ir.metadata.input_shapes)?
         };
         
-        // Extract weights from model
-        let weights = self.extract_weights(&model_data, &format)?;
-        let expected_elements: usize = optimized_ir.shared_weights.as_ref().iter()
-            .map(|wt| wt.elements())
-            .sum();
-        if weights.len() != expected_elements {
-            return Err(CoelanoxError::format(&format!(
-                "Weight extraction size mismatch: plugin returned {} elements but IR expects {} (model format: {:?})",
-                weights.len(),
-                expected_elements,
-                format
-            )));
-        }
+        // Build weight blob: for ONNX use IR (includes initializers + Constant nodes); else extract from model.
+        let weights: Vec<f32> = match &format {
+            ModelFormat::Onnx => {
+                // IR already has all weights (initializers + Constant node decomposition); use them so count matches.
+                optimized_ir.shared_weights.as_ref().iter()
+                    .flat_map(|wt| {
+                        wt.data.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    })
+                    .collect()
+            }
+            _ => {
+                let w = if let Some(wp) = weights_path {
+                    self.extract_weights_with_external(&model_data, &format, Some(wp))?
+                } else {
+                    self.extract_weights(&model_data, &format)?
+                };
+                let expected_elements: usize = optimized_ir.shared_weights.as_ref().iter()
+                    .map(|wt| wt.elements())
+                    .sum();
+                if w.len() != expected_elements {
+                    return Err(CoelanoxError::format(&format!(
+                        "Weight extraction size mismatch: plugin returned {} elements but IR expects {} (model format: {:?})",
+                        w.len(),
+                        expected_elements,
+                        format
+                    )));
+                }
+                w
+            }
+        };
         
         // Compress weights
         let (compressed_weights, compression_type) = self.compress_weights(&weights)?;
@@ -544,7 +570,7 @@ impl CoelanoxPackager {
     /// Package with automatic target detection
     pub fn package_auto(&self, model_path: &Path) -> CoelanoxResult<CoelanoxContainer> {
         let recommended_target = self.environment.recommended_target();
-        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None, false, None)
+        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None, false, None, None)
     }
     
     /// Detect model format from data

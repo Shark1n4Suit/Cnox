@@ -1,76 +1,83 @@
-# COELANOX documentation index
+# COELANOX Documentation
 
-Use this as the entry point for all project documentation.
-
----
-
-## Start here
-
-| Doc | Audience | Description |
-|-----|----------|-------------|
-| [../README.md](../README.md) | Everyone | What COELANOX is, CLI summary, architecture diagram, quick start |
-| [COELANOX_REFERENCE.md](../COELANOX_REFERENCE.md) | Product / high-level | Reference: what COELANOX is, what a `.cnox` file contains, strategy |
+This index is the entry point for all project documentation. Documents are grouped by audience and topic.
 
 ---
 
-## Architecture & design
+## Getting started
 
-| Doc | Description |
-|-----|-------------|
+| Document | Audience | Description |
+|----------|----------|-------------|
+| [README](../README.md) | All users | Product overview, CLI summary, architecture diagram, quick start |
+| [COELANOX_REFERENCE](../COELANOX_REFERENCE.md) | Product / strategy | High-level reference: COELANOX value proposition, `.cnox` format, strategy |
+
+---
+
+## Architecture and design
+
+| Document | Description |
+|----------|-------------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Three-command model, security hash, backend manager, AOT selection, container layout, runtime flow |
 | [CNOX_INTERNALS.md](CNOX_INTERNALS.md) | Binary layout of `.cnox` (header, manifest, code, weights, IR, NVMe backing) |
 | [HAL_MAPPING.md](HAL_MAPPING.md) | OpType ↔ CLF ↔ Memory HAL ↔ Protection HAL mapping |
 
 ---
 
-## Operations & deployment
+## Operations and deployment
 
-| Doc | Description |
-|-----|-------------|
-| [OPERATIONS.md](OPERATIONS.md) | Production runbooks: config loading, env vars, verification failed, OOM, timeout, pre-deployment checklist |
-| [CLI_REFERENCE.md](CLI_REFERENCE.md) | Full CLI command tree, options, and example invocations |
-| [CLI_MOCK_SPEC.md](CLI_MOCK_SPEC.md) | Mock CLI spec and sample outputs (e.g. for website) |
+| Document | Description |
+|----------|-------------|
+| [OPERATIONS.md](OPERATIONS.md) | Configuration, environment variables, runbooks, pre-deployment checklist |
+| [CLI_REFERENCE.md](CLI_REFERENCE.md) | CLI command tree, options, and example invocations |
+| [CLI_MOCK_SPEC.md](CLI_MOCK_SPEC.md) | Mock CLI specification and sample outputs for integration and tooling |
 | [SECURITY.md](SECURITY.md) | Security architecture, hash verification, container security, best practices, limitations |
 
 ---
 
-## Features & capabilities
+## Features and capabilities
 
-| Doc | Description |
-|-----|-------------|
-| [FEATURES.md](FEATURES.md) | Implemented vs planned: container, CLI, execution backends, IR, security, config, observability, codegen, storage, platform |
-
----
-
-## Integrations & development
-
-| Doc | Description |
-|-----|-------------|
-| [CLF_INTEGRATION.md](CLF_INTEGRATION.md) | How to add the CLF crate (submodule, path dep, published), API your implementation must provide |
-| [CODE_REVIEW_PHASE1.md](CODE_REVIEW_PHASE1.md) | Phase 1 code review: security hash, backend manager, AOT selection, CLI |
+| Document | Description |
+|----------|-------------|
+| [FEATURES.md](FEATURES.md) | Implemented and planned features: container, CLI, execution backends, IR, security, config, observability |
 
 ---
 
-## Model formats & translators
+## Integrations and development
 
-| Doc | Location | Description |
-|-----|----------|-------------|
-| [ONNX decomposition tree](../coelanox/coelanox-packager/docs/ONNX_DECOMPOSITION_TREE.md) | `coelanox/coelanox-packager/docs/` | ONNX opset 13 → IR: 1:1 map, control-flow error, decomposed ops, Custom |
-
-*(Other format docs — e.g. BERT/ResNet demo translators — can be added here.)*
+| Document | Description |
+|----------|-------------|
+| [CLF_INTEGRATION.md](CLF_INTEGRATION.md) | Integrating the CLF crate (submodule, path dependency, or published); required API surface |
 
 ---
 
-## Roadmaps & business
+## Model formats and translators
 
-| Doc | Description |
-|-----|-------------|
-| [PRODUCTION_MVP_ROADMAP.md](../roadmaps/PRODUCTION_MVP_ROADMAP.md) | Production MVP roadmap |
-| [coelanox-constellation-roadmap.md](../roadmaps/coelanox-constellation-roadmap.md) | Constellation roadmap |
-| [INVESTOR_READINESS.md](INVESTOR_READINESS.md) | Proof points, risk analysis, one-line pitch |
+| Document | Location | Description |
+|----------|----------|-------------|
+| [ONNX decomposition tree](../coelanox/coelanox-packager/docs/ONNX_DECOMPOSITION_TREE.md) | `coelanox/coelanox-packager/docs/` | ONNX opset 13 → IR: 1:1 mapping, control-flow handling, decomposed ops, Custom |
 
 ---
 
-## Doc health & gaps
+## Version history
 
-See [DOC_ASSESSMENT.md](DOC_ASSESSMENT.md) for a short assessment of doc structure, content, and suggested improvements.
+| Document | Description |
+|----------|-------------|
+| [CHANGELOG](../CHANGELOG.md) | Version history and notable changes |
+
+---
+
+## Roadmaps
+
+| Document | Description |
+|----------|-------------|
+| [PRODUCTION_MVP_ROADMAP](../roadmaps/PRODUCTION_MVP_ROADMAP.md) | Production MVP roadmap |
+| [coelanox-constellation-roadmap](../roadmaps/coelanox-constellation-roadmap.md) | Constellation roadmap |
+
+---
+
+## Deployment targets
+
+| Document | Description |
+|----------|-------------|
+| [SERVER_EDGE_EMBEDDED_ANALYSIS.md](SERVER_EDGE_EMBEDDED_ANALYSIS.md) | Server (Arc cache, eviction), edge, and embedded deployment; warm cache, weight sharing |
+| [DEMO_RESULTS.md](DEMO_RESULTS.md) | Demo run results and reproduction steps |

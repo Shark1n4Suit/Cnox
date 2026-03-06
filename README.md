@@ -4,7 +4,7 @@
 
 **One artifact. Verified integrity. Deploy anywhere.**
 
-COELANOX is the universal binary container and toolchain for AI inference. Package supported models (e.g. ONNX) into a single **`.cnox`** file: graph, optimized code, compressed weights, and a SHA-256 integrity hash. Verify before deploy; run the same file on target systems with no framework runtime or format lock-in.
+COELANOX is the universal binary container and toolchain for AI inference. Package supported models (e.g. ONNX) into a single **`.cnox`** file: graph, optimized code, compressed weights, and a SHA-256 integrity hash. Verify before deployment; run the same file on target systems with no framework runtime or format lock-in.
 
 ---
 
@@ -25,7 +25,7 @@ COELANOX is the universal binary container and toolchain for AI inference. Packa
 - **Verify** — Standalone integrity check (SHA-256) before deployment.
 - **Run** — Load and execute: verify, then infer. Optional benchmarking and diagnostics.
 
-CLI commands: `package`, `validate`, `verify`, `run`, `info`, `benchmark`, `env`, `debug`. Full reference: [docs/README.md](docs/README.md) (architecture, operations, security, CLI).
+CLI commands: `package`, `validate`, `verify`, `run`, `info`, `benchmark`, `env`, `debug`. See the [documentation index](docs/README.md) for architecture, operations, security, and full CLI reference.
 
 ---
 
@@ -55,13 +55,15 @@ CLI commands: `package`, `validate`, `verify`, `run`, `info`, `benchmark`, `env`
 
 ## Getting started
 
-**Build (from repository root):**
+**Prerequisites:** Rust toolchain (stable). Build from the repository root (Coelanox workspace).
+
+**Build:**
 
 ```bash
 cargo build --release
 ```
 
-**CLI (run from workspace root or install):**
+**Run the CLI** (from workspace root or install globally):
 
 ```bash
 cargo run --release -- <command> ...
@@ -78,12 +80,13 @@ coelanox <command> ...
 
 | Document | Description |
 |----------|-------------|
-| [docs/README.md](docs/README.md) | Documentation index (architecture, operations, security, CLI, formats) |
+| [docs/README.md](docs/README.md) | Documentation index |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, three-command model, backend and container layout |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Configuration, environment variables, runbooks, pre-deployment checklist |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security architecture, hash verification, best practices |
-| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Full CLI command tree and options |
+| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | CLI command tree and options |
 | [COELANOX_REFERENCE.md](COELANOX_REFERENCE.md) | Product and format reference |
+| [CHANGELOG.md](CHANGELOG.md) | Version history and notable changes |
 
 ---
 
@@ -96,4 +99,4 @@ coelanox <command> ...
 
 ## License
 
-COELANOX is proprietary software. See [LICENSE](LICENSE) for terms.
+Proprietary. See [LICENSE](LICENSE) for terms.

@@ -1,6 +1,6 @@
 # COELANOX Features
 
-Accurate feature list for the current beta. Items marked **Planned** are on the roadmap but not yet implemented.
+This document lists implemented and planned features for the current release. Items marked **Planned** are on the roadmap but not yet implemented.
 
 ---
 
@@ -41,10 +41,10 @@ Accurate feature list for the current beta. Items marked **Planned** are on the 
 ## 3. Execution & backends
 
 ### Implemented
-- **Dual execution path** — Same `.cnox` can run via **scalar** (pure Rust, all platforms) or **plan/SIMD** (CLF mini-executor when `COELANOX_CLF_PATH` is set).
+- **Dual execution path** — Same `.cnox` can run via **scalar** (pure Rust, all platforms) or **plan/SIMD** (CLF mini-executor when compute backends are available).
 - **Scalar fallback** — Single implementation in `coelanox-core`; reference for correctness; no vendor runtime required.
 - **CLF path** — Execution plan (workspace, node steps, op_ids, kernel offsets); mini-executor dispatches to CLF kernel blobs; proven with BERT and ResNet-tiny-MNIST.
-- **Backend discovery** — `COELANOX_CLF_PATH`, `COELANOX_BACKEND_PATH`; BackendManager discovers CLF/vendor backends at runtime.
+- **Backend discovery** — Default path `~/.coelanox/clf/clfc/` (no env required); override via `COELANOX_CLF_PATH`; additional paths via `COELANOX_BACKEND_PATH`. BackendManager discovers CLF and vendor backends at package and run time.
 - **AOT-style selection at package time** — `--target` (slim), `--fat`, `--auto`, `--backend-add`; container carries selected backend metadata.
 - **Run-time backend choice** — `--backend auto|scalar|cpu|simd` for `run` and `benchmark`.
 
