@@ -21,6 +21,18 @@ use clf_kernels_simd::{
     clf_simd_transpose,
 };
 
+/// CLFE 6-arg kernel signature (x86-64 SysV: input, output, weights, in_len, out_len, w_len).
+/// All CLFC blobs packed for the mini-executor must conform to this ABI.
+#[cfg(target_arch = "x86_64")]
+type ClfeKernelFn = unsafe extern "C" fn(
+    *const f32,
+    *mut f32,
+    *const f32,
+    usize,
+    usize,
+    usize,
+);
+
 /// Plan format version 1: version(4) + workspace(4) + scratch(4) + num_nodes(4) + nodes + num_kernels(4) + kernel_offsets.
 /// Legacy (no version): workspace(4) + num_nodes(4) + nodes + num_kernels(4) + kernel_offsets; scratch computed from conv steps.
 pub const PLAN_VERSION_V1: u32 = 1;
@@ -35,12 +47,30 @@ pub const PLAN_HEADER_V1_SIZE: usize = 4 + 4 + 4 + 4; // version + workspace + s
 pub const PLAN_NODE_SIZE: usize = 7 * 4;  // 7 u32 per node
 pub const PLAN_KERNEL_HEADER: usize = 4;  // num_kernels
 
+/// Read u32 little-endian from plan at offset; returns error if truncated.
+#[inline]
+fn read_u32(plan: &[u8], at: usize) -> CoelanoxResult<u32> {
+    let end = at + 4;
+    if end > plan.len() {
+        return Err(CoelanoxError::Runtime(format!(
+            "Execution plan truncated at offset {} (need 4 bytes, have {})",
+            at,
+            plan.len().saturating_sub(at)
+        )));
+    }
+    Ok(u32::from_le_bytes(
+        plan[at..end]
+            .try_into()
+            .map_err(|_| CoelanoxError::Runtime("Invalid plan layout".to_string()))?,
+    ))
+}
+
 /// Returns scratch elements for the plan: from V1 header if present, else computed from conv steps (legacy).
 pub fn scratch_elements_from_plan(plan: &[u8]) -> CoelanoxResult<usize> {
     if plan.len() >= 12 {
-        let version = u32::from_le_bytes(plan[0..4].try_into().unwrap());
+        let version = read_u32(plan, 0)?;
         if version == PLAN_VERSION_V1 {
-            return Ok(u32::from_le_bytes(plan[8..12].try_into().unwrap()) as usize);
+            return Ok(read_u32(plan, 8)? as usize);
         }
     }
     max_conv_scratch_elements(plan)
@@ -56,14 +86,14 @@ pub fn parse_plan(plan: &[u8]) -> CoelanoxResult<(u32, Vec<PlanStep>, Vec<u32>)>
         )));
     }
     let (workspace_elements, num_nodes, mut offset) = if plan.len() >= 4 {
-        let version = u32::from_le_bytes(plan[0..4].try_into().unwrap());
+        let version = read_u32(plan, 0)?;
         if version == PLAN_VERSION_V1 && plan.len() >= PLAN_HEADER_V1_SIZE {
-            let workspace = u32::from_le_bytes(plan[4..8].try_into().unwrap());
-            let num_nodes = u32::from_le_bytes(plan[12..16].try_into().unwrap());
+            let workspace = read_u32(plan, 4)?;
+            let num_nodes = read_u32(plan, 12)?;
             (workspace, num_nodes, 16usize)
         } else {
-            let workspace = u32::from_le_bytes(plan[0..4].try_into().unwrap());
-            let num_nodes = u32::from_le_bytes(plan[4..8].try_into().unwrap());
+            let workspace = read_u32(plan, 0)?;
+            let num_nodes = read_u32(plan, 4)?;
             (workspace, num_nodes, 8usize)
         }
     } else {
@@ -77,27 +107,27 @@ pub fn parse_plan(plan: &[u8]) -> CoelanoxResult<(u32, Vec<PlanStep>, Vec<u32>)>
             return Err(CoelanoxError::Runtime("Execution plan truncated at node".to_string()));
         }
         steps.push(PlanStep {
-            op_id: u32::from_le_bytes(plan[offset..offset + 4].try_into().unwrap()),
-            in_off: u32::from_le_bytes(plan[offset + 4..offset + 8].try_into().unwrap()),
-            out_off: u32::from_le_bytes(plan[offset + 8..offset + 12].try_into().unwrap()),
-            w_off: u32::from_le_bytes(plan[offset + 12..offset + 16].try_into().unwrap()),
-            in_len: u32::from_le_bytes(plan[offset + 16..offset + 20].try_into().unwrap()),
-            out_len: u32::from_le_bytes(plan[offset + 20..offset + 24].try_into().unwrap()),
-            w_len: u32::from_le_bytes(plan[offset + 24..offset + 28].try_into().unwrap()),
+            op_id: read_u32(plan, offset)?,
+            in_off: read_u32(plan, offset + 4)?,
+            out_off: read_u32(plan, offset + 8)?,
+            w_off: read_u32(plan, offset + 12)?,
+            in_len: read_u32(plan, offset + 16)?,
+            out_len: read_u32(plan, offset + 20)?,
+            w_len: read_u32(plan, offset + 24)?,
         });
         offset += PLAN_NODE_SIZE;
     }
     if offset + 4 > plan.len() {
         return Err(CoelanoxError::Runtime("Execution plan truncated at kernel count".to_string()));
     }
-    let num_kernels = u32::from_le_bytes(plan[offset..offset + 4].try_into().unwrap()) as usize;
+    let num_kernels = read_u32(plan, offset)? as usize;
     offset += 4;
     let mut kernel_offsets = Vec::with_capacity(num_kernels);
     for _ in 0..num_kernels {
         if offset + 4 > plan.len() {
             return Err(CoelanoxError::Runtime("Execution plan truncated at kernel offsets".to_string()));
         }
-        kernel_offsets.push(u32::from_le_bytes(plan[offset..offset + 4].try_into().unwrap()));
+        kernel_offsets.push(read_u32(plan, offset)?);
         offset += 4;
     }
     Ok((workspace_elements, steps, kernel_offsets))
@@ -540,6 +570,37 @@ pub fn run_with_plan(
     Ok(())
 }
 
+/// Symbol-based execution (Rust SIMD kernels). Exposed for simd-symbols backend; same behavior as run_with_plan on x86_64.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn run_with_plan_symbols(
+    _code_section: &[u8],
+    _plan: &[u8],
+    _input: &[f32],
+    _output: &mut [f32],
+    _weights: &[f32],
+    _workspace: &mut [f32],
+    _audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    _abort_check: Option<&(dyn Fn() -> bool + '_)>,
+) -> CoelanoxResult<()> {
+    Err(CoelanoxError::Runtime(
+        "CLF executor is only implemented for x86_64; use scalar fallback on this platform".to_string(),
+    ))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn run_with_plan_symbols(
+    code_section: &[u8],
+    plan: &[u8],
+    input: &[f32],
+    output: &mut [f32],
+    weights: &[f32],
+    workspace: &mut [f32],
+    audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    abort_check: Option<&(dyn Fn() -> bool + '_)>,
+) -> CoelanoxResult<()> {
+    run_with_plan(code_section, plan, input, output, weights, workspace, audit_cb, abort_check)
+}
+
 /// Run inference with a per-step weight provider (for double ring buffer in the orchestrator).
 /// The executor provides a single `weight_buffer`; each step the caller's
 /// `weight_provider(step_index, w_off, w_len, weight_buffer)` fills it and returns the length.
@@ -565,6 +626,124 @@ where
 
 #[cfg(target_arch = "x86_64")]
 pub fn run_with_plan_with_weight_provider<F>(
+    code_section: &[u8],
+    plan: &[u8],
+    input: &[f32],
+    output: &mut [f32],
+    workspace: &mut [f32],
+    weight_buffer: &mut [f32],
+    mut audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    weight_provider: &mut F,
+    abort_check: Option<&(dyn Fn() -> bool + '_)>,
+) -> CoelanoxResult<()>
+where
+    F: FnMut(usize, u32, u32, &mut [f32]) -> usize,
+{
+    let (workspace_elements, steps, kernel_offsets) = parse_plan(plan)?;
+    if workspace.len() < workspace_elements as usize {
+        return Err(CoelanoxError::Runtime(format!(
+            "Workspace too small: need {} elements, got {}",
+            workspace_elements,
+            workspace.len()
+        )));
+    }
+    if code_section.is_empty() {
+        return Err(CoelanoxError::Runtime(
+            "Code section is empty; container must contain CLFC blobs".to_string(),
+        ));
+    }
+    if kernel_offsets.len() < steps.len() {
+        return Err(CoelanoxError::Runtime(format!(
+            "Plan has {} steps but only {} kernel offsets (re-package with CLFC)",
+            steps.len(),
+            kernel_offsets.len()
+        )));
+    }
+    let code_base = code_section.as_ptr() as usize;
+
+    let input_len = input.len().min(workspace.len());
+    workspace[..input_len].copy_from_slice(&input[..input_len]);
+
+    for (step_index, step) in steps.iter().enumerate() {
+        if let Some(check) = abort_check {
+            if check() {
+                return Err(CoelanoxError::Runtime(
+                    "Execution timeout exceeded (COELANOX_EXECUTION_TIMEOUT_MS)".to_string(),
+                ));
+            }
+        }
+        let w_len = weight_provider(step_index, step.w_off, step.w_len, weight_buffer);
+        if weight_buffer.len() < w_len {
+            return Err(CoelanoxError::Runtime(format!(
+                "Weight buffer too small for step {} (need {} elements)",
+                step_index,
+                w_len
+            )));
+        }
+        let w_ptr = weight_buffer.as_ptr();
+        let k_off = kernel_offsets[step_index] as usize;
+        if k_off >= code_section.len() {
+            return Err(CoelanoxError::Runtime(format!(
+                "Step {}: kernel offset {} out of bounds (code section len {})",
+                step_index,
+                k_off,
+                code_section.len()
+            )));
+        }
+        let in_ptr = workspace.as_ptr().wrapping_add(step.in_off as usize);
+        let out_ptr = workspace.as_mut_ptr().wrapping_add(step.out_off as usize);
+        let in_len = step.in_len as usize;
+        let out_len = step.out_len as usize;
+
+        let kernel_fn: *const ClfeKernelFn = (code_base + k_off) as *const ClfeKernelFn;
+        unsafe {
+            (*kernel_fn)(in_ptr, out_ptr, w_ptr, in_len, out_len, w_len);
+        }
+
+        if let Some(cb) = &mut audit_cb {
+            let out_start = step.out_off as usize;
+            let out_len_audit = step.out_len as usize;
+            let end = (out_start + out_len_audit).min(workspace.len());
+            if out_start < end {
+                cb(step_index, step.op_id, &workspace[out_start..end]);
+            }
+        }
+    }
+    if let Some(last) = steps.last() {
+        let out_start = last.out_off as usize;
+        let out_len = last.out_len as usize;
+        let copy_len = out_len.min(output.len()).min(workspace.len().saturating_sub(out_start));
+        if copy_len > 0 {
+            output[..copy_len].copy_from_slice(&workspace[out_start..out_start + copy_len]);
+        }
+    }
+    Ok(())
+}
+
+/// Symbol-based execution (Rust SIMD kernels) for simd-symbols backend.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn run_with_plan_with_weight_provider_symbols<F>(
+    _code_section: &[u8],
+    _plan: &[u8],
+    _input: &[f32],
+    _output: &mut [f32],
+    _workspace: &mut [f32],
+    _weight_buffer: &mut [f32],
+    _audit_cb: Option<&mut (dyn FnMut(usize, u32, &[f32]) + '_)>,
+    _weight_provider: &mut F,
+    _abort_check: Option<&(dyn Fn() -> bool + '_)>,
+) -> CoelanoxResult<()>
+where
+    F: FnMut(usize, u32, u32, &mut [f32]) -> usize,
+{
+    Err(CoelanoxError::Runtime(
+        "SIMD symbol executor is only implemented for x86_64; use scalar fallback on this platform"
+            .to_string(),
+    ))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn run_with_plan_with_weight_provider_symbols<F>(
     _code_section: &[u8],
     plan: &[u8],
     input: &[f32],

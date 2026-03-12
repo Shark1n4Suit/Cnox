@@ -29,11 +29,11 @@ pub struct BackendInfo {
     pub name: String,
     /// Backend version
     pub version: String,
-    /// Path to the dynamic library or .clf file
+    /// Path to the dynamic library or CLF file (.clfc compute, or legacy .clf)
     pub library_path: PathBuf,
     /// Hardware targets supported by this backend
     pub supported_targets: Vec<HardwareTarget>,
-    /// Whether this backend is a translator (.so) or CLF (.clf)
+    /// Whether this backend is a translator (.so) or CLF (.clfc / .clf)
     pub kind: BackendKind,
 }
 
@@ -185,6 +185,10 @@ impl BackendManager {
                         }
                     }
                 } else if Self::is_clf_file(&path) {
+                    // In the compute subdir (clfc/), only load .clfc files; legacy .clf is not used for compute.
+                    if Self::is_compute_subdir(search_path) && !Self::is_clfc_extension(&path) {
+                        continue;
+                    }
                     match self.load_clf_backend(&path) {
                         Ok(backend_info) => {
                             result.discovered.push(backend_info.clone());
@@ -204,17 +208,32 @@ impl BackendManager {
         Ok(result)
     }
     
-    /// Check if a file is a CLF (Coelanox Library File). Accepts .clf (legacy) and .clfc (compute).
+    /// Check if a file is a CLF (Coelanox Library File). Accepts .clfc (compute) and .clf (legacy).
     fn is_clf_file(path: &Path) -> bool {
         path.extension()
             .map(|e| {
                 let ext = e.to_string_lossy().to_lowercase();
-                ext == "clf" || ext == "clfc"
+                ext == "clfc" || ext == "clf"
             })
             .unwrap_or(false)
     }
+
+    /// True if this path is the compute subdirectory (e.g. .../clf/clfc). Compute backends must be .clfc.
+    fn is_compute_subdir(search_path: &Path) -> bool {
+        search_path
+            .file_name()
+            .map(|n| n == "clfc")
+            .unwrap_or(false)
+    }
+
+    /// True if the file has extension .clfc (compute CLF). Used so we only load .clfc in clfc/, not legacy .clf.
+    fn is_clfc_extension(path: &Path) -> bool {
+        path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase() == "clfc")
+            .unwrap_or(false)
+    }
     
-    /// Register a .clf file as a backend. Reads CLF header to set supported_targets from target field.
+    /// Register a .clfc (or legacy .clf) file as a backend. Reads CLF header to set supported_targets from target field.
     fn load_clf_backend(&self, path: &Path) -> CoelanoxResult<BackendInfo> {
         if !path.exists() {
             return Err(CoelanoxError::BackendLibraryNotFound(
@@ -238,7 +257,7 @@ impl BackendManager {
 
     /// Read CLF header target string and map to HardwareTarget(s). Defaults to Gpu if read fails.
     fn clf_target_to_hardware(path: &Path) -> Vec<HardwareTarget> {
-        let reader = match clf::ClfReader::open(path) {
+        let reader = match coelanox_clf::ClfReader::open(path) {
             Ok(r) => r,
             Err(_) => return vec![HardwareTarget::Gpu],
         };

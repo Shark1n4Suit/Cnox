@@ -9,6 +9,7 @@ This index is the entry point for all project documentation. Documents are group
 | Document | Audience | Description |
 |----------|----------|-------------|
 | [README](../README.md) | All users | Product overview, CLI summary, architecture diagram, quick start |
+| [INSTALL.md](INSTALL.md) | End users | Install from a release (download, extract, PATH); no Rust required |
 | [COELANOX_REFERENCE](../COELANOX_REFERENCE.md) | Product / strategy | High-level reference: COELANOX value proposition, `.cnox` format, strategy |
 
 ---

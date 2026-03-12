@@ -13,7 +13,7 @@ default = []
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
 coelanox-executor = { path = "../coelanox-executor" }
-clf = { path = "../../../CLF" }
+coelanox-clf = { path = "../coelanox-clf" }
 bincode = "1.3"
 libc = "0.2"
 windows-sys = { version = "0.48", features = ["Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Threading"] }

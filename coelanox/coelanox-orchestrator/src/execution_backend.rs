@@ -17,12 +17,14 @@ use std::collections::HashMap;
 
 /// Cached (warm) data for a container to avoid per-inference decompress and IR deserialize.
 /// Filled by the orchestrator on first use; backends use it when provided.
+/// When `optimized_ir` is `None`, only weights are cached (plan path); scalar path requires `Some`.
 #[derive(Clone)]
 pub struct ContainerWarmData {
     /// Decompressed weights (one-time decompress, reused for all inferences).
     pub decompressed_weights: Vec<f32>,
     /// Deserialized IR for scalar fallback (avoids bincode::deserialize every run).
-    pub optimized_ir: OptimizedIR,
+    /// `None` when only weights were resolved (plan path); scalar fallback requires `Some`.
+    pub optimized_ir: Option<OptimizedIR>,
 }
 
 /// Trait for runtime execution backends.

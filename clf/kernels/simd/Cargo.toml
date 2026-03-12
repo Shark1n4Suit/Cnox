@@ -1,0 +1,23 @@
+[package]
+name = "clf-kernels-simd"
+version = "0.1.0"
+edition = "2021"
+description = "x86_64 SIMD (AVX2/AVX-512) kernels for CLF ops: Add, ReLU, BatchNorm, GlobalAvgPool, Convolution, MatMul. Fixed C ABI, no_std, no alloc."
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = ["avx2", "std"]
+std = []    # Use std (enables f32::sqrt, no panic handler). Disable for no_std + nightly build-std.
+avx2 = []   # Use 256-bit SIMD (8 f32). Requires RUSTFLAGS="-C target-feature=+avx2" or build with -C target-cpu=native.
+avx512 = [] # Use 512-bit SIMD (16 f32) where available. Requires target-feature=+avx512f.
+
+[dependencies]
+libm = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

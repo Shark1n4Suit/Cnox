@@ -8,7 +8,7 @@
 
 use std::sync::Mutex;
 
-use clf::{ClfKind, ClfReaderFromBytes};
+use coelanox_clf::{ClfKind, ClfReaderFromBytes};
 use coelanox_core::format::CoelanoxContainer;
 use coelanox_core::{
     memory_hal::{

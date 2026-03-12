@@ -4,7 +4,7 @@
 
 use clap::{Parser, Subcommand};
 use tracing::{info, warn, error};
-use coelanox_core::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
+use coelanox_core::{CoelanoxError, CoelanoxResult, format::{HardwareTarget, header_audit_required, generate_signing_keypair, is_container_signed}};
 use coelanox_packager::CoelanoxPackager;
 use coelanox_orchestrator::{CoelanoxRuntime, RuntimeConfig};
 use std::path::{Path, PathBuf};
@@ -132,6 +132,10 @@ enum Commands {
         #[arg(long)]
         fallback_only: bool,
         
+        /// Set container so runtime always runs with audit (compliance); audit logs go to default folder if not specified
+        #[arg(long)]
+        audit_required: bool,
+        
         /// Max dynamic memory (workspace + scratch) in MB; build fails if model needs more (e.g. 64, 1024)
         #[arg(long)]
         max_workspace: Option<u64>,
@@ -139,6 +143,10 @@ enum Commands {
         /// Optional external weights file (e.g. for ONNX models with separate fp16/f32 weight file)
         #[arg(long)]
         weights: Option<String>,
+
+        /// Path to Ed25519 secret key file (32 raw bytes) to sign the container. Env: COELANOX_SIGNING_KEY.
+        #[arg(long)]
+        signing_key: Option<String>,
     },
     
     /// Validate a COELANOX container
@@ -148,15 +156,30 @@ enum Commands {
         file: String,
     },
     
+    /// Generate Ed25519 keypair for container signing (secret.bin, public.bin)
+    Keygen {
+        /// Output directory for secret.bin and public.bin (default: current dir)
+        #[arg(short, long)]
+        output_dir: Option<String>,
+    },
+
     /// Verify container integrity (pre-deployment check)
     Verify {
         /// COELANOX file to verify
         #[arg(short, long)]
         file: String,
-        
+
         /// Enable verbose output
         #[arg(short, long)]
         verbose: bool,
+
+        /// Path to trusted Ed25519 public key (32 raw bytes) for signature verification. Env: COELANOX_TRUSTED_PUBLIC_KEY.
+        #[arg(long)]
+        trusted_key: Option<String>,
+
+        /// Fail if container is signed but no trusted key provided (enforces provenance).
+        #[arg(long)]
+        require_signature: bool,
     },
     
     /// Show information about a COELANOX container
@@ -205,6 +228,14 @@ enum Commands {
         /// Skip container integrity (hash) verification. Faster load; use only for trusted/dev.
         #[arg(long)]
         no_verify: bool,
+
+        /// Path to trusted Ed25519 public key (32 raw bytes) for signature verification. Env: COELANOX_TRUSTED_PUBLIC_KEY.
+        #[arg(long)]
+        trusted_key: Option<String>,
+
+        /// Fail if container is signed but no trusted key provided (enforces provenance).
+        #[arg(long)]
+        require_signature: bool,
     },
     
     /// Benchmark a COELANOX container
@@ -230,8 +261,16 @@ enum Commands {
         /// Skip container integrity (hash) verification for faster load
         #[arg(long)]
         no_verify: bool,
+
+        /// Path to trusted Ed25519 public key (32 raw bytes) for signature verification. Env: COELANOX_TRUSTED_PUBLIC_KEY.
+        #[arg(long)]
+        trusted_key: Option<String>,
+
+        /// Fail if container is signed but no trusted key provided (enforces provenance).
+        #[arg(long)]
+        require_signature: bool,
     },
-    
+
     /// Show system environment information
     Env,
     
@@ -286,23 +325,26 @@ fn main() -> CoelanoxResult<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only, max_workspace, weights } => {
-            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only, max_workspace, weights.as_deref())
+        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only, audit_required, max_workspace, weights, signing_key } => {
+            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only, audit_required, max_workspace, weights.as_deref(), signing_key.as_deref())
         }
         Commands::Validate { file } => {
             validate_command(&file)
         }
-        Commands::Verify { file, verbose } => {
-            verify_command(&file, verbose)
+        Commands::Keygen { output_dir } => {
+            keygen_command(output_dir.as_deref())
+        }
+        Commands::Verify { file, verbose, trusted_key, require_signature } => {
+            verify_command(&file, verbose, trusted_key.as_deref(), require_signature)
         }
         Commands::Info { file, dump_plan, list_ops } => {
             info_command(&file, dump_plan, list_ops)
         }
-        Commands::Run { file, input, output, backend, audit, audit_output, max_workspace_mb, no_verify } => {
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), max_workspace_mb, no_verify)
+        Commands::Run { file, input, output, backend, audit, audit_output, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
         }
-        Commands::Benchmark { file, iterations, loop_iterations, backend, output, max_workspace_mb, no_verify } => {
-            benchmark_command(&file, iterations, loop_iterations, &backend, &output, max_workspace_mb, no_verify)
+        Commands::Benchmark { file, iterations, loop_iterations, backend, output, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+            benchmark_command(&file, iterations, loop_iterations, &backend, &output, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
         }
         Commands::Env => {
             env_command()
@@ -316,7 +358,7 @@ fn main() -> CoelanoxResult<()> {
     }
 }
 
-fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace: Option<u64>, weights: Option<&str>) -> CoelanoxResult<()> {
+fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, audit_required: bool, max_workspace: Option<u64>, weights: Option<&str>, signing_key: Option<&str>) -> CoelanoxResult<()> {
     info!("Packaging model: {} -> {}", input, output);
     info!("Model type: {}", model_type);
     
@@ -447,13 +489,34 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
         auto,
         backend_add,
         fallback_only,
+        audit_required,
         max_workspace,
         weights_path.as_deref(),
     )?;
     eprintln!("✅ packager.package() returned successfully");
-    
-    // Save container to binary file using the proper output path
-    container.write_binary_file(&final_output_path)?;
+
+    // Resolve signing key: --signing-key or COELANOX_SIGNING_KEY (path to 32-byte file)
+    let signing_key_path = signing_key
+        .map(String::from)
+        .or_else(|| std::env::var("COELANOX_SIGNING_KEY").ok());
+    let signing_key_bytes = if let Some(ref path) = signing_key_path {
+        let key = std::fs::read(path)
+            .map_err(|e| CoelanoxError::format(&format!("Failed to read signing key from {}: {}", path, e)))?;
+        if key.len() != 32 {
+            return Err(CoelanoxError::format(&format!(
+                "Signing key must be exactly 32 bytes (Ed25519 seed), got {} bytes",
+                key.len()
+            )));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&key);
+        Some(arr)
+    } else {
+        None
+    };
+
+    // Save container to binary file (with optional signing)
+    container.write_binary_file_with_signing(&final_output_path, signing_key_bytes.as_ref())?;
     
     info!("✅ Container packaged successfully");
     info!("Container saved to: {}", final_output_path.display());
@@ -481,14 +544,43 @@ fn validate_command(file: &str) -> CoelanoxResult<()> {
     Ok(())
 }
 
-fn verify_command(file: &str, verbose: bool) -> CoelanoxResult<()> {
+fn keygen_command(output_dir: Option<&str>) -> CoelanoxResult<()> {
+    let (secret, public) = generate_signing_keypair();
+    let base = output_dir.unwrap_or(".");
+    let secret_path = std::path::Path::new(base).join("secret.bin");
+    let public_path = std::path::Path::new(base).join("public.bin");
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir).map_err(CoelanoxError::FileSystem)?;
+    }
+    std::fs::write(&secret_path, &secret).map_err(CoelanoxError::FileSystem)?;
+    std::fs::write(&public_path, &public).map_err(CoelanoxError::FileSystem)?;
+    println!("✅ Ed25519 keypair generated");
+    println!("   Secret: {} (keep private)", secret_path.display());
+    println!("   Public: {} (use with --trusted-key)", public_path.display());
+    Ok(())
+}
+
+fn verify_command(file: &str, verbose: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
     if verbose {
         info!("Verifying container integrity: {}", file);
     }
-    
-    // Verify security hash (pre-deployment check)
-    // This reads from cold storage and verifies hash without loading into memory tier
-    match coelanox_core::format::verify_security_hash(std::path::Path::new(file)) {
+
+    if require_signature {
+        let signed = is_container_signed(std::path::Path::new(file))?;
+        let has_key = trusted_key.is_some() || std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").is_ok();
+        if signed && !has_key {
+            return Err(CoelanoxError::format(
+                "Container is signed but no trusted key provided. Use --trusted-key or COELANOX_TRUSTED_PUBLIC_KEY (--require-signature enforces provenance)"
+            ));
+        }
+    }
+
+    let trusted_key_bytes = resolve_trusted_key(trusted_key)?;
+
+    match coelanox_core::format::verify_security_hash_with_trusted_key(
+        std::path::Path::new(file),
+        trusted_key_bytes.as_ref(),
+    ) {
         Ok(()) => {
             println!("✅ Container integrity verified");
             if verbose {
@@ -503,6 +595,29 @@ fn verify_command(file: &str, verbose: bool) -> CoelanoxResult<()> {
             eprintln!("Do not load or execute this container.");
             Err(e)
         }
+    }
+}
+
+/// Resolve trusted public key from --trusted-key or COELANOX_TRUSTED_PUBLIC_KEY (path to 32-byte file).
+fn resolve_trusted_key(path: Option<&str>) -> CoelanoxResult<Option<[u8; 32]>> {
+    let p = path
+        .map(String::from)
+        .or_else(|| std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").ok());
+    match p.as_deref() {
+        Some(path) => {
+            let key = std::fs::read(path)
+                .map_err(|e| CoelanoxError::format(&format!("Failed to read trusted key from {}: {}", path, e)))?;
+            if key.len() != 32 {
+                return Err(CoelanoxError::format(&format!(
+                    "Trusted public key must be exactly 32 bytes, got {} bytes",
+                    key.len()
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&key);
+            Ok(Some(arr))
+        }
+        None => Ok(None),
     }
 }
 
@@ -595,19 +710,44 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
     Ok(())
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, max_workspace_mb: Option<u64>, no_verify: bool) -> CoelanoxResult<()> {
+/// Default audit output path when container has audit-required flag and user did not set --audit-output:
+/// coelanox_audit/<container_stem>_<unix_secs>.json in current directory.
+fn default_audit_path(container_file: &str) -> PathBuf {
+    let stem = Path::new(container_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("container");
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let dir = PathBuf::from("coelanox_audit");
+    let _ = fs::create_dir_all(&dir);
+    dir.join(format!("{}_{}.json", stem, secs))
+}
+
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, max_workspace_mb: Option<u64>, no_verify: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
     info!("Running inference: {} -> {} (backend: {})", input.unwrap_or("auto"), output, backend);
-    if audit {
-        coelanox_orchestrator::audit::set_audit_mode(true, audit_output.map(std::path::Path::new));
-    }
-    
     let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
-    
+
+    if require_signature {
+        let signed = is_container_signed(std::path::Path::new(file))?;
+        let has_key = trusted_key.is_some() || std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").is_ok();
+        if signed && !has_key {
+            return Err(CoelanoxError::format(
+                "Container is signed but no trusted key provided. Use --trusted-key or COELANOX_TRUSTED_PUBLIC_KEY (--require-signature enforces provenance)"
+            ));
+        }
+    }
+
     // Load runtime (config from COELANOX_CONFIG_FILE or COELANOX_* env vars)
     let config = load_runtime_config();
     let mut runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
+    }
+    if let Some(key) = resolve_trusted_key(trusted_key)? {
+        runtime.set_trusted_public_key(key);
     }
     if no_verify {
         info!("Loading container (--no-verify: skipping integrity hash)...");
@@ -623,6 +763,25 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
             e
         })?;
         info!("✅ Container loaded and verified");
+    }
+    
+    // If container has audit-required flag, always run with audit (compliance). Use --audit-output if set, else default folder.
+    let container = runtime.get_container_info(file)?;
+    let audit_required_by_container = header_audit_required(container.header.flags);
+    let audit_path: Option<PathBuf> = if audit_required_by_container {
+        Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
+    } else if audit {
+        audit_output.map(PathBuf::from)
+    } else {
+        None
+    };
+    if audit || audit_required_by_container {
+        if audit_required_by_container && audit_output.is_none() {
+            if let Some(ref p) = audit_path {
+                info!("Container requires audit; writing audit log to {}", p.display());
+            }
+        }
+        coelanox_orchestrator::audit::set_audit_mode(true, audit_path.as_deref().map(Path::new));
     }
     
     // Load input data
@@ -652,7 +811,7 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
 
     // Execute inference with backend selection (backend manager chooses execution path)
     let result = runtime.execute_with_backend(file, &input_data, backend);
-    if audit {
+    if audit || audit_required_by_container {
         coelanox_orchestrator::audit::set_audit_mode(false, None);
     }
     let result = result?;
@@ -680,6 +839,8 @@ fn benchmark_command(
     output_format: &str,
     max_workspace_mb: Option<u64>,
     no_verify: bool,
+    trusted_key: Option<&str>,
+    require_signature: bool,
 ) -> CoelanoxResult<()> {
     let effective_iterations = loop_iterations.unwrap_or(iterations);
     let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
@@ -696,6 +857,18 @@ fn benchmark_command(
     let mut runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
+    }
+    if let Some(key) = resolve_trusted_key(trusted_key)? {
+        runtime.set_trusted_public_key(key);
+    }
+    if require_signature {
+        let signed = is_container_signed(std::path::Path::new(file))?;
+        let has_key = trusted_key.is_some() || std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").is_ok();
+        if signed && !has_key {
+            return Err(CoelanoxError::format(
+                "Container is signed but no trusted key provided. Use --trusted-key or COELANOX_TRUSTED_PUBLIC_KEY (--require-signature enforces provenance)"
+            ));
+        }
     }
     let load_start = std::time::Instant::now();
     if no_verify {

@@ -9,6 +9,8 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use sha2::{Sha256, Digest};
 use zerocopy::Ref;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use rand_core::OsRng;
 use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
 
 /// COELANOX binary format constants
@@ -18,6 +20,26 @@ pub const COELANOX_HEADER_SIZE: usize = 76; // Fixed header size: 4(magic) + 4(v
 pub const COELANOX_HEADER_SECURITY_HASH_OFFSET: usize = 36;
 pub const COELANOX_MANIFEST_OFFSET: usize = COELANOX_HEADER_SIZE;
 pub const COELANOX_CODE_OFFSET: usize = COELANOX_MANIFEST_OFFSET + 1024; // Approximate manifest size
+
+/// Header flag: container must run with audit enabled every time (compliance). Runtime defaults audit output to a default folder if not specified.
+pub const COELANOX_FLAG_AUDIT_REQUIRED: u32 = 1 << 0;
+/// Header flag: container has Ed25519 signature appended (64 bytes after content). Hash covers content only.
+pub const COELANOX_FLAG_SIGNED: u32 = 1 << 1;
+
+/// Ed25519 signature length in bytes.
+pub const ED25519_SIGNATURE_LEN: usize = 64;
+
+/// Returns true if the header flags indicate audit is required for every run.
+#[inline]
+pub fn header_audit_required(flags: u32) -> bool {
+    (flags & COELANOX_FLAG_AUDIT_REQUIRED) != 0
+}
+
+/// Returns true if the header flags indicate the container has an Ed25519 signature appended.
+#[inline]
+pub fn header_signed(flags: u32) -> bool {
+    (flags & COELANOX_FLAG_SIGNED) != 0
+}
 
 /// COELANOX header with binary layout
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,12 +63,17 @@ pub struct CoelanoxHeader {
 }
 
 impl CoelanoxHeader {
-    /// Create a new COELANOX header
+    /// Create a new COELANOX header with no flags.
     pub fn new(container_size: u64, manifest_offset: u64, code_offset: u64) -> Self {
+        Self::new_with_flags(container_size, manifest_offset, code_offset, 0)
+    }
+
+    /// Create a new COELANOX header with the given flags (e.g. COELANOX_FLAG_AUDIT_REQUIRED).
+    pub fn new_with_flags(container_size: u64, manifest_offset: u64, code_offset: u64, flags: u32) -> Self {
         Self {
             magic: COELANOX_MAGIC,
             version: COELANOX_BINARY_VERSION,
-            flags: 0,
+            flags,
             container_size,
             manifest_offset,
             code_offset,
@@ -570,11 +597,12 @@ impl CoelanoxContainer {
     ) -> Self {
         Self::new_with_hal_data_and_plan(
             manifest, optimized_code, compressed_weights, compression_type, ir_data,
-            nvme_backing_data, clfmm_data, clfmp_data, None,
+            nvme_backing_data, clfmm_data, clfmp_data, None, 0,
         )
     }
 
-    /// Create a new COELANOX container with NVMe, CLFMM, CLFMP, and optional execution plan (CLF mini-executor)
+    /// Create a new COELANOX container with NVMe, CLFMM, CLFMP, and optional execution plan (CLF mini-executor).
+    /// `header_flags` is passed to the container header (e.g. COELANOX_FLAG_AUDIT_REQUIRED for compliance).
     pub fn new_with_hal_data_and_plan(
         manifest: CoelanoxManifest,
         optimized_code: Vec<u8>,
@@ -585,6 +613,7 @@ impl CoelanoxContainer {
         clfmm_data: Option<Vec<u8>>,
         clfmp_data: Option<Vec<u8>>,
         execution_plan: Option<Vec<u8>>,
+        header_flags: u32,
     ) -> Self {
         let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
         let code_offset = COELANOX_HEADER_SIZE as u64 + manifest_size as u64;
@@ -620,7 +649,7 @@ impl CoelanoxContainer {
             + execution_plan.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0);
 
         Self {
-            header: CoelanoxHeader::new(total_size, COELANOX_HEADER_SIZE as u64, code_offset),
+            header: CoelanoxHeader::new_with_flags(total_size, COELANOX_HEADER_SIZE as u64, code_offset, header_flags),
             manifest,
             optimized_code,
             compressed_weights,
@@ -732,36 +761,79 @@ impl CoelanoxContainer {
         Ok(weights)
     }
     
-    /// Write container to binary file
-    /// 
-    /// This method writes the container to a file and calculates the SHA-256 security hash.
-    /// The hash is calculated on the entire container (after compression) and embedded in the header.
+    /// Write container to binary file.
+    ///
+    /// Computes SHA-256 hash and embeds it in the header. When `signing_key` is `Some`,
+    /// sets COELANOX_FLAG_SIGNED and appends a 64-byte Ed25519 signature over the hash.
+    /// The signing key must be 32 bytes (Ed25519 seed).
     pub fn write_binary_file(&self, path: &std::path::Path) -> CoelanoxResult<()> {
-        // Write entire container to in-memory buffer first
+        self.write_binary_file_with_signing(path, None)
+    }
+
+    /// Write container to binary file with optional Ed25519 signing.
+    ///
+    /// When `signing_key` is `Some`, the container is signed and the signature is appended.
+    /// The key must be exactly 32 bytes (Ed25519 secret key seed).
+    pub fn write_binary_file_with_signing(
+        &self,
+        path: &std::path::Path,
+        signing_key: Option<&[u8; 32]>,
+    ) -> CoelanoxResult<()> {
+        // Build header with signing flag if we will sign
+        let sign_flags = if signing_key.is_some() {
+            self.header.flags | COELANOX_FLAG_SIGNED
+        } else {
+            self.header.flags
+        };
+        let mut header = self.header.clone();
+        header.flags = sign_flags;
+
+        // Write container to buffer (header with hash=0)
         let mut buffer = Vec::new();
         {
             let mut cursor = std::io::Cursor::new(&mut buffer);
-            self.write_binary(&mut cursor)?;
+            header.write_binary(&mut cursor)?;
+            self.manifest.write_binary(&mut cursor)?;
+            cursor.write_all(&self.optimized_code)?;
+            cursor.write_all(&(self.compressed_weights.len() as u32).to_le_bytes())?;
+            cursor.write_all(&self.compressed_weights)?;
+            cursor.write_all(&(self.ir_data.len() as u32).to_le_bytes())?;
+            cursor.write_all(&self.ir_data)?;
+            if let Some(ref nvme) = self.nvme_backing_data {
+                cursor.write_all(&(nvme.len() as u64).to_le_bytes())?;
+                cursor.write_all(nvme)?;
+            }
+            if let Some(ref d) = self.clfmm_data {
+                cursor.write_all(&(d.len() as u64).to_le_bytes())?;
+                cursor.write_all(d)?;
+            }
+            if let Some(ref d) = self.clfmp_data {
+                cursor.write_all(&(d.len() as u64).to_le_bytes())?;
+                cursor.write_all(d)?;
+            }
+            if let Some(ref p) = self.execution_plan {
+                cursor.write_all(&(p.len() as u64).to_le_bytes())?;
+                cursor.write_all(p)?;
+            }
         }
-        
-        // Calculate SHA-256 hash of entire buffer (entire container as stored)
+
+        // Hash: header (hash zeroed) + rest
         let mut hasher = Sha256::new();
-        hasher.update(&buffer);
+        hasher.update(&buffer[..COELANOX_HEADER_SECURITY_HASH_OFFSET]);
+        hasher.update(&[0u8; 32]);
+        hasher.update(&buffer[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..]);
         let calculated_hash: [u8; 32] = hasher.finalize().into();
-        
-        // Update header in buffer with calculated hash
-        if buffer.len() < COELANOX_HEADER_SECURITY_HASH_OFFSET + 32 {
-            return Err(CoelanoxError::Internal(
-                "Buffer too small to contain header with hash".to_string()
-            ));
+
+        buffer[COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
+            .copy_from_slice(&calculated_hash);
+
+        if let Some(key_bytes) = signing_key {
+            let signing_key = SigningKey::from_bytes(key_bytes);
+            let signature: Signature = signing_key.sign(&calculated_hash);
+            buffer.extend_from_slice(&signature.to_bytes());
         }
-        
-        buffer[COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32].copy_from_slice(&calculated_hash);
-        
-        // Write final buffer to file
-        std::fs::write(path, &buffer)
-            .map_err(CoelanoxError::FileSystem)?;
-        
+
+        std::fs::write(path, &buffer).map_err(CoelanoxError::FileSystem)?;
         Ok(())
     }
     
@@ -1017,8 +1089,8 @@ impl CoelanoxValidator {
 }
 
 /// Verify container security hash from in-memory data (e.g. mmap slice).
-/// Use this when you already have the container bytes to avoid a second read.
-/// Same semantics as `verify_security_hash(path)` but operates on a slice.
+/// When the container has COELANOX_FLAG_SIGNED, the last 64 bytes are the signature;
+/// the hash covers only the content (first len-64 bytes).
 pub fn verify_security_hash_from_slice(container_data: &[u8]) -> CoelanoxResult<()> {
     if container_data.len() < COELANOX_HEADER_SIZE {
         return Err(CoelanoxError::SecurityValidation(
@@ -1030,7 +1102,23 @@ pub fn verify_security_hash_from_slice(container_data: &[u8]) -> CoelanoxResult<
             "Container file too small to contain security hash".to_string()
         ));
     }
-    let stored_hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
+    let flags = u32::from_le_bytes(
+        container_data[8..12].try_into().map_err(|_| {
+            CoelanoxError::SecurityValidation("Failed to read header flags".to_string())
+        })?,
+    );
+    let content_len = if header_signed(flags) {
+        if container_data.len() < COELANOX_HEADER_SIZE + ED25519_SIGNATURE_LEN {
+            return Err(CoelanoxError::SecurityValidation(
+                "Signed container too small for signature trailer".to_string()
+            ));
+        }
+        container_data.len() - ED25519_SIGNATURE_LEN
+    } else {
+        container_data.len()
+    };
+    let stored_hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET
+        ..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
         .try_into()
         .map_err(|_| CoelanoxError::SecurityValidation(
             "Failed to extract security hash from header".to_string()
@@ -1038,7 +1126,7 @@ pub fn verify_security_hash_from_slice(container_data: &[u8]) -> CoelanoxResult<
     let mut hasher = Sha256::new();
     hasher.update(&container_data[..COELANOX_HEADER_SECURITY_HASH_OFFSET]);
     hasher.update(&[0u8; 32]);
-    hasher.update(&container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..]);
+    hasher.update(&container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..content_len]);
     let calculated_hash: [u8; 32] = hasher.finalize().into();
     if calculated_hash != stored_hash {
         return Err(CoelanoxError::SecurityValidation(
@@ -1048,22 +1136,99 @@ pub fn verify_security_hash_from_slice(container_data: &[u8]) -> CoelanoxResult<
     Ok(())
 }
 
-/// Verify container security hash (pre-deployment check)
-/// 
-/// This function reads a container file from disk (cold storage), calculates its SHA-256 hash,
-/// and compares it with the hash stored in the container header. This is used for pre-deployment
-/// verification before loading the container into the memory tier.
-/// 
-/// # Arguments
-/// * `container_path` - Path to the container file to verify
-/// 
-/// # Returns
-/// * `Ok(())` if hash matches (container is valid)
-/// * `Err(CoelanoxError::SecurityValidation)` if hash mismatch (container may be tampered)
-/// * `Err(CoelanoxError::FileSystem)` if file cannot be read
+/// Verify Ed25519 signature on a signed container.
+/// Call after verify_security_hash_from_slice. Fails if container is not signed or signature is invalid.
+pub fn verify_signature_from_slice(
+    container_data: &[u8],
+    public_key: &[u8; 32],
+) -> CoelanoxResult<()> {
+    if container_data.len() < COELANOX_HEADER_SIZE {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container too small for signature verification".to_string()
+        ));
+    }
+    let flags = u32::from_le_bytes(
+        container_data[8..12].try_into().map_err(|_| {
+            CoelanoxError::SecurityValidation("Failed to read header flags".to_string())
+        })?,
+    );
+    if !header_signed(flags) {
+        return Err(CoelanoxError::SecurityValidation(
+            "Container is not signed; cannot verify signature".to_string()
+        ));
+    }
+    if container_data.len() < COELANOX_HEADER_SIZE + ED25519_SIGNATURE_LEN {
+        return Err(CoelanoxError::SecurityValidation(
+            "Signed container too small for signature".to_string()
+        ));
+    }
+    let hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET
+        ..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
+        .try_into()
+        .map_err(|_| CoelanoxError::SecurityValidation("Invalid hash in header".to_string()))?;
+    let sig_bytes = &container_data[container_data.len() - ED25519_SIGNATURE_LEN..];
+    let signature = Signature::from_bytes(sig_bytes.try_into().map_err(|_| {
+        CoelanoxError::SecurityValidation("Invalid signature length".to_string())
+    })?);
+    let verifying_key = VerifyingKey::from_bytes(public_key)
+        .map_err(|_| CoelanoxError::SecurityValidation("Invalid public key".to_string()))?;
+    verifying_key
+        .verify(&hash, &signature)
+        .map_err(|_| CoelanoxError::SecurityValidation(
+            "Signature verification failed - container may have been tampered or key mismatch".to_string()
+        ))?;
+    Ok(())
+}
+
+/// Verify container security hash (pre-deployment check).
+///
+/// When `trusted_public_key` is `Some`, also verifies the Ed25519 signature if the container is signed.
 pub fn verify_security_hash(container_path: &Path) -> CoelanoxResult<()> {
-    // Read entire container file from cold storage
-    let container_data = std::fs::read(container_path)
-        .map_err(CoelanoxError::FileSystem)?;
-    verify_security_hash_from_slice(&container_data)
+    verify_security_hash_with_trusted_key(container_path, None)
+}
+
+/// Verify container integrity and optionally the Ed25519 signature.
+///
+/// When `trusted_public_key` is `Some` and the container has COELANOX_FLAG_SIGNED,
+/// verifies the signature over the hash. When signed but key is None, only hash is verified (integrity, not provenance).
+pub fn verify_security_hash_with_trusted_key(
+    container_path: &Path,
+    trusted_public_key: Option<&[u8; 32]>,
+) -> CoelanoxResult<()> {
+    let container_data = std::fs::read(container_path).map_err(CoelanoxError::FileSystem)?;
+    verify_security_hash_from_slice(&container_data)?;
+    if let Some(key) = trusted_public_key {
+        if container_data.len() >= COELANOX_HEADER_SIZE {
+            let flags = u32::from_le_bytes(container_data[8..12].try_into().unwrap_or([0; 4]));
+            if header_signed(flags) {
+                verify_signature_from_slice(&container_data, key)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check if a container file has the signed flag (COELANOX_FLAG_SIGNED).
+/// Reads only the header; does not verify hash or signature.
+pub fn is_container_signed(path: &Path) -> CoelanoxResult<bool> {
+    let data = std::fs::read(path).map_err(CoelanoxError::FileSystem)?;
+    Ok(is_container_signed_from_slice(&data))
+}
+
+/// Check if container data has the signed flag. Requires at least 12 bytes (magic + version + flags).
+pub fn is_container_signed_from_slice(data: &[u8]) -> bool {
+    if data.len() < 12 {
+        return false;
+    }
+    let flags = u32::from_le_bytes(data[8..12].try_into().unwrap_or([0; 4]));
+    header_signed(flags)
+}
+
+/// Generate a new Ed25519 keypair for container signing.
+/// Returns (secret_key_32_bytes, public_key_32_bytes).
+pub fn generate_signing_keypair() -> ([u8; 32], [u8; 32]) {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let secret = signing_key.to_bytes();
+    let public = signing_key.verifying_key().to_bytes();
+    (secret, public)
 }

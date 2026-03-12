@@ -5,13 +5,13 @@
 
 use coelanox_core::{
     CoelanoxError, CoelanoxResult,
-    format::{BackendMetadata, BackendSelectionMode, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat, OptimizationLevel},
+    format::{BackendMetadata, BackendSelectionMode, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat, OptimizationLevel, COELANOX_FLAG_AUDIT_REQUIRED},
     ir::{GraphNode, IntermediateTensor, OpType as IrOpType, UniversalIR, WeightTensor},
     memory_hal::MemoryBackendRegistry,
     optimization::MaxShapeReader,
     utils::SystemEnvironment,
 };
-use clf::{ClfReader as ClfFileReader, MissingOpIdPolicy, op_type_to_clf_id as clf_op_type_to_clf_id, OpType as ClfOpType};
+use coelanox_clf::{ClfReader as ClfFileReader, op_type_to_clf_id as clf_op_type_to_clf_id, OpType as ClfOpType};
 use coelanox_orchestrator::{BackendManager, BackendKind};
 use coelanox_executor::build_plan_from_ir;
 use coelanox_core::ir::TensorId;
@@ -67,7 +67,8 @@ fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
         Ir::ReduceMax => Clf::ReduceMax,
         Ir::ReduceMin => Clf::ReduceMin,
         Ir::ReduceProd => Clf::ReduceProd,
-        Ir::Broadcast | Ir::Expand => Clf::Unknown,
+        Ir::Broadcast => Clf::Broadcast,
+        Ir::Expand => Clf::Expand,
         Ir::Equal => Clf::Equal,
         Ir::NotEqual => Clf::NotEqual,
         Ir::Greater => Clf::Greater,
@@ -342,9 +343,10 @@ impl CoelanoxPackager {
     /// * `auto` - Auto-detect backends
     /// * `backend_add` - Additional backends to add
     /// * `fallback_only` - Do not embed any backend code; container runs with scalar fallback only (for benchmarking)
+    /// * `audit_required` - Set header flag so runtime always runs with audit (compliance); audit output defaults to a default folder if not specified.
     /// * `max_workspace_mb` - If set, fail when (workspace + peak scratch) exceeds this many MB (global cap).
     /// * `weights_path` - Optional path to external weights file (e.g. ONNX model with separate fp16/f32 weight file).
-    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, max_workspace_mb: Option<u64>, weights_path: Option<&Path>) -> CoelanoxResult<CoelanoxContainer> {
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, audit_required: bool, max_workspace_mb: Option<u64>, weights_path: Option<&Path>) -> CoelanoxResult<CoelanoxContainer> {
         // If directory given, use ResNet bundle inside it (no PyTorch needed at package time)
         let actual_path: std::path::PathBuf = if model_path.is_dir() {
             let bundle = model_path.join("resnet_tiny_mnist.bundle");
@@ -547,11 +549,49 @@ impl CoelanoxPackager {
             )?;
             manifest.workspace_required_elements = Some(ws as u64);
             (Some(plan), ())
+        } else if target == HardwareTarget::Cpu {
+            // No CLF blobs for every op (or no CLF backend); still build execution plan with zero
+            // kernel offsets so simd-symbols at runtime can use it (dispatches by op_id, ignores offsets).
+            let node_order = Self::execution_node_order(&optimized_ir)?;
+            let op_ids: Vec<u32> = node_order
+                .iter()
+                .map(|&i| clf_op_type_to_clf_id(ir_op_type_to_clf_op_type(&optimized_ir.optimized_nodes[i].op_type)))
+                .collect();
+            let offsets_in_exec_order: Vec<u32> = vec![0u32; node_order.len()];
+            let weight_offsets: Vec<usize> = {
+                let mut w = vec![0];
+                for wt in optimized_ir.shared_weights.iter() {
+                    w.push(w.last().copied().unwrap_or(0) + wt.elements());
+                }
+                w
+            };
+            let weight_shapes: Vec<coelanox_core::ir::Shape> = optimized_ir
+                .shared_weights
+                .iter()
+                .map(|wt| wt.shape.clone())
+                .collect();
+            let input_elements: usize = ir.metadata.input_shapes.iter().map(|s| s.total_elements()).sum();
+            let output_elements: usize = ir.metadata.output_shapes.iter().map(|s| s.total_elements()).sum();
+            let (plan, ws) = build_plan_from_ir(
+                &optimized_ir.optimized_nodes,
+                &optimized_ir.intermediate_tensors,
+                &weight_offsets,
+                &weight_shapes,
+                input_elements,
+                output_elements,
+                &node_order,
+                &op_ids,
+                &offsets_in_exec_order,
+                max_workspace_mb,
+            )?;
+            manifest.workspace_required_elements = Some(ws as u64);
+            (Some(plan), ())
         } else {
             (None, ())
         };
         
         // Create container with weights, IR data, NVMe backing, and optional execution plan
+        let header_flags = if audit_required { COELANOX_FLAG_AUDIT_REQUIRED } else { 0 };
         let container = CoelanoxContainer::new_with_hal_data_and_plan(
             manifest,
             machine_code,
@@ -562,6 +602,7 @@ impl CoelanoxPackager {
             None,
             None,
             execution_plan,
+            header_flags,
         );
         
         Ok(container)
@@ -570,7 +611,7 @@ impl CoelanoxPackager {
     /// Package with automatic target detection
     pub fn package_auto(&self, model_path: &Path) -> CoelanoxResult<CoelanoxContainer> {
         let recommended_target = self.environment.recommended_target();
-        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None, false, None, None)
+        self.package(model_path, recommended_target, "custom", "auto", None, None, false, false, false, None, false, false, None, None)
     }
     
     /// Detect model format from data

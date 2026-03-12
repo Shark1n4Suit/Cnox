@@ -88,6 +88,8 @@ fn test_full_pipeline_package_verify_run() {
         false,
         None,
         false,
+        false,
+        None,
         None,
     );
     
@@ -219,7 +221,9 @@ fn test_aot_selection_slim_mode() {
         false, // auto = false
         None,  // backend_add = None
         false, // fallback_only = false
+        false, // audit_required = false
         None,  // max_workspace_mb
+        None,
     );
     
     // Result may fail if translator unavailable, but structure should be correct
@@ -258,6 +262,8 @@ fn test_aot_selection_fat_mode() {
         false, // auto = false
         None,
         false,
+        false,
+        None,
         None,
     );
     
@@ -296,6 +302,8 @@ fn test_aot_selection_auto_mode() {
         true,  // auto = true
         None,
         false,
+        false,
+        None,
         None,
     );
     
@@ -334,6 +342,8 @@ fn test_aot_selection_backend_add() {
         false, // auto = false
         Some("amd,intel"), // backend_add
         false,
+        false,
+        None,
         None,
     );
     
@@ -372,6 +382,8 @@ fn test_error_handling_package_stage() {
         false,
         None,
         false,
+        false,
+        None,
         None,
     );
     
@@ -437,6 +449,8 @@ fn test_backend_manager_integration() {
         false,
         None,
         false,
+        false,
+        None,
         None,
     );
     

@@ -76,6 +76,49 @@ COELANOX uses a three-layer defense model:
 - **Tamper Detection**: Changes to code, weights, metadata, or manifest invalidate hash
 - **Completeness**: Hash covers entire container (no partial verification)
 
+## Container Signing (Ed25519)
+
+### Overview
+
+COELANOX supports Ed25519 signing of containers for **provenance** in addition to **integrity** (hash). A signed container has a 64-byte Ed25519 signature appended; the signature covers the 32-byte security hash stored in the header.
+
+### Signing Flow
+
+1. **Generate keypair**:
+   ```bash
+   coelanox keygen [--output-dir <dir>]
+   ```
+   Produces `secret.bin` (32 bytes, keep private) and `public.bin` (32 bytes, share with verifiers).
+
+2. **Package with signing**:
+   ```bash
+   coelanox package --input model.bundle --output model.cnox --signing-key secret.bin
+   ```
+   Or set `COELANOX_SIGNING_KEY` to the path of the secret key file.
+
+3. **Verify (hash + optional signature)**:
+   ```bash
+   coelanox verify --file model.cnox [--trusted-key public.bin]
+   ```
+   Hash is always verified. If `--trusted-key` is provided and the container is signed, the Ed25519 signature is also verified.
+
+4. **Run with signature verification**:
+   ```bash
+   coelanox run --file model.cnox --output out.json --trusted-key public.bin
+   ```
+   The runtime verifies hash and signature before loading. Set `COELANOX_TRUSTED_PUBLIC_KEY` to the public key path for all commands.
+
+### Policy Flags
+
+- **`--require-signature`** (verify, run, benchmark): Fail if the container is signed but no trusted key is provided. Use when you want to enforce provenance, not just integrity.
+
+### Security Properties
+
+| Check       | Guarantees                          |
+|------------|--------------------------------------|
+| Hash only  | Integrity (no modification)          |
+| Hash + sig | Integrity + provenance (signed by key holder) |
+
 ### Hash Verification Commands
 
 #### Standalone Verification

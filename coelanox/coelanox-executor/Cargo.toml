@@ -7,5 +7,6 @@ description = "CLF mini-executor: runs multi-blob containers via execution plan 
 
 [dependencies]
 coelanox-core = { path = "../coelanox-core" }
-# CLF SIMD kernels (Rust): correct per-op ABI; we dispatch by op_id instead of calling raw blobs.
-clf-kernels-simd = { path = "../../../CLF/kernels/simd", default-features = true }
+# CLF SIMD kernels (Rust symbols) for the optional \"simd-symbols\" backend.
+# When using blob execution, the executor calls container code via CLFE 6-arg ABI.
+clf-kernels-simd = { path = "../../clf/kernels/simd", default-features = true }

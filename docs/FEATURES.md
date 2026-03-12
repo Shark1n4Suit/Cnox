@@ -26,12 +26,13 @@ This document lists implemented and planned features for the current release. It
 
 | Command    | Status | Description |
 |-----------|--------|-------------|
-| **package** | ✅ | Build `.cnox` from model (BERT, ResNet-tiny-MNIST; target/backend flags). |
+| **package** | ✅ | Build `.cnox` from model (BERT, ResNet-tiny-MNIST; target/backend flags); optional `--signing-key` for Ed25519 signing. |
 | **validate** | ✅ | Check container structure and manifest. |
-| **verify**   | ✅ | Standalone SHA-256 integrity check. |
-| **run**      | ✅ | Verify → load → run inference; `--input`, `--output`, `--backend`, `--audit`, `--max-workspace-mb`, `--no-verify`. |
+| **keygen**    | ✅ | Generate Ed25519 keypair for signing (secret.bin, public.bin). |
+| **verify**   | ✅ | Standalone SHA-256 integrity check; optional `--trusted-key` for signature verification; `--require-signature` to fail if signed but no key. |
+| **run**      | ✅ | Verify → load → run inference; `--input`, `--output`, `--backend`, `--audit`, `--max-workspace-mb`, `--no-verify`, `--trusted-key`, `--require-signature`. |
 | **info**     | ✅ | Print manifest, sizes, workspace; optional `--dump-plan`. |
-| **benchmark**| ✅ | Repeated inference, latency/throughput; `--backend`, `--iterations`. |
+| **benchmark**| ✅ | Repeated inference, latency/throughput; `--backend`, `--iterations`, `--trusted-key`, `--require-signature`. |
 | **env**      | ✅ | System environment, CPU, SIMD, recommended target. |
 | **debug**    | ✅ | Run with diagnostics; optional GDB. |
 | **extract**  | ✅ | Same-arch: copies current executable to --output for deployment (binary + .cnox only). Cross-arch (--arm/--target) planned. |
@@ -60,7 +61,7 @@ This document lists implemented and planned features for the current release. It
 - **Universal IR** — Graph-based; nodes (OpType), weight/intermediate tensors, topological order.
 - **Primitive OpType set** — Arithmetic (Add, Subtract, Multiply, Divide); activations (Relu, Sigmoid, Tanh, Softmax, LogSoftmax, Gelu, Swish); math (Sqrt, Pow, Cos, Sin, Exp, Log); conv/pool/norm (Convolution, MaxPool, AvgPool, GlobalMaxPool, GlobalAvgPool, BatchNorm, LayerNorm, Dropout); tensor ops (Reshape, Transpose, Permute, Concatenate, Split, Slice, Gather, Scatter); MatMul, Gemm; reductions (ReduceSum, ReduceMean, ReduceMax, ReduceMin, ReduceProd); Broadcast, Expand; comparisons (Equal, NotEqual, Greater, GreaterEqual, Less, LessEqual); logical (And, Or, Not); Custom(String).
 - **CLF op_id mapping** — Executor uses canonical op_ids (e.g. Add=1, MatMul=50, Gemm=51, LayerNorm=36, Gelu=15, Softmax=13, etc.) for plan dispatch.
-- **Optimization** — Graph optimization, operator fusion (e.g. MatMul+Bias → Gemm), constant folding.
+- **Optimization** — Graph optimization, primitive-level optimizations (attributes, layout hints). Operator fusion and constant folding are planned.
 
 ### Planned
 - Broader decomposition (e.g. full RNN/Transformer as primitives) and additional ops as needed.
@@ -71,6 +72,7 @@ This document lists implemented and planned features for the current release. It
 
 ### Implemented
 - **Integrity** — SHA-256 over full container; verify before load; tamper detection.
+- **Container signing** — Ed25519 signing of containers; `keygen` (keypair), `package --signing-key`, `verify`/`run`/`benchmark --trusted-key`; optional `--require-signature` to enforce provenance.
 - **Path validation** — Path traversal protection (`..`, `~`); optional rejection of absolute paths (`COELANOX_ALLOW_ABSOLUTE_PATHS=false`).
 - **Size limits** — Configurable max container size and max input size (`COELANOX_MAX_CONTAINER_SIZE_BYTES`, `COELANOX_MAX_INPUT_SIZE_BYTES`).
 - **Security event logging** — Verification failure, path rejection, and size-limit errors logged (tracing).
@@ -149,9 +151,9 @@ This document lists implemented and planned features for the current release. It
 - **Lock hardening** — Runtime uses `expect()` instead of `unwrap()` on locks for clearer failure behavior.
 - **Verify-then-run** — Default flow verifies integrity before load; `--no-verify` for dev only.
 - **Documentation** — OPERATIONS.md (env vars, runbooks), SECURITY.md, ARCHITECTURE.md.
+ - **Runtime extract** — `coelanox extract` produces a **same-arch** standalone runtime binary that matches the CLI version; deploy with `.cnox` files only. Cross-arch (`--arm` / `--target`) is **not yet implemented** and currently prints a warning/error.
 
 ### Planned
-- **extract** — Same-arch runtime copy to `--output`; cross-arch (--arm/--target) planned.
 - Formal TensorRT/vendor benchmarks and vendor SDK documentation (roadmap).
 
 ---

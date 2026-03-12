@@ -19,10 +19,17 @@ use crate::{
     RuntimeBackendRegistry,
     ScalarExecutionBackend,
 };
-use coelanox_executor::{parse_plan, run_with_plan, run_with_plan_with_weight_provider, scratch_elements_from_plan};
+use coelanox_executor::{
+    parse_plan,
+    run_with_plan,
+    run_with_plan_with_weight_provider,
+    run_with_plan_symbols,
+    run_with_plan_with_weight_provider_symbols,
+    scratch_elements_from_plan,
+};
 use coelanox_core::{
-    format::{verify_security_hash_from_slice, CoelanoxContainer, HardwareTarget},
-    ir::{deserialize_optimized_ir, Attribute, OpType},
+    format::{header_signed, is_container_signed_from_slice, verify_security_hash_from_slice, verify_signature_from_slice, CoelanoxContainer, HardwareTarget},
+    ir::{deserialize_optimized_ir, Attribute, OptimizedIR, OpType},
     memory_hal::{MemoryBackendRegistry, MemoryHAL, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
     protection_hal::{ProtectionBackendRegistry, ProtectionHAL, RegionPermissions},
     CoelanoxError, CoelanoxResult,
@@ -68,6 +75,15 @@ fn lock_rw_write<T>(r: &RwLock<T>) -> CoelanoxResult<std::sync::RwLockWriteGuard
 }
 fn lock_mutex<T>(m: &Mutex<T>) -> CoelanoxResult<std::sync::MutexGuard<'_, T>> {
     m.lock().map_err(|e| CoelanoxError::Runtime(format!("runtime mutex poisoned: {}", e)))
+}
+
+/// Max workspace/output buffer pairs to cache per container (avoids unbounded memory growth).
+const WORKSPACE_POOL_CAP: usize = 2;
+
+/// Internal warm cache entry: weights always present; IR deserialized lazily when scalar path is used.
+struct WarmCacheEntry {
+    weights: Vec<f32>,
+    ir: Option<OptimizedIR>,
 }
 
 /// Percentile from sorted latencies (0.0..=100.0). Returns 0 if empty.
@@ -677,11 +693,15 @@ pub struct CoelanoxRuntime {
     /// Backend manager for dynamic resolution of "gpu"/"npu"/"tpu"/"edge" to discovered backends
     /// (e.g. CLF name "resnet_tiny_mnist.spv"). Same discovery as packager (COELANOX_CLF_PATH etc.).
     backend_manager: Arc<RwLock<BackendManager>>,
-    /// Warm cache: decompressed weights + deserialized IR per container (same key as containers).
-    /// Avoids per-inference decompress/deserialize when using scalar or other backends that accept it.
-    warm_cache: Arc<RwLock<HashMap<String, ContainerWarmData>>>,
+    /// Warm cache: decompressed weights + optional IR per container (same key as containers).
+    /// Plan path uses weights only; scalar path upgrades to include IR when needed.
+    warm_cache: Arc<RwLock<HashMap<String, WarmCacheEntry>>>,
+    /// Workspace buffer pool per container: reuse workspace buffers across runs (max 2 per container).
+    workspace_pool: Arc<Mutex<HashMap<String, Vec<Vec<f32>>>>>,
     /// Max workspace in MB (0 = no cap). Set via set_max_workspace_mb(); used in execute_via_plan.
     max_workspace_mb: AtomicU64,
+    /// Trusted Ed25519 public key (32 bytes) for signature verification on signed containers.
+    trusted_public_key: Mutex<Option<[u8; 32]>>,
 }
 
 /// Simple memory region wrapper for legacy allocations. Implements MemoryRegion for
@@ -1038,7 +1058,16 @@ impl CoelanoxRuntime {
                 Arc::new(RwLock::new(mgr))
             },
             warm_cache: Arc::new(RwLock::new(HashMap::new())),
+            workspace_pool: Arc::new(Mutex::new(HashMap::new())),
             max_workspace_mb: AtomicU64::new(0),
+            trusted_public_key: Mutex::new(None),
+        }
+    }
+
+    /// Set trusted Ed25519 public key (32 bytes) for signature verification on signed containers.
+    pub fn set_trusted_public_key(&self, key: [u8; 32]) {
+        if let Ok(mut guard) = self.trusted_public_key.lock() {
+            *guard = Some(key);
         }
     }
 
@@ -1145,6 +1174,19 @@ impl CoelanoxRuntime {
                 error!(path = %path, err = %e, "security: container integrity verification failed (hash mismatch or tampering)");
                 CoelanoxError::Runtime(format!("Container verification failed for {}: {}", path, e))
             })?;
+            if mmap.len() >= 12 {
+                let flags = u32::from_le_bytes(mmap[8..12].try_into().unwrap_or([0; 4]));
+                if header_signed(flags) {
+                    if let Ok(guard) = self.trusted_public_key.lock() {
+                        if let Some(ref key) = *guard {
+                            verify_signature_from_slice(&mmap, key).map_err(|e| {
+                                error!(path = %path, err = %e, "security: signature verification failed");
+                                CoelanoxError::Runtime(format!("Container signature verification failed for {}: {}", path, e))
+                            })?;
+                        }
+                    }
+                }
+            }
             CoelanoxContainer::from_binary(&mmap).map_err(|e| {
                 CoelanoxError::Runtime(format!("Failed to load container from path: {}: {}", path, e))
             })?
@@ -1204,6 +1246,9 @@ impl CoelanoxRuntime {
             let file = File::open(path).map_err(CoelanoxError::FileSystem)?;
             let mmap = unsafe { Mmap::map(&file) }.map_err(CoelanoxError::FileSystem)?;
             let _ = mmap.advise(Advice::WillNeed);
+            if is_container_signed_from_slice(&mmap) {
+                warn!("Container is signed but loaded without verification (hash and signature not checked). Use trusted key for provenance.");
+            }
             CoelanoxContainer::from_binary(&mmap).map_err(|e| {
                 CoelanoxError::Runtime(format!("Failed to load container from path: {}: {}", path, e))
             })?
@@ -1604,9 +1649,9 @@ impl CoelanoxRuntime {
                 }
             }
         };
-        let warm_data = self.resolve_warm_data(&execution_state.container_name, container.as_ref()).ok().flatten();
-        // Execute using backend selection (auto = backend manager chooses from detected hardware)
-        let result = self.run_backend_execution(container.as_ref(), input_data, "auto", warm_data.as_ref());
+        // Execute using backend selection (auto = backend manager chooses from detected hardware).
+        // Warm data resolved lazily inside run_backend_execution.
+        let result = self.run_backend_execution(&execution_state.container_name, container.as_ref(), input_data, "auto");
         
         match result {
             Ok(output) => {
@@ -1766,6 +1811,7 @@ impl CoelanoxRuntime {
     /// Uses warm_data.decompressed_weights when provided to avoid decompressing twice.
     fn execute_machine_code(
         &self,
+        container_name: &str,
         container: &CoelanoxContainer,
         input_data: &[f32],
         warm_data: Option<&ContainerWarmData>,
@@ -1780,7 +1826,7 @@ impl CoelanoxRuntime {
         // CLF multi-blob path: use mini-executor with execution plan
         if let Some(ref plan) = container.execution_plan {
             if !container.optimized_code.is_empty() {
-                return self.execute_via_plan(container, input_data, plan, weights_override);
+                return self.execute_via_plan(container_name, container, input_data, plan, weights_override);
             }
         }
         // Single-blob path: require primary_backend == "cpu"
@@ -1835,10 +1881,40 @@ impl CoelanoxRuntime {
         Ok(output)
     }
 
+    /// Take or allocate workspace buffer from pool; return to pool when done. Output is allocated fresh (returned to caller).
+    fn take_workspace_buffer(
+        &self,
+        container_name: &str,
+        total_elements: usize,
+    ) -> CoelanoxResult<Vec<f32>> {
+        let mut pool = lock_mutex(&self.workspace_pool)?;
+        let buffers = pool.entry(container_name.to_string()).or_default();
+        let mut workspace = if let Some(i) = buffers.iter().position(|b| b.len() >= total_elements) {
+            buffers.remove(i)
+        } else {
+            vec![0.0f32; total_elements]
+        };
+        if workspace.len() != total_elements {
+            workspace = vec![0.0f32; total_elements];
+        }
+        Ok(workspace)
+    }
+
+    fn return_workspace_buffer(&self, container_name: &str, workspace: Vec<f32>) {
+        if let Ok(mut pool) = self.workspace_pool.lock() {
+            let buffers = pool.entry(container_name.to_string()).or_default();
+            if buffers.len() < WORKSPACE_POOL_CAP {
+                buffers.push(workspace);
+            }
+        }
+    }
+
     /// Execute via CLF mini-executor: parse plan, allocate workspace, copy code, run_with_plan.
     /// When weights_override is Some, uses that slice instead of decompressing again.
+    /// Reuses workspace buffers from pool when available (fewer allocations on repeat runs).
     fn execute_via_plan(
         &self,
+        container_name: &str,
         container: &CoelanoxContainer,
         input_data: &[f32],
         plan: &[u8],
@@ -1882,7 +1958,7 @@ impl CoelanoxRuntime {
         let t1 = std::time::Instant::now();
         let scratch_elements = scratch_elements_from_plan(plan).unwrap_or(0);
         let total_elements = workspace_elements as usize + scratch_elements;
-        let mut workspace = vec![0.0f32; total_elements];
+        let mut workspace = self.take_workspace_buffer(container_name, total_elements)?;
         let mut output = vec![0.0f32; output_size];
         debug!("SIMD path: workspace+output alloc {} ms ({} elements)", t1.elapsed().as_millis(), workspace.len());
         // Code must be in executable memory for kernel blobs to be called
@@ -2014,6 +2090,222 @@ impl CoelanoxRuntime {
             debug!("SIMD path: run_with_plan (kernel execution) {} ms", t3.elapsed().as_millis());
         }
         info!("✅ CLF mini-executor execution completed");
+        self.return_workspace_buffer(container_name, workspace);
+        Ok(output)
+    }
+
+    /// Execute via CLF mini-executor but using **Rust SIMD symbols** (simd-symbols backend).
+    /// Does not allocate or copy any code section; dispatch is by op_id directly to kernels.
+    /// Reuses workspace buffers from pool when available (fewer allocations on repeat runs).
+    fn execute_via_plan_symbols(
+        &self,
+        container_name: &str,
+        container: &CoelanoxContainer,
+        input_data: &[f32],
+        plan: &[u8],
+        weights_override: Option<&[f32]>,
+    ) -> CoelanoxResult<Vec<f32>> {
+        let decompressed_own;
+        let weights: &[f32] = match weights_override {
+            Some(w) => w,
+            None => {
+                decompressed_own = container.decompress_weights()?;
+                &decompressed_own[..]
+            }
+        };
+        let (workspace_elements, steps, _offsets) = parse_plan(plan)
+            .map_err(|e| CoelanoxError::Runtime(format!("Invalid execution plan: {}", e)))?;
+        let cap_mb = self.max_workspace_mb.load(Ordering::Relaxed);
+        if cap_mb > 0 {
+            let cap_elements = (cap_mb * 1024 * 1024) / 4;
+            if workspace_elements as u64 > cap_elements {
+                let need_mb =
+                    (workspace_elements as u64 * 4 + 1024 * 1024 - 1) / (1024 * 1024);
+                return Err(CoelanoxError::Runtime(format!(
+                    "Workspace limit exceeded: model needs {} MB workspace, limit is {} MB (set --max-workspace-mb or COELANOX_MAX_WORKSPACE_MB)",
+                    need_mb, cap_mb
+                )));
+            }
+        }
+        let output_size: usize = container
+            .manifest
+            .output_shapes
+            .iter()
+            .map(|shape| shape.iter().product::<usize>())
+            .sum();
+        let expected_input_size: usize = container
+            .manifest
+            .input_shapes
+            .iter()
+            .map(|shape| shape.iter().product::<usize>())
+            .sum();
+        if input_data.len() < expected_input_size {
+            return Err(CoelanoxError::Runtime(format!(
+                "Input size mismatch: expected {} elements, got {}",
+                expected_input_size,
+                input_data.len()
+            )));
+        }
+        let t1 = std::time::Instant::now();
+        let scratch_elements = scratch_elements_from_plan(plan).unwrap_or(0);
+        let total_elements = workspace_elements as usize + scratch_elements;
+        let mut workspace = self.take_workspace_buffer(container_name, total_elements)?;
+        let mut output = vec![0.0f32; output_size];
+        debug!(
+            "SIMD-symbols path: workspace+output alloc {} ms ({} elements)",
+            t1.elapsed().as_millis(),
+            workspace.len()
+        );
+        let mut audit_cb = |step_ix: usize, op_id: u32, out_slice: &[f32]| {
+            let op_type = format!("op_id_{}", op_id);
+            crate::audit::log_after_op(step_ix, &op_type, out_slice.len(), out_slice);
+        };
+        let t3 = std::time::Instant::now();
+
+        let max_w_len = steps
+            .iter()
+            .map(|s| s.w_len as usize)
+            .max()
+            .unwrap_or(0);
+        let tiering_available = self
+            .memory_registry()
+            .get_for_tier(MemoryTier::Slow)
+            .is_some();
+        let env_force_double_ring = std::env::var("COELANOX_DOUBLE_RING")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let use_double_ring = (tiering_available || env_force_double_ring)
+            && steps.len() >= 2
+            && max_w_len > 0
+            && max_w_len <= 64 * 1024 * 1024;
+
+        if use_double_ring {
+            debug!(
+                "Using double ring buffer (simd-symbols, {} steps, max_w_len {} elements)",
+                steps.len(),
+                max_w_len
+            );
+            use std::sync::{Arc, Mutex};
+            let buffer_a_shared = Arc::new(Mutex::new(vec![0.0f32; max_w_len]));
+            let buffer_b_shared = Arc::new(Mutex::new(vec![0.0f32; max_w_len]));
+            let len0 = steps[0].w_len as usize;
+            if len0 > 0 && steps[0].w_off as usize + len0 <= weights.len() {
+                lock_mutex(buffer_a_shared.as_ref())?[..len0].copy_from_slice(
+                    &weights[steps[0].w_off as usize..steps[0].w_off as usize + len0],
+                );
+            }
+            let (tx_req, rx_req) = std::sync::mpsc::channel::<(u8, Vec<f32>)>();
+            let (tx_done, rx_done) = std::sync::mpsc::sync_channel::<u8>(1);
+            let buf_a = Arc::clone(&buffer_a_shared);
+            let buf_b = Arc::clone(&buffer_b_shared);
+            std::thread::scope(|s| {
+                s.spawn(move || {
+                    for (buf_id, data) in rx_req {
+                        if buf_id >= 2 {
+                            break;
+                        }
+                        let mut guard = if buf_id == 0 {
+                            buf_a.lock().expect("double-ring buffer lock")
+                        } else {
+                            buf_b.lock().expect("double-ring buffer lock")
+                        };
+                        let copy_len = data.len().min(guard.len());
+                        guard[..copy_len].copy_from_slice(&data[..copy_len]);
+                        drop(guard);
+                        let _ = tx_done.send(buf_id);
+                    }
+                });
+                let mut weight_buffer = vec![0.0f32; max_w_len];
+                let len0 = steps[0].w_len as usize;
+                weight_buffer[..len0].copy_from_slice(
+                    &lock_mutex(buffer_a_shared.as_ref())?[..len0],
+                );
+                let mut weight_provider =
+                    |step_index: usize, _w_off: u32, w_len: u32, out: &mut [f32]| -> usize {
+                        if step_index > 0 {
+                            let _ = rx_done.recv();
+                            let len = w_len as usize;
+                            if step_index % 2 == 0 {
+                                out[..len].copy_from_slice(
+                                    &buffer_a_shared
+                                        .lock()
+                                        .expect("double-ring buffer lock")[..len],
+                                );
+                            } else {
+                                out[..len].copy_from_slice(
+                                    &buffer_b_shared
+                                        .lock()
+                                        .expect("double-ring buffer lock")[..len],
+                                );
+                            }
+                        }
+                        if step_index + 1 < steps.len() {
+                            let next_buf = (step_index + 1) % 2;
+                            let w_off = steps[step_index + 1].w_off as usize;
+                            let w_len_next = steps[step_index + 1].w_len as usize;
+                            let chunk: Vec<f32> =
+                                weights[w_off..w_off + w_len_next].to_vec();
+                            let _ = tx_req.send((next_buf as u8, chunk));
+                            if step_index + 2 == steps.len() {
+                                let _ = tx_req.send((2u8, vec![]));
+                            }
+                        }
+                        w_len as usize
+                    };
+                run_with_plan_with_weight_provider_symbols(
+                    &[],
+                    plan,
+                    input_data,
+                    &mut output,
+                    &mut workspace,
+                    &mut weight_buffer,
+                    if crate::audit::is_enabled() {
+                        Some(&mut audit_cb)
+                    } else {
+                        None
+                    },
+                    &mut weight_provider,
+                    if has_execution_deadline() {
+                        Some(&(|| execution_deadline_expired())
+                            as &(dyn Fn() -> bool + '_))
+                    } else {
+                        None
+                    },
+                )?;
+                drop(tx_req);
+                Ok::<(), coelanox_core::CoelanoxError>(())
+            })?;
+            debug!(
+                "SIMD-symbols path: run_with_plan_with_weight_provider {} ms",
+                t3.elapsed().as_millis()
+            );
+        } else {
+            run_with_plan_symbols(
+                &[],
+                plan,
+                input_data,
+                &mut output,
+                weights,
+                &mut workspace,
+                if crate::audit::is_enabled() {
+                    Some(&mut audit_cb)
+                } else {
+                    None
+                },
+                if has_execution_deadline() {
+                    Some(&(|| execution_deadline_expired())
+                        as &(dyn Fn() -> bool + '_))
+                } else {
+                    None
+                },
+            )?;
+            debug!(
+                "SIMD-symbols path: run_with_plan {} ms",
+                t3.elapsed().as_millis()
+            );
+        }
+        info!("✅ CLF mini-executor (simd-symbols) execution completed");
+        self.return_workspace_buffer(container_name, workspace);
         Ok(output)
     }
     
@@ -2235,7 +2527,6 @@ impl CoelanoxRuntime {
         backend: &str,
     ) -> CoelanoxResult<Vec<f32>> {
         let container = self.get_container_info(container_name)?;
-        let warm_data = self.resolve_warm_data(container_name, container.as_ref())?;
         let config = self.get_config()?;
         let deadline = if config.execution_timeout_ms > 0 {
             Some(Instant::now() + Duration::from_millis(config.execution_timeout_ms))
@@ -2244,7 +2535,7 @@ impl CoelanoxRuntime {
         };
         set_execution_deadline(deadline);
         let start = std::time::Instant::now();
-        let result = self.run_backend_execution(container.as_ref(), input_data, backend, warm_data.as_ref());
+        let result = self.run_backend_execution(container_name, container.as_ref(), input_data, backend);
         set_execution_deadline(None);
         let elapsed_us = start.elapsed().as_micros() as u64;
         if let Ok(_) = &result {
@@ -2259,7 +2550,7 @@ impl CoelanoxRuntime {
     /// Call before timed execute_with_backend if you want single-run "Execution time" to match benchmark "True cold".
     pub fn prepare_container_for_execution(&self, container_name: &str) -> CoelanoxResult<()> {
         let container = self.get_container_info(container_name)?;
-        let _ = self.resolve_warm_data(container_name, container.as_ref())?;
+        let _ = self.resolve_full(container_name, container.as_ref())?;
         // Warm execution plan (benchmark does this for workspace_elements)
         if let Some(ref plan) = container.execution_plan {
             let _ = parse_plan(plan);
@@ -2272,60 +2563,134 @@ impl CoelanoxRuntime {
         Ok(())
     }
 
-    /// Resolve warm cache for a container: hit returns existing; miss decompresses + deserializes and inserts.
-    fn resolve_warm_data(
+    /// Resolve weights only (plan path). Decompresses if not cached; never deserializes IR.
+    fn resolve_weights_only(
         &self,
         container_name: &str,
         container: &CoelanoxContainer,
     ) -> CoelanoxResult<Option<ContainerWarmData>> {
         {
             let cache = lock_rw_read(&self.warm_cache)?;
-            if let Some(warm) = cache.get(container_name) {
-                return Ok(Some(warm.clone()));
+            if let Some(entry) = cache.get(container_name) {
+                return Ok(Some(ContainerWarmData {
+                    decompressed_weights: entry.weights.clone(),
+                    optimized_ir: None,
+                }));
             }
         }
-        let decompressed_weights = container.decompress_weights()?;
-        let optimized_ir = deserialize_optimized_ir(&container.ir_data)?;
-        let warm = ContainerWarmData {
-            decompressed_weights,
-            optimized_ir,
+        let weights = container.decompress_weights()?;
+        lock_rw_write(&self.warm_cache)?.insert(
+            container_name.to_string(),
+            WarmCacheEntry { weights: weights.clone(), ir: None },
+        );
+        Ok(Some(ContainerWarmData {
+            decompressed_weights: weights,
+            optimized_ir: None,
+        }))
+    }
+
+    /// Resolve full warm data (scalar path). Decompresses if needed; deserializes IR if not cached.
+    fn resolve_full(
+        &self,
+        container_name: &str,
+        container: &CoelanoxContainer,
+    ) -> CoelanoxResult<Option<ContainerWarmData>> {
+        {
+            let cache = lock_rw_read(&self.warm_cache)?;
+            if let Some(entry) = cache.get(container_name) {
+                if let Some(ref ir) = entry.ir {
+                    return Ok(Some(ContainerWarmData {
+                        decompressed_weights: entry.weights.clone(),
+                        optimized_ir: Some(ir.clone()),
+                    }));
+                }
+            }
+        }
+        // Cache miss or weights-only: need to ensure we have both.
+        let mut cache = lock_rw_write(&self.warm_cache)?;
+        let (weights, ir) = if let Some(entry) = cache.get(container_name) {
+            let weights = entry.weights.clone();
+            let ir = match &entry.ir {
+                Some(ir) => ir.clone(),
+                None => deserialize_optimized_ir(&container.ir_data)?,
+            };
+            cache.insert(container_name.to_string(), WarmCacheEntry { weights: weights.clone(), ir: Some(ir.clone()) });
+            (weights, ir)
+        } else {
+            let weights = container.decompress_weights()?;
+            let ir = deserialize_optimized_ir(&container.ir_data)?;
+            cache.insert(container_name.to_string(), WarmCacheEntry { weights: weights.clone(), ir: Some(ir.clone()) });
+            (weights, ir)
         };
-        lock_rw_write(&self.warm_cache)?.insert(container_name.to_string(), warm.clone());
-        Ok(Some(warm))
+        Ok(Some(ContainerWarmData {
+            decompressed_weights: weights,
+            optimized_ir: Some(ir),
+        }))
     }
 
     /// Core backend-driven execution. Used by execute_with_backend and execute_execution_stage.
+    /// Resolves warm data lazily: plan path uses weights only; scalar path resolves full (weights + IR).
     fn run_backend_execution(
         &self,
+        container_name: &str,
         container: &CoelanoxContainer,
         input_data: &[f32],
         backend: &str,
-        warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>> {
         // Avoid allocating for common backends; only normalize when calling registry.
+        if backend.eq_ignore_ascii_case("simd-symbols") {
+            // Plan path: resolve weights only (no IR deserialize). On fallback, resolve full.
+            let weights_data = self.resolve_weights_only(container_name, container)?;
+            let weights_override = weights_data.as_ref().map(|w| w.decompressed_weights.as_slice());
+            if let Some(ref plan) = container.execution_plan {
+                return self
+                    .execute_via_plan_symbols(container_name, container, input_data, plan, weights_override)
+                    .or_else(|e| {
+                        warn!(
+                            "SIMD-symbols backend failed: {:?}, falling back to scalar fallback backend",
+                            e
+                        );
+                        let warm_data = self.resolve_full(container_name, container)?;
+                        self.try_scalar_fallback(container, input_data, warm_data.as_ref())
+                    });
+            } else {
+                warn!(
+                    "SIMD-symbols backend requested but container has no execution plan; falling back to scalar"
+                );
+                let warm_data = self.resolve_full(container_name, container)?;
+                return self.try_scalar_fallback(container, input_data, warm_data.as_ref());
+            }
+        }
         if backend.eq_ignore_ascii_case("cpu") {
-            return self.execute_machine_code(container, input_data, warm_data).or_else(|e| {
-                warn!("CPU machine code failed: {:?}, falling back to scalar", e);
-                self.try_scalar_fallback(container, input_data, warm_data)
-            });
+            let weights_data = self.resolve_weights_only(container_name, container)?;
+            return self.execute_machine_code(container_name, container, input_data, weights_data.as_ref())
+                .or_else(|e| {
+                    warn!("CPU machine code failed: {:?}, falling back to scalar", e);
+                    let warm_data = self.resolve_full(container_name, container)?;
+                    self.try_scalar_fallback(container, input_data, warm_data.as_ref())
+                });
         }
         // Discovered CPU CLF backends (e.g. "simd") use the same path as cpu: embedded code + execution plan
         let backend_normalized = backend.to_lowercase();
         if let Some(info) = lock_rw_read(&self.backend_manager)?.get_backend(&backend_normalized) {
             if info.kind == BackendKind::Clf && info.supported_targets.contains(&HardwareTarget::Cpu) {
-                return self.execute_machine_code(container, input_data, warm_data).or_else(|e| {
-                    warn!("CLF backend '{}' machine code failed: {:?}, falling back to scalar", backend, e);
-                    self.try_scalar_fallback(container, input_data, warm_data)
-                });
+                let weights_data = self.resolve_weights_only(container_name, container)?;
+                return self.execute_machine_code(container_name, container, input_data, weights_data.as_ref())
+                    .or_else(|e| {
+                        warn!("CLF backend '{}' machine code failed: {:?}, falling back to scalar", backend, e);
+                        let warm_data = self.resolve_full(container_name, container)?;
+                        self.try_scalar_fallback(container, input_data, warm_data.as_ref())
+                    });
             }
         }
         if backend.eq_ignore_ascii_case("scalar") {
-            return self.try_scalar_fallback(container, input_data, warm_data);
+            let warm_data = self.resolve_full(container_name, container)?;
+            return self.try_scalar_fallback(container, input_data, warm_data.as_ref());
         }
         if backend.eq_ignore_ascii_case("auto") {
             let detected = self.select_backend_auto();
             debug!("Auto-detected backend: {}", detected);
-            return self.run_backend_execution(container, input_data, &detected, warm_data);
+            return self.run_backend_execution(container_name, container, input_data, &detected);
         }
         let backend_normalized = backend.to_lowercase();
         if backend.eq_ignore_ascii_case("gpu")
@@ -2333,10 +2698,12 @@ impl CoelanoxRuntime {
             || backend.eq_ignore_ascii_case("tpu")
             || backend.eq_ignore_ascii_case("edge")
         {
-            return self.try_registry_backend_then_scalar(container, input_data, &backend_normalized, warm_data);
+            let warm_data = self.resolve_full(container_name, container)?;
+            return self.try_registry_backend_then_scalar(container, input_data, &backend_normalized, warm_data.as_ref());
         }
         warn!("Unknown backend '{}', trying as registered backend then scalar", backend);
-        self.try_registry_backend_then_scalar(container, input_data, &backend_normalized, warm_data)
+        let warm_data = self.resolve_full(container_name, container)?;
+        self.try_registry_backend_then_scalar(container, input_data, &backend_normalized, warm_data.as_ref())
     }
 
     /// Try backend from registry, then scalar fallback.
@@ -2477,6 +2844,9 @@ impl CoelanoxRuntime {
         let removed = self.containers.write().expect("runtime write lock").remove(container_name).is_some();
         if removed {
             self.warm_cache.write().expect("runtime write lock").remove(container_name);
+            if let Ok(mut pool) = self.workspace_pool.lock() {
+                pool.remove(container_name);
+            }
         }
         removed
     }

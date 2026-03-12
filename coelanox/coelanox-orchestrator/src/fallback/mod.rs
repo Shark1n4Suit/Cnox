@@ -250,16 +250,24 @@ impl ScalarExecutionBackend {
         input_data: &[f32],
         warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>> {
-        let (ir, weights): (&coelanox_core::ir::OptimizedIR, &[f32]) = match warm_data {
-            Some(warm) => (&warm.optimized_ir, warm.decompressed_weights.as_slice()),
+        match warm_data {
+            Some(warm) if warm.optimized_ir.is_some() => {
+                let ir = warm.optimized_ir.as_ref().unwrap();
+                return self.execute_ir_with(container, input_data, ir, warm.decompressed_weights.as_slice());
+            }
+            Some(warm) => {
+                // Weights cached but IR not (plan path ran first); deserialize IR only.
+                use coelanox_core::ir::deserialize_optimized_ir;
+                let ir_owned = deserialize_optimized_ir(&container.ir_data)?;
+                return self.execute_ir_with(container, input_data, &ir_owned, warm.decompressed_weights.as_slice());
+            }
             None => {
                 use coelanox_core::ir::deserialize_optimized_ir;
                 let ir_owned = deserialize_optimized_ir(&container.ir_data)?;
                 let weights_owned = container.decompress_weights()?;
                 return self.execute_ir_with(container, input_data, &ir_owned, &weights_owned);
             }
-        };
-        self.execute_ir_with(container, input_data, ir, weights)
+        }
     }
 
     /// Shared execution path: run graph with given IR and weight slice.

@@ -74,6 +74,12 @@ coelanox <command> ...
 
 **Typical workflow:** `coelanox package` (create `.cnox`) → `coelanox verify` (integrity check) → deploy → `coelanox run` (verify then execute on target).
 
+### Install from release (no Rust required)
+
+1. Open [Releases](https://github.com/YOUR_ORG/cnox/releases) and download the archive for your platform (`coelanox-linux-x86_64.tar.gz`, `coelanox-macos-x86_64.tar.gz`, or `coelanox-windows-x86_64.zip`).
+2. Extract the archive. **Linux/macOS:** From the extracted folder run `./install.sh` to install into `/usr/local/bin`, or add that folder to your `PATH`. **Windows:** Add the folder containing `coelanox.exe` to your `PATH`.
+3. Run `coelanox --help`. See [docs/INSTALL.md](docs/INSTALL.md) for details.
+
 ---
 
 ## Documentation

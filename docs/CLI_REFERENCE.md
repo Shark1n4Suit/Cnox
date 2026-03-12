@@ -189,7 +189,7 @@ No required arguments. Prints OS, architecture, CPU, memory, GPU (if any), SIMD 
 
 ## 9. `extract` — Extract runtime-only binary for deployment
 
-Produces a **standalone runtime** that matches this CLI version; deploy it with `.cnox` files only. Same arch or cross-arch (e.g. ARM server).
+Produces a **standalone runtime** that matches this CLI version; deploy it with `.cnox` files only. **Same-arch extract is implemented today.** Cross-arch (`--arm` / `--target`) is **not yet implemented** and will currently print a warning and exit.
 
 **Usage:** `coelanox extract [OPTIONS]`
 
@@ -198,8 +198,8 @@ Produces a **standalone runtime** that matches this CLI version; deploy it with 
 | Option | Short | Type | Default | Description |
 |--------|--------|------|---------|-------------|
 | `--output` | `-o` | `<OUTPUT>` | `coelanox-run` | Output path for the runtime binary (e.g. `coelanox-run` or `coelanox-run-arm`) |
-| `--arm` | — | flag | false | Extract runtime for ARM64 (aarch64). Default is current platform |
-| `--target` | — | `<TARGET>` | — | Target triple for cross-arch (e.g. `aarch64-unknown-linux-gnu`). Overrides `--arm` if set |
+| `--arm` | — | flag | false | **Planned:** request ARM64 (aarch64) runtime; currently emits a "not yet implemented" message |
+| `--target` | — | `<TARGET>` | — | **Planned:** target triple for cross-arch (e.g. `aarch64-unknown-linux-gnu`); overrides `--arm` if set; currently emits a "not yet implemented" message |
 | `--help` | `-h` | — | — | Print help |
 
 ---

@@ -1,13 +1,11 @@
 # coelanox-executor
 
-CLF **mini-executor**: minimal runtime that runs multi-blob containers via an execution plan (graph walk + kernel dispatch).
+CLF **mini-executor**: runs multi-blob containers via the CLFE execution plan (graph walk + blob dispatch). No Rust kernel symbols are linked; execution uses only the container's code section (CLFC blobs) and the plan.
 
 ## Role
 
-When a container has multiple CLF kernel blobs (one per op) instead of a single monolithic blob, something must walk the graph and call each kernel with the right pointers. The executor does that:
-
-- **At package time:** The packager builds an **execution plan** (binary: workspace size, node steps with op_id and buffer offsets, kernel byte offsets) and stores it in the container.
-- **At run time:** The runtime allocates workspace, copies the code section into executable memory, and calls `run_with_plan(code_section, plan, input, output, weights, workspace)`. The executor parses the plan and, for each node, calls the corresponding kernel blob with the correct input/output/weight pointers.
+- **At package time:** The packager builds an **execution plan** (CLFE format: workspace size, node steps with buffer offsets, kernel byte offsets) and embeds the CLFC code section in the container.
+- **At run time:** The runtime copies the code section to executable memory and calls `run_with_plan(code_section, plan, ...)`. The executor parses the plan and, for each step, calls the blob at `code_base + kernel_offset[i]` with the CLFE 6-arg ABI `(input_ptr, output_ptr, weights_ptr, in_len, out_len, w_len)`. The container's blobs are the only code executed; the executor does not link any kernel crate.
 
 ## Plan format (little-endian)
 
