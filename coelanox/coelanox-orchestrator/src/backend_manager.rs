@@ -1,9 +1,9 @@
 //! Backend Manager for COELANOX
-//! 
-//! This module provides package-time discovery of vendor BackendTranslators via dynamic library loading.
-//! The BackendManager discovers vendor-provided BackendTranslators that can be used during packaging
-//! to generate hardware-specific code.
-//! 
+//!
+//! This module provides package-time discovery of CLF (Coelanox Library File) backends.
+//! The BackendManager discovers .clfc files from search paths for use during packaging
+//! and container execution.
+//!
 //! **Note:** This is used at package-time by the packager, not at runtime. The location in
 //! `coelanox-orchestrator` - backends for container execution and orchestration.
 
@@ -13,11 +13,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
-/// Backend kind: translator (.so) or CLF (sealed kernel pack). CLF reader is implemented separately.
+/// Backend kind: CLF (sealed kernel pack). CLF reader is implemented separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendKind {
-    /// Dynamic library implementing BackendTranslator
-    Translator,
     /// CLF (Coelanox Library File): sealed vendor kernel pack; packager uses CLF reader when present
     Clf,
 }
@@ -29,11 +27,11 @@ pub struct BackendInfo {
     pub name: String,
     /// Backend version
     pub version: String,
-    /// Path to the dynamic library or CLF file (.clfc compute, or legacy .clf)
+    /// Path to the CLF file (.clfc compute, or legacy .clf)
     pub library_path: PathBuf,
     /// Hardware targets supported by this backend
     pub supported_targets: Vec<HardwareTarget>,
-    /// Whether this backend is a translator (.so) or CLF (.clfc / .clf)
+    /// Backend kind (CLF)
     pub kind: BackendKind,
 }
 
@@ -103,11 +101,10 @@ pub enum BackendSelectionStrategy {
     TryAll(Vec<String>),
 }
 
-/// Backend Manager for discovering vendor BackendTranslators
-/// 
-/// This manager discovers vendor-provided BackendTranslators from dynamic libraries
-/// at package time. The discovered backends can then be used by the packager to
-/// generate hardware-specific code.
+/// Backend Manager for discovering CLF backends
+///
+/// This manager discovers .clfc files from search paths at package time.
+/// The discovered backends can then be used by the packager for code generation.
 pub struct BackendManager {
     /// Map of backend name to backend information
     discovered_backends: HashMap<String, BackendInfo>,
@@ -121,14 +118,13 @@ impl BackendManager {
         }
     }
     
-    /// Discover vendor backends from search paths
-    /// 
-    /// Scans the provided search paths for dynamic libraries and attempts to
-    /// discover BackendTranslators from them.
-    /// 
+    /// Discover CLF backends from search paths
+    ///
+    /// Scans the provided search paths for .clfc (and legacy .clf) files.
+    ///
     /// # Arguments
-    /// * `search_paths` - Paths to search for backend libraries
-    /// 
+    /// * `search_paths` - Paths to search for CLF files
+    ///
     /// # Returns
     /// * `Ok(DiscoveryResult)` with detailed information about discovered and failed backends
     pub fn discover_backends(&mut self, search_paths: &[PathBuf]) -> CoelanoxResult<DiscoveryResult> {
@@ -170,21 +166,8 @@ impl BackendManager {
                 };
                 
                 let path = entry.path();
-                
-                if Self::is_dynamic_library(&path) {
-                    match self.load_backend_library(&path) {
-                        Ok(backend_info) => {
-                            result.discovered.push(backend_info.clone());
-                            self.register_backend(backend_info);
-                        }
-                        Err(e) => {
-                            result.failures.push((
-                                path.clone(),
-                                format!("Failed to load backend: {}", e)
-                            ));
-                        }
-                    }
-                } else if Self::is_clf_file(&path) {
+
+                if Self::is_clf_file(&path) {
                     // In the compute subdir (clfc/), only load .clfc files; legacy .clf is not used for compute.
                     if Self::is_compute_subdir(search_path) && !Self::is_clfc_extension(&path) {
                         continue;
@@ -271,60 +254,7 @@ impl BackendManager {
         };
         vec![target]
     }
-    
-    /// Check if a file is a dynamic library
-    fn is_dynamic_library(path: &Path) -> bool {
-        if let Some(ext) = path.extension() {
-            let ext_str = ext.to_string_lossy().to_lowercase();
-            #[cfg(target_os = "linux")]
-            return ext_str == "so";
-            #[cfg(target_os = "macos")]
-            return ext_str == "dylib";
-            #[cfg(target_os = "windows")]
-            return ext_str == "dll";
-        }
-        false
-    }
-    
-    /// Load a backend library and extract backend information
-    /// 
-    /// Attempts to load a dynamic library and discover if it contains a BackendTranslator.
-    /// For MVP, this is a placeholder that will be implemented when vendor backends are available.
-    /// 
-    /// # Arguments
-    /// * `path` - Path to the dynamic library
-    /// 
-    /// # Returns
-    /// * `Ok(BackendInfo)` if backend is successfully discovered
-    /// * `Err` if library cannot be loaded or doesn't contain a valid backend
-    pub fn load_backend_library(&self, path: &Path) -> CoelanoxResult<BackendInfo> {
-        // Check if file exists
-        if !path.exists() {
-            return Err(CoelanoxError::BackendLibraryNotFound(
-                path.display().to_string()
-            ));
-        }
-        
-        // Check if file is readable
-        if let Err(e) = std::fs::metadata(path) {
-            return Err(CoelanoxError::BackendLibraryLoadFailed(
-                path.display().to_string(),
-                format!("Cannot access file: {}", e)
-            ));
-        }
-        
-        // For MVP, return specific error indicating not yet implemented
-        // In future, this will have platform-specific FFI loading with detailed errors:
-        // - Library not found
-        // - Missing exported symbol
-        // - Invalid library format
-        // - Version mismatch
-        Err(CoelanoxError::BackendLibraryLoadFailed(
-            path.display().to_string(),
-            "Backend library loading not yet implemented".to_string()
-        ))
-    }
-    
+
     /// Register a discovered backend
     /// 
     /// # Arguments
@@ -360,7 +290,7 @@ impl BackendManager {
     ///
     /// Uses a single locked layout so you do not need to set any env for normal use:
     /// - **Default:** `~/.coelanox/clf/` with subdirs `clfc/`, `clfmm/`, `clfmp/`, `clfe/`.
-    ///   Compute backends (.clfc, .so) go in `clfc/`. Root and subdirs are created if missing.
+    ///   Compute backends (.clfc) go in `clfc/`. Root and subdirs are created if missing.
     /// - **Override:** `COELANOX_CLF_PATH` = directory (root for the four subdirs) or path to a
     ///   single .clfc file (its parent directory is used so the file is discovered).
     /// - **Extra:** `COELANOX_BACKEND_PATH` (colon-separated) is appended for additional paths.

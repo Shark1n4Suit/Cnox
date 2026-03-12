@@ -94,7 +94,7 @@
 
 #### **Backend Implementations**
 - ✅ **Backend manager** - Implemented with discovery, validation, and health check structure
-- ⚠️ **Dynamic library loading** - Structure in place, needs platform-specific FFI implementation
+- ✅ **CLF discovery** - .clfc files discovered from search paths
 - ❌ **AMD backend reference** - Reference implementation needed (or vendor-provided)
 
 #### **Production Readiness**
@@ -293,12 +293,11 @@ It does **not** allocate memory for containers; each container pulls its own via
 **1.3 Create Backend Manager & AOT Binary Selection** ✅ **COMPLETED**
 - **Location**: `coelanox-runtime/src/backend_manager.rs` (new), `coelanox-packager/src/lib.rs`
 - **Status**: ✅ BackendManager implemented with discovery, validation, AOT selection (`--fat`, `--auto`, `--backend-add`). Tests: `test_backend_manager.rs`, `test_aot_selection.rs`
-- **Note**: Dynamic library loading structure in place, needs platform-specific FFI implementation
+- **Note**: CLF (.clfc) discovery implemented; backends discovered from search paths
 - **Tasks**:
   - Create backend manager module
-  - Implement vendor backend discovery (dynamic library loading)
-  - Implement dynamic library loading (.so/.dylib/.dll)
-  - Implement backend registry (register discovered backends)
+  - Implement vendor backend discovery (CLF .clfc files) ✅
+  - Implement backend registry (register discovered backends) ✅
   - Implement backend routing (route execution to appropriate backend)
   - Add backend health checks
   - Add backend fallback chain (vendor → scalar fallback)
@@ -1786,7 +1785,7 @@ impl BackendTranslator for NvidiaBackendTranslator {
 #### **Backend Manager Integration**
 
 **Package Time:**
-- Backend manager discovers vendor backends (dynamic library loading)
+- Backend manager discovers CLF backends (.clfc files)
 - Packager uses backend translator to generate code
 - Code is pre-compiled into container
 

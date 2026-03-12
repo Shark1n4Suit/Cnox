@@ -104,24 +104,22 @@ The security hash is calculated during packaging:
 
 ### Overview
 
-The Backend Manager discovers and manages vendor-provided `BackendTranslator` implementations. It operates at **package time** to discover available backends for AOT compilation.
+The Backend Manager discovers and manages CLF (Coelanox Library File) backends. It operates at **package time** to discover .clfc files for AOT compilation.
 
 ### Components
 
 #### BackendManager
 
-**Location**: `coelanox-runtime/src/backend_manager.rs`
+**Location**: `coelanox-orchestrator/src/backend_manager.rs`
 
 **Responsibilities**:
-- Discover vendor backends from dynamic libraries
-- Load and validate backend libraries
+- Discover CLF backends (.clfc files) from search paths
 - Track discovered backends
 - Provide backend selection strategies
 
 **Key Methods**:
 - `new()` - Create new BackendManager
-- `discover_backends()` - Scan search paths for backend libraries
-- `load_backend_library()` - Load and validate a backend library
+- `discover_backends()` - Scan search paths for CLF files
 - `validate_backend()` - Check if backend exists
 - `select_backend_with_fallback()` - Select backend using fallback strategy
 
@@ -132,7 +130,7 @@ The Backend Manager discovers and manages vendor-provided `BackendTranslator` im
 pub struct BackendInfo {
     pub name: String,                    // Backend name (e.g., "nvidia-h100")
     pub version: String,                 // Backend version
-    pub library_path: PathBuf,          // Path to dynamic library
+    pub library_path: PathBuf,          // Path to CLF file (.clfc)
     pub supported_targets: Vec<HardwareTarget>, // Supported hardware targets
 }
 ```
@@ -144,24 +142,22 @@ pub struct BackendInfo {
 pub struct DiscoveryResult {
     pub discovered: Vec<BackendInfo>,    // Successfully discovered backends
     pub failures: Vec<(PathBuf, String)>, // Failed paths with error messages
-    pub total_scanned: usize,            // Total libraries scanned
+    pub total_scanned: usize,            // Total files scanned
 }
 ```
 
 ### Backend Discovery Process
 
 1. **Search Paths**: BackendManager scans default search paths:
-   - `/usr/lib/coelanox/backends/`
-   - `~/.coelanox/backends/`
-   - `./backends/` (current directory)
+   - `~/.coelanox/clf/` with subdirs `clfc/`, `clfmm/`, `clfmp/`, `clfe/`
+   - `COELANOX_CLF_PATH` (override)
+   - `COELANOX_BACKEND_PATH` (extra paths, colon-separated)
 
-2. **Library Detection**: Identifies dynamic libraries (`.so`, `.dylib`, `.dll`)
+2. **CLF Detection**: Identifies CLF files (`.clfc`, legacy `.clf`)
 
-3. **Library Loading**: Attempts to load each library and extract backend metadata
+3. **CLF Loading**: Reads CLF header to extract backend metadata and supported targets
 
-4. **Validation**: Validates backend interface and capabilities
-
-5. **Registration**: Registers valid backends for use during packaging
+4. **Registration**: Registers valid backends for use during packaging
 
 ### Backend Selection Strategies
 
@@ -381,7 +377,7 @@ coelanox-cli
 **Key Error Variants**:
 - `SecurityHashMismatch` - Hash verification failed
 - `BackendNotFound` - Requested backend not available
-- `BackendLibraryLoadFailed` - Failed to load backend library
+- `BackendLibraryNotFound` - CLF file not found
 - `BackendDiscoveryFailed` - Backend discovery failed
 - `DeviceIdOutOfRange` - Invalid device ID
 
