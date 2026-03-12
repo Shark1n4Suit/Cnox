@@ -669,7 +669,7 @@ impl OptimizedIR {
     }
     
     /// Get any tensor by ID (weight or intermediate)
-    pub fn get_tensor(&self, tensor_id: TensorId) -> Option<TensorRef> {
+    pub fn get_tensor(&self, tensor_id: TensorId) -> Option<TensorRef<'_>> {
         if let Some(tensor) = self.get_shared_weight(tensor_id) {
             return Some(TensorRef::Weight(tensor));
         }
@@ -864,7 +864,7 @@ impl UniversalIR {
     }
     
     /// Get any tensor by ID (weight or intermediate)
-    pub fn get_tensor(&self, tensor_id: TensorId) -> Option<TensorRef> {
+    pub fn get_tensor(&self, tensor_id: TensorId) -> Option<TensorRef<'_>> {
         if let Some(tensor) = self.get_weight_tensor(tensor_id) {
             return Some(TensorRef::Weight(tensor));
         }
@@ -875,7 +875,7 @@ impl UniversalIR {
     }
     
     /// Get tensor by name
-    pub fn get_tensor_by_name(&self, name: &str) -> Option<(TensorId, TensorRef)> {
+    pub fn get_tensor_by_name(&self, name: &str) -> Option<(TensorId, TensorRef<'_>)> {
         // Check weight tensors first
         for (index, tensor) in self.weight_tensors.iter().enumerate() {
             if tensor.name == name {

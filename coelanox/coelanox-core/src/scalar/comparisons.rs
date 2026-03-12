@@ -8,7 +8,7 @@
 //! - Less: Element-wise less-than comparison
 //! - LessEqual: Element-wise less-than-or-equal comparison
 
-use crate::{CoelanoxError, CoelanoxResult};
+use crate::CoelanoxResult;
 use std::collections::HashMap;
 use crate::ir::Attribute;
 

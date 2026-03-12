@@ -5,6 +5,7 @@
 //! - No references to gpu_backend, npu_backend, tpu_backend exist
 //! - Module is empty but valid (placeholder for future use)
 
+#[allow(unused_imports)]
 use coelanox_orchestrator::backends;
 
 #[test]

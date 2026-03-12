@@ -8,7 +8,7 @@
 //! - Error handling works at each stage
 
 use coelanox_core::format::{verify_security_hash, HardwareTarget, ModelFormat};
-use coelanox_core::{CoelanoxError, CoelanoxResult};
+use coelanox_core::CoelanoxResult;
 use coelanox_packager::CoelanoxPackager;
 use coelanox_orchestrator::{CoelanoxRuntime, RuntimeConfig};
 use tempfile::NamedTempFile;
@@ -72,7 +72,7 @@ fn test_full_pipeline_package_verify_run() {
     
     // Step 2: Package the model
     let packager = CoelanoxPackager::new().expect("Failed to create packager");
-    let output_path = Path::new("test_output.cnox");
+    let _output_path = Path::new("test_output.cnox");
     
     // Note: This will fail if ONNX translator is not available, but that's okay for integration test
     // The test verifies the pipeline structure, not the actual packaging
@@ -351,7 +351,7 @@ fn test_aot_selection_backend_add() {
     if let Ok(container) = result {
         if let Some(metadata) = &container.manifest.backend_metadata {
             match &metadata.selection_mode {
-                coelanox_core::format::BackendSelectionMode::Slim { primary, additional } => {
+                coelanox_core::format::BackendSelectionMode::Slim { primary: _primary, additional } => {
                     assert_eq!(additional.len(), 2, "Should have 2 additional backends");
                     assert!(additional.contains(&"amd".to_string()));
                     assert!(additional.contains(&"intel".to_string()));

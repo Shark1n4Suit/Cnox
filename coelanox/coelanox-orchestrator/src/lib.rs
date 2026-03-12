@@ -8,6 +8,7 @@ pub mod fallback;
 pub mod audit;
 
 pub use runtime::*;
+#[allow(unused_imports)]
 pub use backends::*;
 pub use backend_manager::*;
 pub use execution_backend::*;

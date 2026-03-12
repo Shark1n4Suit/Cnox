@@ -742,7 +742,7 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
 
     // Load runtime (config from COELANOX_CONFIG_FILE or COELANOX_* env vars)
     let config = load_runtime_config();
-    let mut runtime = CoelanoxRuntime::with_config(config);
+    let runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
     }
@@ -1043,8 +1043,8 @@ fn debug_command(
     }
     
     let config = load_runtime_config();
-    let mut runtime = CoelanoxRuntime::with_config(config);
-    
+    let runtime = CoelanoxRuntime::with_config(config);
+
     // Load container
     info!("📦 Loading container: {}", file);
     runtime.load_container(file)?;

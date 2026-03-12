@@ -12,7 +12,7 @@
 
 use coelanox_core::format::CoelanoxContainer;
 use coelanox_core::ir::OptimizedIR;
-use coelanox_core::{CoelanoxError, CoelanoxResult};
+use coelanox_core::CoelanoxResult;
 use std::collections::HashMap;
 
 /// Cached (warm) data for a container to avoid per-inference decompress and IR deserialize.

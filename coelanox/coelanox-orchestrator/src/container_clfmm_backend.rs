@@ -12,7 +12,7 @@ use coelanox_clf::{ClfKind, ClfReaderFromBytes};
 use coelanox_core::format::CoelanoxContainer;
 use coelanox_core::{
     memory_hal::{
-        MemoryCapabilities, MemoryHAL, MemoryRegion, MemoryTarget, MemoryTier, RegionOptions,
+        MemoryCapabilities, MemoryHAL, MemoryRegion, MemoryTier, RegionOptions,
     },
     optimization::MaxShapeMetadata,
     CoelanoxError, CoelanoxResult,
@@ -49,6 +49,7 @@ pub struct ContainerClfmmBackend {
     alloc_fn: Mutex<Option<AllocFn>>,
     dealloc_fn: Mutex<Option<DeallocFn>>,
     move_fn: Mutex<Option<MoveFn>>,
+    #[allow(dead_code)]
     bootstrap_region: Mutex<Option<BootstrapRegion>>,
 }
 

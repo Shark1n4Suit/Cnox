@@ -7,11 +7,9 @@
 //! - Fallback is always available (100% uptime)
 
 use coelanox_core::format::{CoelanoxContainer, CoelanoxManifest, CompressionType, ModelFormat};
-use coelanox_core::ir::{OpType, GraphNode, Attribute};
+use coelanox_core::ir::OpType;
 use coelanox_orchestrator::CoelanoxRuntime;
 use tempfile::NamedTempFile;
-use std::path::Path;
-use std::collections::HashMap;
 
 /// Helper: Create a test container with IR operations
 fn create_container_with_operations(operations: Vec<OpType>) -> CoelanoxResult<CoelanoxContainer> {
@@ -349,7 +347,7 @@ fn test_matrix_convolution_fallback() {
 fn test_fallback_always_available() {
     // Test: Fallback is always available (100% uptime)
     
-    let runtime = CoelanoxRuntime::new();
+    let _runtime = CoelanoxRuntime::new();
     
     // Runtime should always be available, even without containers
     // This test verifies that runtime can be created and is ready
@@ -377,12 +375,12 @@ fn test_error_handling_invalid_inputs() {
     
     // Test with empty input (should handle gracefully)
     let empty_input = vec![];
-    let result = runtime.execute("test", &empty_input);
+    let _result = runtime.execute("test", &empty_input);
     // May fail due to size mismatch, but should not panic
     
     // Test with wrong size input
     let wrong_size_input = vec![1.0f32; 5]; // Expected 10
-    let result = runtime.execute("test", &wrong_size_input);
+    let _result = runtime.execute("test", &wrong_size_input);
     // May fail due to size mismatch, but should not panic
 }
 
@@ -430,7 +428,7 @@ fn test_error_handling_missing_weights() {
         .expect("Failed to load container");
     
     let input_data = vec![1.0f32; 10];
-    let result = runtime.execute("test", &input_data);
+    let _result = runtime.execute("test", &input_data);
     // Should handle missing weights gracefully (may fail, but shouldn't panic)
 }
 

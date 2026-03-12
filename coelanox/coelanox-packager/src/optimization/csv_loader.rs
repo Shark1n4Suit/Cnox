@@ -49,7 +49,7 @@ impl CsvOptimizationLoader {
     }
     
     /// Load CSV from reader
-    fn load_from_reader<R: std::io::Read>(&mut self, reader: R, source: String) -> CoelanoxResult<()> {
+    fn load_from_reader<R: std::io::Read>(&mut self, reader: R, _source: String) -> CoelanoxResult<()> {
         let mut csv_reader = csv::Reader::from_reader(reader);
         
         for result in csv_reader.records() {

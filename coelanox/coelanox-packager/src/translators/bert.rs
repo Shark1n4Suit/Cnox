@@ -35,10 +35,13 @@ struct BertConfig {
     #[serde(default)]
     max_position_embeddings: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     vocab_size: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     num_attention_heads: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     type_vocab_size: Option<u32>,
     #[serde(default)]
     layer_norm_eps: Option<f64>,

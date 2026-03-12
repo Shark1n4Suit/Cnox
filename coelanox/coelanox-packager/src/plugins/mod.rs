@@ -258,7 +258,6 @@ pub struct PluginStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     
     /// Dummy plugin for testing
     struct DummyPlugin {
@@ -327,7 +326,7 @@ mod tests {
         assert_eq!(format_plugin.name(), "dummy_plugin");
         
         // Test plugin removal
-        let removed = manager.remove_plugin("dummy").unwrap();
+        let _removed = manager.remove_plugin("dummy").unwrap();
         assert_eq!(manager.plugin_count(), 0);
     }
     

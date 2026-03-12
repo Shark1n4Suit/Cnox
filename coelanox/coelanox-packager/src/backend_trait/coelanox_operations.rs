@@ -3,7 +3,6 @@
 //! This module defines the parameters and optimization hints used by backend translators.
 //! Operations are now defined in coelanox-core::ir::OpType.
 
-use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
 /// COELANOX AI Operation Parameters

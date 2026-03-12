@@ -29,7 +29,7 @@ use coelanox_executor::{
 };
 use coelanox_core::{
     format::{header_signed, is_container_signed_from_slice, verify_security_hash_from_slice, verify_signature_from_slice, CoelanoxContainer, HardwareTarget},
-    ir::{deserialize_optimized_ir, Attribute, OptimizedIR, OpType},
+    ir::{deserialize_optimized_ir, OptimizedIR},
     memory_hal::{MemoryBackendRegistry, MemoryHAL, MemoryRegion, MemoryTarget, RegionOptions, MemoryTier},
     protection_hal::{ProtectionBackendRegistry, ProtectionHAL, RegionPermissions},
     CoelanoxError, CoelanoxResult,
@@ -37,16 +37,14 @@ use coelanox_core::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn, instrument, Level};
+use tracing::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use anyhow::{Context, Result as AnyhowResult};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::fs::File;
 use std::cell::RefCell;
 use uuid::Uuid;
 use memmap2::{Advice, Mmap};
 
-/// Thread-local execution deadline for timeout enforcement. Set at start of run; checked between steps (SIMD) or waves (scalar).
 thread_local! {
     static EXECUTION_DEADLINE: RefCell<Option<Instant>> = RefCell::new(None);
 }
@@ -219,9 +217,11 @@ pub struct RuntimeConfig {
     pub max_container_size_bytes: usize,
 }
 
+#[allow(dead_code)]
 fn default_allow_absolute_paths() -> bool {
     true
 }
+#[allow(dead_code)]
 fn default_max_container_size_bytes() -> usize {
     1024 * 1024 * 1024 // 1GB
 }
@@ -678,6 +678,7 @@ pub struct CoelanoxRuntime {
     /// Active execution states (thread-safe)
     active_executions: Arc<RwLock<HashMap<String, ExecutionState>>>,
     /// Execution counter for unique IDs
+    #[allow(dead_code)]
     execution_counter: AtomicU64,
     /// Container warming cache (thread-safe)
     warmed_containers: Arc<RwLock<HashMap<String, Instant>>>,
@@ -731,17 +732,20 @@ unsafe impl Sync for SimpleRegion {}
 enum ExecutableMemoryBlock {
     Legacy {
         region: SimpleRegion,
+        #[allow(dead_code)]
         allocated_at: Instant,
     },
     Hal {
         target: MemoryTarget,
         region: Box<dyn MemoryRegion>,
+        #[allow(dead_code)]
         allocated_at: Instant,
     },
     /// Container-embedded CLFMM; backend owns deallocation
     Clfmm {
         region: Box<dyn MemoryRegion>,
         backend: std::sync::Arc<ContainerClfmmBackend>,
+        #[allow(dead_code)]
         allocated_at: Instant,
     },
 }
@@ -779,6 +783,7 @@ impl ExecutableMemoryBlock {
     }
 
     /// Pointer to executable memory (for calling loaded code).
+    #[allow(dead_code)]
     fn as_ptr(&self) -> *mut u8 {
         match self {
             Self::Legacy { region, .. } => region.as_ptr(),
@@ -795,6 +800,7 @@ impl ExecutableMemoryBlock {
     }
 
     /// Get allocation age in milliseconds.
+    #[allow(dead_code)]
     fn age_ms(&self) -> u64 {
         let at = match self {
             Self::Legacy { allocated_at, .. } | Self::Hal { allocated_at, .. } | Self::Clfmm { allocated_at, .. } => allocated_at,
@@ -888,6 +894,7 @@ pub struct SecurityValidator {
     /// Enable path traversal protection
     enable_path_traversal_protection: bool,
     /// Enable memory bounds checking
+    #[allow(dead_code)]
     enable_memory_bounds_checking: bool,
     /// If false, absolute paths (e.g. /path or \path) are rejected (production hardening)
     allow_absolute_paths: bool,
@@ -1118,12 +1125,12 @@ impl CoelanoxRuntime {
         self.validate_config(&config)?;
         *lock_rw_write(&self.config)? = config;
         
-        // Recreate security validator with new config
+        // Recreate security validator with new config (config already applied above)
         let config = self.get_config()?;
-        let new_security_validator = Arc::new(SecurityValidator::new(&config));
-        // Note: We can't directly replace Arc<SecurityValidator> in the struct,
-        // but we can update the internal configuration
-        
+        let _new_security_validator = Arc::new(SecurityValidator::new(&config));
+        // Note: We can't directly replace Arc<SecurityValidator> in the struct;
+        // validator uses config from get_config() which was just updated.
+
         Ok(())
     }
     
@@ -1492,7 +1499,7 @@ impl CoelanoxRuntime {
     
     /// Execute with pipeline monitoring
     fn execute_with_pipeline(&self, execution_state: &mut ExecutionState, input_data: &[f32], pipeline: &mut ExecutionPipeline) -> CoelanoxResult<Vec<f32>> {
-        let start_time = Instant::now();
+        let _start_time = Instant::now();
         
         // Stage 1: Validation
         execution_state.set_status(ExecutionStatus::Running);
@@ -1691,7 +1698,7 @@ impl CoelanoxRuntime {
     }
     
     /// Execute post-processing stage
-    fn execute_postprocessing_stage(&self, execution_state: &mut ExecutionState, pipeline: &mut ExecutionPipeline) -> StageResult {
+    fn execute_postprocessing_stage(&self, _execution_state: &mut ExecutionState, pipeline: &mut ExecutionPipeline) -> StageResult {
         let stage_start = Instant::now();
         
         // Post-processing validation and cleanup

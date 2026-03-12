@@ -5,7 +5,7 @@
 
 use coelanox_core::{
     CoelanoxError, CoelanoxResult,
-    format::{BackendMetadata, BackendSelectionMode, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat, OptimizationLevel, COELANOX_FLAG_AUDIT_REQUIRED},
+    format::{BackendMetadata, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat, OptimizationLevel, COELANOX_FLAG_AUDIT_REQUIRED},
     ir::{GraphNode, IntermediateTensor, OpType as IrOpType, UniversalIR, WeightTensor},
     memory_hal::MemoryBackendRegistry,
     optimization::MaxShapeReader,
@@ -346,7 +346,7 @@ impl CoelanoxPackager {
     /// * `audit_required` - Set header flag so runtime always runs with audit (compliance); audit output defaults to a default folder if not specified.
     /// * `max_workspace_mb` - If set, fail when (workspace + peak scratch) exceeds this many MB (global cap).
     /// * `weights_path` - Optional path to external weights file (e.g. ONNX model with separate fp16/f32 weight file).
-    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, model_type: &str, custom_input_shapes: Option<&str>, custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, audit_required: bool, max_workspace_mb: Option<u64>, weights_path: Option<&Path>) -> CoelanoxResult<CoelanoxContainer> {
+    pub fn package(&self, model_path: &Path, target: HardwareTarget, target_str: &str, _model_type: &str, _custom_input_shapes: Option<&str>, _custom_output_shapes: Option<&str>, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, audit_required: bool, max_workspace_mb: Option<u64>, weights_path: Option<&Path>) -> CoelanoxResult<CoelanoxContainer> {
         // If directory given, use ResNet bundle inside it (no PyTorch needed at package time)
         let actual_path: std::path::PathBuf = if model_path.is_dir() {
             let bundle = model_path.join("resnet_tiny_mnist.bundle");
@@ -510,7 +510,7 @@ impl CoelanoxPackager {
         manifest.nvme_backing_size = Some(nvme_backing_data.len());
         
         // Build execution plan for CLF multi-blob (mini-executor); set workspace header in manifest
-        let (execution_plan, workspace_required_elements) = if let Some(ref kernel_offsets_by_node) = kernel_byte_offsets {
+        let (execution_plan, _workspace_required_elements) = if let Some(ref kernel_offsets_by_node) = kernel_byte_offsets {
             let node_order = Self::execution_node_order(&optimized_ir)?;
             // op_ids and kernel offsets in execution order (step j = node_order[j])
             let op_ids: Vec<u32> = node_order

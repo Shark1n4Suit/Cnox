@@ -5,7 +5,7 @@
 //! - Or: Element-wise logical OR
 //! - Not: Element-wise logical NOT
 
-use crate::{CoelanoxError, CoelanoxResult};
+use crate::CoelanoxResult;
 use std::collections::HashMap;
 use crate::ir::Attribute;
 

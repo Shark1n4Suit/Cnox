@@ -3,7 +3,7 @@
 //! Pure Rust scalar implementations with parallel iteration for large buffers
 //! (same pattern as MatMul: use a tuned primitive—here Rayon—for speed).
 
-use crate::{CoelanoxError, CoelanoxResult};
+use crate::CoelanoxResult;
 use std::collections::HashMap;
 use crate::ir::Attribute;
 use rayon::prelude::*;

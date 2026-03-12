@@ -5,7 +5,7 @@
 
 use coelanox_core::{CoelanoxResult};
 use coelanox_core::format::HardwareTarget;
-use coelanox_core::ir::{UniversalIR, OpType, GraphNode, Attribute, TensorRef, OptimizedIR, IntermediateTensor, DataType};
+use coelanox_core::ir::{UniversalIR, OpType, GraphNode, Attribute, TensorRef, OptimizedIR};
 
 /// Hardware optimizer trait - operates directly on graph structure
 pub trait HardwareOptimizer: Send + Sync {

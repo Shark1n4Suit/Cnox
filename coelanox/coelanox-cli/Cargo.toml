@@ -11,6 +11,9 @@ repository = "https://github.com/benjamin-morin/coelanox"
 name = "coelanox"
 path = "src/main.rs"
 
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(backtrace)"] }
+
 [features]
 default = []
 

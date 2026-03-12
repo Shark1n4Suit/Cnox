@@ -511,6 +511,7 @@ pub unsafe extern "C" fn clf_simd_matmul(
 // Weights: gamma (C), beta (C) => w_len = 2*C. in_len = out_len. C = w_len/2. Rows = in_len/C.
 const LN_EPS: f32 = 1e-5;
 
+#[allow(dead_code)]
 #[inline(always)]
 unsafe fn layernorm_scalar(
     out: *mut f32,
@@ -1200,6 +1201,7 @@ unsafe fn horizontal_min_avx2(v: __m256) -> f32 {
     _mm256_cvtss_f32(min3)
 }
 
+#[allow(dead_code)]
 unsafe fn reduce_sum_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
     for r in 0..rows {
         let base = r * cols;
@@ -1231,6 +1233,7 @@ pub unsafe extern "C" fn clf_simd_reduce_sum(out: *mut f32, x: *const f32, rows:
     #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { reduce_sum_avx2(out, x, rows, cols); }
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { reduce_sum_scalar(out, x, rows, cols); }
 }
+#[allow(dead_code)]
 unsafe fn reduce_mean_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
     let inv = 1.0 / cols as f32;
     for r in 0..rows {
@@ -1260,6 +1263,7 @@ pub unsafe extern "C" fn clf_simd_reduce_mean(out: *mut f32, x: *const f32, rows
     #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { reduce_mean_avx2(out, x, rows, cols); }
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { unsafe { reduce_mean_scalar(out, x, rows, cols); } }
 }
+#[allow(dead_code)]
 unsafe fn reduce_max_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
     for r in 0..rows {
         let base = r * cols;
@@ -1292,6 +1296,7 @@ pub unsafe extern "C" fn clf_simd_reduce_max(out: *mut f32, x: *const f32, rows:
     #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { reduce_max_avx2(out, x, rows, cols); }
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { unsafe { reduce_max_scalar(out, x, rows, cols); } }
 }
+#[allow(dead_code)]
 unsafe fn reduce_min_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
     for r in 0..rows {
         let base = r * cols;

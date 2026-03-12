@@ -45,6 +45,7 @@ pub struct ContainerClfmpBackend {
     configure_fn: Mutex<Option<ConfigureFn>>,
     enable_fn: Mutex<Option<EnableFn>>,
     disable_fn: Mutex<Option<DisableFn>>,
+    #[allow(dead_code)]
     bootstrap_region: Mutex<Option<BootstrapRegion>>,
 }
 

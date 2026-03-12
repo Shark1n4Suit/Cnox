@@ -276,7 +276,6 @@ impl MaxShapeReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{ModelMetadata, DataType};
     
     #[test]
     fn test_max_shape_creation() {

@@ -6,11 +6,11 @@
 //! for each tensor: ndim (u32), dims[ndim] (u32 each), data (f32 LE).
 
 use coelanox_core::ir::{
-    Attribute, DataType, GraphNode, OpType, Shape, UniversalIR,
+    Attribute, DataType, OpType, Shape, UniversalIR,
 };
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_core::format::ModelFormat;
-use coelanox_core::plugins::{PluginConfig, PluginMetadata, PluginCapabilities, TranslatorPlugin};
+use coelanox_core::plugins::{PluginConfig, TranslatorPlugin};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -169,7 +169,7 @@ impl ResNetTinyMnistTranslator {
         let (s0_out, _) = add_basic_blocks(&mut ir, 2, c0, c0, 14, 14, stem_relu_out, &weights, &mut weight_index, "stage0", false)?;
 
         // --- Stage 1: 2 basic blocks (optional downsample when c0 != c1) ---
-        let (h1, w1) = if c0 != c1 { (7, 7) } else { (14, 14) };
+        let (h1, _w1) = if c0 != c1 { (7, 7) } else { (14, 14) };
         let (s1_out, _) = add_basic_blocks(&mut ir, 2, c0, c1, 14, h1, s0_out, &weights, &mut weight_index, "stage1", has_downsample)?;
 
         // --- Global average pool: [1,64,7,7] -> [1,64] ---
@@ -222,8 +222,8 @@ fn add_basic_blocks(
     let mut w = *weight_index;
 
     for b in 0..num_blocks {
-        let (cin, cout) = if b == 0 { (in_ch, out_ch) } else { (out_ch, out_ch) };
-        let (hin, hout) = if b == 0 && in_ch != out_ch { (h_in, h_out) } else { (h_out, h_out) };
+        let (_cin, cout) = if b == 0 { (in_ch, out_ch) } else { (out_ch, out_ch) };
+        let (_hin, hout) = if b == 0 && in_ch != out_ch { (h_in, h_out) } else { (h_out, h_out) };
 
         // conv1
         let conv1_w = weights.get(w).ok_or_else(|| CoelanoxError::format("Missing weight"))?;
@@ -387,18 +387,23 @@ fn add_basic_blocks(
 #[derive(Debug, serde::Deserialize)]
 struct ResNetConfig {
     #[serde(default)]
+    #[allow(dead_code)]
     num_channels: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     hidden_sizes: Vec<u32>,
     #[serde(default)]
     depths: Vec<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     embedding_size: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     id2label: Option<HashMap<String, String>>,
 }
 
 impl ResNetConfig {
+    #[allow(dead_code)]
     fn num_labels(&self) -> Option<usize> {
         self.id2label.as_ref().map(|m| m.len())
     }

@@ -320,13 +320,14 @@ impl SystemEnvironment {
                 let mut eax = 1u32;
                 let mut ecx = 0u32;
                 let mut edx = 0u32;
-                
+
                 // CPUID modifies rbx, but we don't need it - just preserve it
-                asm!("push rbx; cpuid; pop rbx", 
+                asm!("push rbx; cpuid; pop rbx",
                      inout("eax") eax,
                      out("ecx") ecx,
                      out("edx") edx,
                      options(nomem, preserves_flags));
+                let _ = eax;
                 
                 // Check EDX register flags (SSE, SSE2, etc.)
                 if (edx >> 25) & 1 != 0 { capabilities.push(SimdCapability::SSE); }
@@ -341,18 +342,19 @@ impl SystemEnvironment {
                 // Check for AVX2 (CPUID function 7, sub-leaf 0)
                 // Note: rbx is reserved by LLVM, so we use r10 and move the value
                 let mut eax7 = 7u32;
-                let mut ecx_in = 0u32; // Sub-leaf (input)
+                let ecx_in = 0u32; // Sub-leaf (input)
                 let mut r10_result = 0u64; // Temporary register for ebx
-                let mut ecx7 = 0u32;
-                let mut edx7 = 0u32;
-                
-                asm!("push rbx; cpuid; mov {result}, rbx; pop rbx", 
+                let mut _ecx7 = 0u32;
+                let mut _edx7 = 0u32;
+
+                asm!("push rbx; cpuid; mov {result}, rbx; pop rbx",
                      inout("eax") eax7,
-                     inout("ecx") ecx_in => ecx7,
-                     out("edx") edx7,
+                     inout("ecx") ecx_in => _ecx7,
+                     out("edx") _edx7,
                      result = out(reg) r10_result,
                      options(nomem, preserves_flags));
-                
+
+                let _ = (eax7, _ecx7, _edx7);
                 let ebx7 = (r10_result & 0xFFFFFFFF) as u32;
                 if (ebx7 >> 5) & 1 != 0 { capabilities.push(SimdCapability::AVX2); }
                 if (ebx7 >> 16) & 1 != 0 { capabilities.push(SimdCapability::AVX512); }
