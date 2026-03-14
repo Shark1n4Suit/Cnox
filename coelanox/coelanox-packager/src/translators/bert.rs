@@ -8,7 +8,7 @@
 use coelanox_core::ir::{Attribute, DataType, OpType, Shape, UniversalIR};
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_core::format::ModelFormat;
-use coelanox_core::plugins::{PluginConfig, TranslatorPlugin};
+use coelanox_core::plugins::CoelanoxTranslator;
 use std::path::Path;
 
 /// Magic bytes for BERT bundle (v1).
@@ -425,7 +425,7 @@ impl BertTranslator {
     }
 }
 
-impl TranslatorPlugin for BertTranslator {
+impl CoelanoxTranslator for BertTranslator {
     fn translate(&self, model_data: &[u8]) -> CoelanoxResult<UniversalIR> {
         if model_data.len() < 4 || &model_data[0..4] != BUNDLE_MAGIC {
             return Err(CoelanoxError::format("Invalid BERT bundle (bad magic)"));
@@ -490,11 +490,4 @@ impl TranslatorPlugin for BertTranslator {
         "Translates BERT BRT1 bundle to UniversalIR. Full 12-layer encoder (LayerNorm, MatMul, Add, Gelu, Softmax, Reshape, Transpose, Gemm)."
     }
 
-    fn configure(&mut self, _config: &PluginConfig) -> CoelanoxResult<()> {
-        Ok(())
-    }
-
-    fn validate_config(&self, _config: &PluginConfig) -> CoelanoxResult<()> {
-        Ok(())
-    }
 }

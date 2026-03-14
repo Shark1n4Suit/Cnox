@@ -43,6 +43,10 @@ path = "test_scalar_ops_correctness.rs"
 name = "test_signing"
 path = "test_signing.rs"
 
+[[test]]
+name = "test_translator_sdk"
+path = "test_translator_sdk.rs"
+
 [dependencies]
 coelanox-packager = { path = "../coelanox-packager" }
 coelanox-core = { path = "../coelanox-core" }

@@ -33,8 +33,11 @@ rten-onnx = { version = "0.24", optional = true }
 half = { version = "2.4", optional = true }
 
 [features]
-default = ["onnx-protobuf"]
+default = ["translator-onnx", "translator-bert", "translator-resnet"]
 onnx-protobuf = ["dep:rten-onnx", "dep:half"]
+translator-onnx = ["onnx-protobuf"]
+translator-bert = []
+translator-resnet = []
 packaging = []
 
 [dev-dependencies]

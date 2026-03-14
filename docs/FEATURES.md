@@ -14,10 +14,11 @@ This document lists implemented and planned features for the current release. It
 
 ### Model input (packaging)
 - **In-tree translators:** BERT (BRT1 bundle; `--model-type nlp`, `--use-demo-translator`), ResNet-tiny-MNIST (config + weights; CV demo), **ONNX (opset 13)** in `coelanox-packager` with feature `onnx-protobuf`; register via plugins to package ONNX models.
-- **Plugin system** — Translator plugins (trait-based); new formats can be added via plugins. See [ONNX decomposition tree](../coelanox/coelanox-packager/docs/ONNX_DECOMPOSITION_TREE.md) for ONNX → IR mapping.
+- **Plugin system** — CoelanoxTranslator trait (compiler frontends); new formats can be added via translators. See [ONNX decomposition tree](../coelanox/coelanox-packager/docs/ONNX_DECOMPOSITION_TREE.md) for ONNX → IR mapping.
 
 ### Not implemented / planned
 - Generic ONNX/PyTorch/TensorFlow translators are **not** shipped in-tree (planned or community).
+- **Frontend SDK** — `coelanox-core` is the SDK. Implement `CoelanoxTranslator`; produce UniversalIR. See [FRONTEND_SDK.md](FRONTEND_SDK.md) and [Frontend SDK Roadmap](../roadmaps/FRONTEND_SDK_ROADMAP.md).
 - Single container “runs everywhere” depends on backend: scalar runs anywhere; SIMD/CLF requires matching CLF artifacts.
 
 ---

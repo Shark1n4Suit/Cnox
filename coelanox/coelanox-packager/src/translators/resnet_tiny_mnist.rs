@@ -10,7 +10,7 @@ use coelanox_core::ir::{
 };
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_core::format::ModelFormat;
-use coelanox_core::plugins::{PluginConfig, TranslatorPlugin};
+use coelanox_core::plugins::CoelanoxTranslator;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -435,7 +435,7 @@ fn add_weight_from_blobs(
     Ok(tensor_id)
 }
 
-impl TranslatorPlugin for ResNetTinyMnistTranslator {
+impl CoelanoxTranslator for ResNetTinyMnistTranslator {
     fn translate(&self, model_data: &[u8]) -> CoelanoxResult<UniversalIR> {
         if model_data.len() < 4 || &model_data[0..4] != BUNDLE_MAGIC {
             return Err(CoelanoxError::format("Invalid ResNet-tiny-MNIST bundle (bad magic)"));
@@ -479,11 +479,4 @@ impl TranslatorPlugin for ResNetTinyMnistTranslator {
         "Translates ResNet-tiny-MNIST (config + PyTorch state_dict bundle) to UniversalIR."
     }
 
-    fn configure(&mut self, _config: &PluginConfig) -> CoelanoxResult<()> {
-        Ok(())
-    }
-
-    fn validate_config(&self, _config: &PluginConfig) -> CoelanoxResult<()> {
-        Ok(())
-    }
 }

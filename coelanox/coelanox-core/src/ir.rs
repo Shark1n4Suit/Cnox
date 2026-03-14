@@ -1,9 +1,10 @@
 //! Universal IR (Intermediate Representation) for AI models
-//! 
-//! This module defines the universal intermediate representation that can hold
-//! any AI model in a neutral, hardware-agnostic format. The IR uses a proper
-//! graph structure with efficient index-based lookups and clear separation
-//! between static weights and dynamic intermediate tensors.
+//!
+//! **Stable API for translator plugins.** This module defines the universal
+//! intermediate representation that can hold any AI model in a neutral,
+//! hardware-agnostic format. Translators produce UniversalIR; use the builder
+//! API (`add_node`, `add_node_input`, `add_weight_tensor_with_data`, etc.)
+//! to construct the graph.
 
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};

@@ -53,9 +53,10 @@ This index is the entry point for all project documentation. Documents are group
 
 ## Model formats and translators
 
-| Document | Location | Description |
-|----------|----------|-------------|
-| [ONNX decomposition tree](../coelanox/coelanox-packager/docs/ONNX_DECOMPOSITION_TREE.md) | `coelanox/coelanox-packager/docs/` | ONNX opset 13 → IR: 1:1 mapping, control-flow handling, decomposed ops, Custom |
+| Document | Description |
+|----------|-------------|
+| [FRONTEND_SDK.md](FRONTEND_SDK.md) | **Frontend SDK** — How to build a translator. `coelanox-core` is the SDK: implement `CoelanoxTranslator`, produce UniversalIR. Trait contract, IR schema, OpType vocabulary, builder API. |
+| [ONNX decomposition tree](../coelanox/coelanox-packager/docs/ONNX_DECOMPOSITION_TREE.md) | ONNX opset 13 → IR: 1:1 mapping, control-flow handling, decomposed ops, Custom |
 
 ---
 
@@ -72,6 +73,7 @@ This index is the entry point for all project documentation. Documents are group
 | Document | Description |
 |----------|-------------|
 | [PRODUCTION_MVP_ROADMAP](../roadmaps/PRODUCTION_MVP_ROADMAP.md) | Production MVP roadmap |
+| [FRONTEND_SDK_ROADMAP](../roadmaps/FRONTEND_SDK_ROADMAP.md) | Frontend SDK: translator contract, Cargo features, dynamic plugins (Phase 4) |
 | [coelanox-constellation-roadmap](../roadmaps/coelanox-constellation-roadmap.md) | Constellation roadmap |
 
 ---

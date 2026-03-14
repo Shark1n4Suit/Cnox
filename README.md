@@ -41,7 +41,7 @@ CLI commands: `package`, `validate`, `verify`, `run`, `info`, `benchmark`, `env`
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Components:** `coelanox-core` (format, IR, security, scalar ops), `coelanox-packager` (translate, optimize, compress), `coelanox-runtime` (load, execute), `coelanox-cli` (commands).
+**Components:** `coelanox-core` (format, IR, security, scalar ops, **Frontend SDK** for translators), `coelanox-packager` (translate, optimize, compress), `coelanox-runtime` (load, execute), `coelanox-cli` (commands). See [docs/FRONTEND_SDK.md](docs/FRONTEND_SDK.md) to build a translator.
 
 ---
 

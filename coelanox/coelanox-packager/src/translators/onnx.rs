@@ -8,7 +8,7 @@ mod impl_ {
     use coelanox_core::ir::{
         Attribute, DataType, OpType, Shape, TensorId, UniversalIR,
     };
-    use coelanox_core::plugins::TranslatorPlugin;
+    use coelanox_core::plugins::CoelanoxTranslator;
     use coelanox_core::format::ModelFormat;
     use coelanox_core::{CoelanoxError, CoelanoxResult};
     use rten_onnx::onnx::{ModelProto, DataType as OnnxDataType};
@@ -155,6 +155,37 @@ mod impl_ {
             }
             Err(CoelanoxError::format(
                 "Tensor has no float_data or raw_data",
+            ))
+        }
+
+        /// Read int64/int32 initializer data (for shape constants). Embedded only; not in external weights blob.
+        fn initializer_int64_data(init: &rten_onnx::onnx::TensorProto) -> CoelanoxResult<Vec<i64>> {
+            if !init.int64_data.is_empty() {
+                return Ok(init.int64_data.clone());
+            }
+            if !init.int32_data.is_empty() {
+                return Ok(init.int32_data.iter().map(|&x| x as i64).collect());
+            }
+            if let Some(ref raw) = init.raw_data {
+                let data = raw.borrow();
+                let dtype = init.data_type.as_ref().copied().unwrap_or(OnnxDataType::INT64);
+                if dtype == OnnxDataType::INT32 {
+                    let n = data.len() / 4;
+                    let mut out = Vec::with_capacity(n);
+                    for chunk in data.chunks_exact(4) {
+                        out.push(i32::from_le_bytes(chunk.try_into().unwrap()) as i64);
+                    }
+                    return Ok(out);
+                }
+                let n = data.len() / 8;
+                let mut out = Vec::with_capacity(n);
+                for chunk in data.chunks_exact(8) {
+                    out.push(i64::from_le_bytes(chunk.try_into().unwrap()));
+                }
+                return Ok(out);
+            }
+            Err(CoelanoxError::format(
+                "Int64/Int32 initializer has no int64_data, int32_data, or raw_data",
             ))
         }
 
@@ -563,9 +594,10 @@ mod impl_ {
 
             let mut ir = UniversalIR::new(name);
             let mut name_to_id: HashMap<String, TensorId> = HashMap::new();
+            let mut shape_constants: HashMap<String, Vec<i64>> = HashMap::new();
             let mut external_offset = 0usize;
 
-            // 1) Initializers as weight tensors (embedded or from external file; FLOAT/FLOAT16 supported).
+            // 1) Initializers: float/f16 as weight tensors; int64/int32 as shape constants (for Reshape etc.).
             for init in &graph.initializer {
                 let onnx_name = init
                     .name
@@ -576,13 +608,23 @@ mod impl_ {
                 if onnx_name.is_empty() || name_to_id.contains_key(&onnx_name) {
                     continue;
                 }
-                let shape = Self::tensor_shape(&init.dims);
                 let dtype = init.data_type.as_ref().copied().unwrap_or(OnnxDataType::FLOAT);
-                if dtype != OnnxDataType::FLOAT && dtype != OnnxDataType::FLOAT16 {
-                    return Err(CoelanoxError::format(
-                        "Only float32 and float16 initializers supported",
-                    ));
+
+                // Non-float initializers (int64, int32): shape constants for Reshape/Slice etc. Skip as weights.
+                if dtype == OnnxDataType::INT64 || dtype == OnnxDataType::INT32 {
+                    let vals = Self::initializer_int64_data(init)?;
+                    shape_constants.insert(onnx_name, vals);
+                    continue;
                 }
+
+                if dtype != OnnxDataType::FLOAT && dtype != OnnxDataType::FLOAT16 {
+                    return Err(CoelanoxError::format(&format!(
+                        "Initializer '{}': only float32, float16, int32, and int64 initializers supported",
+                        onnx_name
+                    )));
+                }
+
+                let shape = Self::tensor_shape(&init.dims);
                 let floats = Self::initializer_float_data(init, external_weights, &mut external_offset)?;
                 let data = floats
                     .into_iter()
@@ -691,7 +733,17 @@ mod impl_ {
                 let op_type = Self::map_op_type(op_type_str);
                 let node_id = ir.add_node(op_type);
 
-                for input_name in &node.input {
+                // Wire inputs. For Reshape, skip shape input (int64 constant) and add as attribute.
+                let is_reshape = op_type_str == "Reshape";
+                for (ix, input_name) in node.input.iter().enumerate() {
+                    if is_reshape && ix == 1 {
+                        if let Some(shape_vals) = shape_constants.get(input_name) {
+                            if let Some(n) = ir.get_node_mut(node_id) {
+                                n.add_attribute("shape".to_string(), Attribute::IntArray(shape_vals.clone()));
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(&tid) = name_to_id.get(input_name) {
                         let _ = ir.add_node_input(node_id, tid);
                     }
@@ -757,7 +809,7 @@ mod impl_ {
         }
     }
 
-    impl TranslatorPlugin for OnnxTranslator {
+    impl CoelanoxTranslator for OnnxTranslator {
         fn translate(&self, model_data: &[u8]) -> CoelanoxResult<UniversalIR> {
             let model = Self::parse_model(model_data)?;
             Self::build_ir(model, None)
@@ -802,6 +854,13 @@ mod impl_ {
             let mut external_offset = 0usize;
             let mut out = Vec::new();
             for init in &graph.initializer {
+                let dtype = init.data_type.as_ref().copied().unwrap_or(OnnxDataType::FLOAT);
+                if dtype == OnnxDataType::INT64 || dtype == OnnxDataType::INT32 {
+                    continue;
+                }
+                if dtype != OnnxDataType::FLOAT && dtype != OnnxDataType::FLOAT16 {
+                    continue;
+                }
                 let floats = Self::initializer_float_data(init, ext_ref, &mut external_offset)?;
                 out.extend(floats);
             }
@@ -833,7 +892,7 @@ mod impl_ {
 #[cfg(not(feature = "onnx-protobuf"))]
 mod impl_ {
     use coelanox_core::ir::UniversalIR;
-    use coelanox_core::plugins::TranslatorPlugin;
+    use coelanox_core::plugins::CoelanoxTranslator;
     use coelanox_core::format::ModelFormat;
     use coelanox_core::{CoelanoxError, CoelanoxResult};
 
@@ -851,7 +910,7 @@ mod impl_ {
         }
     }
 
-    impl TranslatorPlugin for OnnxTranslator {
+    impl CoelanoxTranslator for OnnxTranslator {
         fn translate(&self, _model_data: &[u8]) -> CoelanoxResult<UniversalIR> {
             Err(CoelanoxError::format(
                 "ONNX translator requires the 'onnx-protobuf' feature to be enabled",
