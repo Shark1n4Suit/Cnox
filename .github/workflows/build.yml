@@ -1,310 +1,37 @@
-name: Build and Release CNOX
+name: Build and Test
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ main, prod ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, prod ]
   workflow_dispatch:
 
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-    
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Test packager
-      run: |
-        cd packager
-        cargo test
-    
-    - name: Test runner
-      run: |
-        cd runner
-        cargo test --features cpu-backend
-    
-    - name: Build packager
-      run: |
-        cd packager
-        cargo build --release
-    
-    - name: Build runner
-      run: |
-        cd runner
-        cargo build --release --features cpu-backend
+      - uses: actions/checkout@v4
 
-  build-linux:
-    name: Build Linux
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-    
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y pkg-config libssl-dev
-    
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Build packager
-      run: |
-        cd packager
-        cargo build --release
-    
-    - name: Build runner
-      run: |
-        cd runner
-        cargo build --release --features full-inference
-    
-    - name: Create Linux release
-      run: |
-        mkdir -p release/linux
-        cp packager/target/release/cnox-packager release/linux/
-        cp runner/target/release/cnox-runner release/linux/
-        cp README.md release/linux/
-        cp QUICKSTART.md release/linux/
-        cp INSTALL.md release/linux/
-        cp CHANGELOG.md release/linux/
-        cp mobilenetv2.cnox release/linux/
-        cp cnox.yaml release/linux/
-        
-        # Create installation script
-        cat > release/linux/install.sh << 'EOF'
-        #!/bin/bash
-        echo "Installing CNOX on Linux..."
-        sudo mkdir -p /usr/local/bin
-        sudo cp cnox-packager /usr/local/bin/
-        sudo cp cnox-runner /usr/local/bin/
-        sudo chmod +x /usr/local/bin/cnox-packager
-        sudo chmod +x /usr/local/bin/cnox-runner
-        echo "CNOX installed successfully!"
-        EOF
-        chmod +x release/linux/install.sh
-        
-        # Create tarball
-        cd release
-        tar -czf cnox-linux-x86_64.tar.gz linux/
-        cd ..
-    
-    - name: Upload Linux artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: cnox-linux-x86_64
-        path: release/cnox-linux-x86_64.tar.gz
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-  build-macos:
-    name: Build macOS
-    runs-on: macos-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-    
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Build packager
-      run: |
-        cd packager
-        cargo build --release
-    
-    - name: Build runner
-      run: |
-        cd runner
-        cargo build --release --features full-inference
-    
-    - name: Create macOS release
-      run: |
-        mkdir -p release/macos
-        cp packager/target/release/cnox-packager release/macos/
-        cp runner/target/release/cnox-runner release/macos/
-        cp README.md release/macos/
-        cp QUICKSTART.md release/macos/
-        cp INSTALL.md release/macos/
-        cp CHANGELOG.md release/macos/
-        cp mobilenetv2.cnox release/macos/
-        cp cnox.yaml release/macos/
-        
-        # Create installation script
-        cat > release/macos/install.sh << 'EOF'
-        #!/bin/bash
-        echo "Installing CNOX on macOS..."
-        sudo mkdir -p /usr/local/bin
-        sudo cp cnox-packager /usr/local/bin/
-        sudo cp cnox-runner /usr/local/bin/
-        sudo chmod +x /usr/local/bin/cnox-packager
-        sudo chmod +x /usr/local/bin/cnox-runner
-        echo "CNOX installed successfully!"
-        EOF
-        chmod +x release/macos/install.sh
-        
-        # Create tarball
-        cd release
-        tar -czf cnox-macos-x86_64.tar.gz macos/
-        cd ..
-    
-    - name: Upload macOS artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: cnox-macos-x86_64
-        path: release/cnox-macos-x86_64.tar.gz
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            coelanox/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-  build-windows:
-    name: Build Windows
-    runs-on: windows-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-    
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Build packager
-      run: |
-        cd packager
-        cargo build --release
-    
-    - name: Build runner
-      run: |
-        cd runner
-        cargo build --release --features full-inference
-    
-    - name: Create Windows release
-      run: |
-        mkdir -p release/windows
-        cp packager/target/release/cnox-packager.exe release/windows/
-        cp runner/target/release/cnox-runner.exe release/windows/
-        cp README.md release/windows/
-        cp QUICKSTART.md release/windows/
-        cp INSTALL.md release/windows/
-        cp CHANGELOG.md release/windows/
-        cp mobilenetv2.cnox release/windows/
-        cp cnox.yaml release/windows/
-        
-        # Create installation script
-        echo 'Write-Host "Installing CNOX on Windows..."' > release/windows/install.ps1
-        echo '$binPath = "C:\Program Files\CNOX"' >> release/windows/install.ps1
-        echo 'New-Item -ItemType Directory -Force -Path $binPath' >> release/windows/install.ps1
-        echo 'Copy-Item "cnox-packager.exe" -Destination $binPath' >> release/windows/install.ps1
-        echo 'Copy-Item "cnox-runner.exe" -Destination $binPath' >> release/windows/install.ps1
-        echo '$currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")' >> release/windows/install.ps1
-        echo 'if ($currentPath -notlike "*$binPath*") {' >> release/windows/install.ps1
-        echo '    [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$binPath", "Machine")' >> release/windows/install.ps1
-        echo '}' >> release/windows/install.ps1
-        echo 'Write-Host "CNOX installed successfully!"' >> release/windows/install.ps1
-        
-        # Create ZIP file
-        cd release
-        Compress-Archive -Path windows/* -DestinationPath cnox-windows-x86_64.zip
-        cd ..
-    
-    - name: Upload Windows artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: cnox-windows-x86_64
-        path: release/cnox-windows-x86_64.zip
+      - name: Test
+        run: |
+          cd coelanox
+          cargo test
 
-  release:
-    name: Create Release
-    needs: [test, build-linux, build-macos, build-windows]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Download all artifacts
-      uses: actions/download-artifact@v3
-    
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          cnox-linux-x86_64/cnox-linux-x86_64.tar.gz
-          cnox-macos-x86_64/cnox-macos-x86_64.tar.gz
-          cnox-windows-x86_64/cnox-windows-x86_64.zip
-        body: |
-          # CNOX v${{ github.ref_name }} Release
-          
-          ## What's New
-          - Universal binary container format for any AI model
-          - INSTANTANEOUS loading: <1ms for all model sizes
-          - Dual backend support: CPU (OpenVINO) and GPU (TensorRT)
-          - Complete CLI tools with YAML configuration
-          - Memory mapping for zero-copy file access
-          
-          ## Installation
-          1. Download the appropriate package for your platform
-          2. Extract the archive
-          3. Run the installation script
-          4. Try: `cnox-runner --help`
-          
-          ## Quick Start
-          ```bash
-          # Test with example model
-          cnox-runner run mobilenetv2.cnox
-          
-          # Execute inference
-          cnox-runner execute mobilenetv2.cnox --backend cpu
-          ```
-          
-          For detailed instructions, see QUICKSTART.md
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+      - name: Build
+        run: |
+          cd coelanox
+          cargo build --release -p coelanox-cli
