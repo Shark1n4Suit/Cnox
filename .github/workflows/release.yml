@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cd coelanox
+          cargo build --release -p coelanox-cli
+
+      - name: Create Linux package
+        run: |
+          mkdir -p release/linux-x86_64
+          cp coelanox/target/release/coelanox release/linux-x86_64/
+          cat > release/linux-x86_64/install.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          INSTALL_DIR="${1:-/usr/local/bin}"
+          mkdir -p "$INSTALL_DIR"
+          cp -f "$SCRIPT_DIR/coelanox" "$INSTALL_DIR/coelanox"
+          chmod +x "$INSTALL_DIR/coelanox"
+          echo "Installed coelanox to $INSTALL_DIR"
+          EOF
+          chmod +x release/linux-x86_64/install.sh
+          cd release
+          tar -czvf coelanox-linux-x86_64.tar.gz -C linux-x86_64 .
+          mv coelanox-linux-x86_64.tar.gz ..
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coelanox-linux-x86_64
+          path: coelanox-linux-x86_64.tar.gz
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cd coelanox
+          cargo build --release -p coelanox-cli
+
+      - name: Create Windows package
+        run: |
+          New-Item -ItemType Directory -Force -Path release\windows-x86_64
+          Copy-Item coelanox\target\release\coelanox.exe release\windows-x86_64\
+          cd release
+          Compress-Archive -Path windows-x86_64\* -DestinationPath coelanox-windows-x86_64.zip
+          Move-Item coelanox-windows-x86_64.zip ..
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coelanox-windows-x86_64
+          path: coelanox-windows-x86_64.zip
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            coelanox-linux-x86_64/coelanox-linux-x86_64.tar.gz
+            coelanox-windows-x86_64/coelanox-windows-x86_64.zip
+          generate_release_notes: true
+          body: |
+            ## COELANOX v${{ github.ref_name }}
+
+            Secure AI container runtime. Package, verify, and run inference.
+
+            ### Installation
+
+            **Linux:**
+            ```bash
+            tar -xzf coelanox-linux-x86_64.tar.gz -C /tmp/coelanox
+            cd /tmp/coelanox && ./install.sh
+            coelanox --help
+            ```
+
+            **Windows:**
+            1. Extract `coelanox-windows-x86_64.zip`
+            2. Add the folder to your PATH
+            3. Run `coelanox --help`
+
+            ### Quick Start
+
+            ```bash
+            coelanox package -i model.onnx -o model.cnox
+            coelanox verify -f model.cnox
+            coelanox run -f model.cnox -o out.json
+            ```
+
+            See [docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/INSTALL.md) for details.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
