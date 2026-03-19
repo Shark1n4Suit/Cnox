@@ -270,7 +270,22 @@ Examples:
 - **ReduceL1**, **ReduceL2**, **ReduceLogSum**, **ReduceLogSumExp**, **ReduceSumSquare**
 - **Ceil**, **Floor**, **Sign**, **Erf**, **Hardmax**, **LRN**, **Resize**, **Pad**, **Cast**, **Shape**, **Size**, **NonZero**
 - **DequantizeLinear**, **QuantizeLinear**, **NegativeLogLikelihoodLoss**, **SoftmaxCrossEntropyLoss**
-- **DepthToSpace**, **SpaceToDepth**, **ArgMax**, **ArgMin**, **Einsum**, **Mod**, **Compress**, **OneHot**, **ConstantOfShape**, **IsNaN**, **GRU**, **LSTM**, **RNN**, etc.
+- **DepthToSpace**, **SpaceToDepth**, **ArgMax**, **ArgMin**, **Einsum**, **Mod**, **Compress**, **OneHot**, **ConstantOfShape**, **IsNaN**, **GRU**, **RNN**, etc.
+
+---
+
+## 5. LSTM (decomposed)
+
+**LSTM** is decomposed into a subgraph of Slice, Transpose, MatMul, Add, Split, Sigmoid, Tanh, Multiply, Reshape, Concatenate.
+
+**Supported:** Forward direction only; no peephole. Initial H and C are zeros.
+
+**Equations (unrolled per timestep):**
+- gates = X_t @ W^T + H_prev @ R^T + B
+- i, f, g, o = split(gates); i=Sigmoid(i), f=Sigmoid(f), g=Tanh(g), o=Sigmoid(o)
+- C_t = f*C_prev + i*g; H_t = o*Tanh(C_t)
+
+**IR:** Unrolled loop over seq_length; each timestep uses Slice (X[t]), MatMul (with transposed W, R), Add, Split, Sigmoid, Tanh, Multiply. Y = Concat of all H_t; Y_h = last H; Y_c = last C.
 
 ---
 
@@ -280,7 +295,7 @@ Examples:
 |----------------|----------------|-----------------------------------------------------------------------|
 | 1:1 mapping    | 50+            | One ONNX node → one IR node                                           |
 | Control flow   | 2              | If, Loop → **error**: move to app layer                               |
-| Decomposed     | 10             | Clip, Neg, Reciprocal, Flatten, Abs, Mean, MeanVarianceNormalization, Unsqueeze, Squeeze, Constant |
+| Decomposed     | 11             | Clip, Neg, Reciprocal, Flatten, Abs, Mean, MeanVarianceNormalization, Unsqueeze, Squeeze, Constant, **LSTM** |
 | Custom         | rest           | Unsupported or composite → Custom(name)                               |
 
 **Gemm** is intentionally kept as a single op (no decomposition to MatMul + Add).

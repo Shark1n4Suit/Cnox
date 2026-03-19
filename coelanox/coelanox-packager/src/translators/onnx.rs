@@ -575,6 +575,338 @@ mod impl_ {
                     }
                     return Ok(true);
                 }
+                "LSTM" => {
+                    // Decompose ONNX LSTM into MatMul, Add, Sigmoid, Tanh, Slice, Split, Multiply.
+                    // Supports forward direction only, no peephole. Equations:
+                    //   gates = X_t @ W^T + H_prev @ R^T + B
+                    //   i,f,g,o = split(gates); i=Sigmoid(i), f=Sigmoid(f), g=Tanh(g), o=Sigmoid(o)
+                    //   C_t = f*C_prev + i*g; H_t = o*Tanh(C_t)
+                    if input_ids.len() < 3 {
+                        return Err(CoelanoxError::format(
+                            "LSTM requires at least X, W, R inputs",
+                        ));
+                    }
+                    let x_id = input_ids[0];
+                    let w_id = input_ids[1];
+                    let r_id = input_ids[2];
+                    let b_id = input_ids.get(3).copied();
+
+                    let hidden_size: usize = Self::get_attr(node, "hidden_size")
+                        .and_then(|a| a.as_int())
+                        .ok_or_else(|| CoelanoxError::format("LSTM requires hidden_size attribute"))? as usize;
+
+                    let direction = Self::get_attr(node, "direction")
+                        .and_then(|a| a.as_string().map(|s| s.as_str().to_string()))
+                        .unwrap_or_else(|| "forward".to_string());
+                    if direction != "forward" {
+                        return Err(CoelanoxError::format(format!(
+                            "LSTM decomposition supports forward direction only; got '{}'",
+                            direction,
+                        )));
+                    }
+
+                    let x_shape = match ir.get_tensor(x_id) {
+                        Some(coelanox_core::ir::TensorRef::Weight(t)) => t.shape.dimensions.clone(),
+                        Some(coelanox_core::ir::TensorRef::Intermediate(t)) => t.shape.dimensions.clone(),
+                        None => {
+                            return Err(CoelanoxError::format("LSTM: cannot get shape for X"));
+                        }
+                    };
+                    let w_shape = match ir.get_tensor(w_id) {
+                        Some(coelanox_core::ir::TensorRef::Weight(t)) => t.shape.dimensions.clone(),
+                        Some(coelanox_core::ir::TensorRef::Intermediate(t)) => t.shape.dimensions.clone(),
+                        None => {
+                            return Err(CoelanoxError::format("LSTM: cannot get shape for W"));
+                        }
+                    };
+                    let _r_shape = match ir.get_tensor(r_id) {
+                        Some(coelanox_core::ir::TensorRef::Weight(t)) => t.shape.dimensions.clone(),
+                        Some(coelanox_core::ir::TensorRef::Intermediate(t)) => t.shape.dimensions.clone(),
+                        None => {
+                            return Err(CoelanoxError::format("LSTM: cannot get shape for R"));
+                        }
+                    };
+
+                    // X: [seq_length, batch_size, input_size]
+                    // W: [num_directions, 4*hidden_size, input_size]
+                    // R: [num_directions, 4*hidden_size, hidden_size]
+                    let seq_len = *x_shape.get(0).ok_or_else(|| CoelanoxError::format("LSTM: X needs 3 dims"))?;
+                    let batch = *x_shape.get(1).ok_or_else(|| CoelanoxError::format("LSTM: X needs 3 dims"))?;
+                    let input_size = *x_shape.get(2).ok_or_else(|| CoelanoxError::format("LSTM: X needs 3 dims"))?;
+                    let four_h = *w_shape.get(1).ok_or_else(|| CoelanoxError::format("LSTM: W needs 3 dims"))?;
+                    if four_h != 4 * hidden_size {
+                        return Err(CoelanoxError::format(&format!(
+                            "LSTM: W dim 1 {} != 4*hidden_size {}",
+                            four_h,
+                            4 * hidden_size
+                        )));
+                    }
+
+                    // Output IDs: Y (concat of H_t), Y_h (last H), Y_c (last C)
+                    let y_id = name_to_id.get(output_names[0]).copied();
+                    let y_h_id = output_names.get(1).and_then(|n| name_to_id.get(*n).copied());
+                    let y_c_id = output_names.get(2).and_then(|n| name_to_id.get(*n).copied());
+
+                    // Initial H and C (zeros) - shared weight tensor
+                    let zero_shape = Shape::new(vec![batch, hidden_size]);
+                    let zero_data: Vec<u8> = vec![0u8; batch * hidden_size * 4];
+                    let zero_name = format!("{}_lstm_zero", node_name);
+                    let zero_tid = ir.add_weight_tensor_with_data(
+                        zero_name,
+                        zero_shape.clone(),
+                        DataType::Float32,
+                        zero_data,
+                    );
+
+                    let mut h_prev = zero_tid;
+                    let mut c_prev = zero_tid;
+                    let mut h_outputs: Vec<TensorId> = Vec::with_capacity(seq_len);
+
+                    let x_t_shape = Shape::new(vec![batch, input_size]);
+                    let gates_shape = Shape::new(vec![batch, 4 * hidden_size]);
+
+                    // Transpose W and R once (outside loop). W: [4*hidden, input] -> [input, 4*hidden]; R: [4*hidden, hidden] -> [hidden, 4*hidden]
+                    let w_t_name = format!("{}_lstm_wt", node_name);
+                    let r_t_name = format!("{}_lstm_rt", node_name);
+                    let w_t_id = ir.add_intermediate_tensor(
+                        w_t_name.clone(),
+                        Shape::new(vec![input_size, 4 * hidden_size]),
+                        DataType::Float32,
+                    );
+                    let r_t_id = ir.add_intermediate_tensor(
+                        r_t_name.clone(),
+                        Shape::new(vec![hidden_size, 4 * hidden_size]),
+                        DataType::Float32,
+                    );
+                    name_to_id.insert(w_t_name, w_t_id);
+                    name_to_id.insert(r_t_name, r_t_id);
+
+                    let transp_w = ir.add_node(OpType::Transpose);
+                    ir.add_node_input(transp_w, w_id)?;
+                    ir.add_node_output(transp_w, w_t_id)?;
+                    if let Some(nd) = ir.get_node_mut(transp_w) {
+                        nd.add_attribute("perm".to_string(), Attribute::IntArray(vec![1, 0]));
+                    }
+                    let transp_r = ir.add_node(OpType::Transpose);
+                    ir.add_node_input(transp_r, r_id)?;
+                    ir.add_node_output(transp_r, r_t_id)?;
+                    if let Some(nd) = ir.get_node_mut(transp_r) {
+                        nd.add_attribute("perm".to_string(), Attribute::IntArray(vec![1, 0]));
+                    }
+
+                    for t in 0..seq_len {
+                        let prefix = format!("{}_lstm_t{}", node_name, t);
+
+                        // Slice X[t,:,:] -> X_t [batch, input_size]
+                        let x_t_name = format!("{}_xt", prefix);
+                        let x_t_id = ir.add_intermediate_tensor(x_t_name.clone(), x_t_shape.clone(), DataType::Float32);
+                        name_to_id.insert(x_t_name, x_t_id);
+
+                        let slice_n = ir.add_node(OpType::Slice);
+                        ir.add_node_input(slice_n, x_id)?;
+                        ir.add_node_output(slice_n, x_t_id)?;
+                        if let Some(nd) = ir.get_node_mut(slice_n) {
+                            nd.add_attribute("starts".to_string(), Attribute::IntArray(vec![t as i64, 0, 0]));
+                            nd.add_attribute("ends".to_string(), Attribute::IntArray(vec![(t + 1) as i64, batch as i64, input_size as i64]));
+                            nd.add_attribute("axes".to_string(), Attribute::IntArray(vec![0, 1, 2]));
+                            nd.add_attribute("input_shape".to_string(), Attribute::IntArray(vec![seq_len as i64, batch as i64, input_size as i64]));
+                        }
+
+                        // gates_xt = X_t @ W^T (W^T is w_t_id)
+                        let gates_xt_name = format!("{}_gates_xt", prefix);
+                        let gates_xt_id = ir.add_intermediate_tensor(gates_xt_name.clone(), gates_shape.clone(), DataType::Float32);
+                        name_to_id.insert(gates_xt_name, gates_xt_id);
+
+                        let mm1 = ir.add_node(OpType::MatMul);
+                        ir.add_node_input(mm1, x_t_id)?;
+                        ir.add_node_input(mm1, w_t_id)?;
+                        ir.add_node_output(mm1, gates_xt_id)?;
+
+                        // gates_h = H_prev @ R^T (R^T is r_t_id)
+                        let gates_h_name = format!("{}_gates_h", prefix);
+                        let gates_h_id = ir.add_intermediate_tensor(gates_h_name.clone(), gates_shape.clone(), DataType::Float32);
+                        name_to_id.insert(gates_h_name, gates_h_id);
+
+                        let mm2 = ir.add_node(OpType::MatMul);
+                        ir.add_node_input(mm2, h_prev)?;
+                        ir.add_node_input(mm2, r_t_id)?;
+                        ir.add_node_output(mm2, gates_h_id)?;
+
+                        // gates = gates_xt + gates_h + B
+                        let gates_pre_name = format!("{}_gates_pre", prefix);
+                        let gates_pre_id = ir.add_intermediate_tensor(gates_pre_name.clone(), gates_shape.clone(), DataType::Float32);
+                        name_to_id.insert(gates_pre_name, gates_pre_id);
+
+                        let add1 = ir.add_node(OpType::Add);
+                        ir.add_node_input(add1, gates_xt_id)?;
+                        ir.add_node_input(add1, gates_h_id)?;
+                        ir.add_node_output(add1, gates_pre_id)?;
+
+                        let gates_id = if let Some(bid) = b_id {
+                            let gates_name = format!("{}_gates", prefix);
+                            let gid = ir.add_intermediate_tensor(gates_name.clone(), gates_shape.clone(), DataType::Float32);
+                            name_to_id.insert(gates_name, gid);
+                            let add_b = ir.add_node(OpType::Add);
+                            ir.add_node_input(add_b, gates_pre_id)?;
+                            ir.add_node_input(add_b, bid)?;
+                            ir.add_node_output(add_b, gid)?;
+                            gid
+                        } else {
+                            gates_pre_id
+                        };
+
+                        // Split gates into i, f, g, o
+                        let i_name = format!("{}_i", prefix);
+                        let f_name = format!("{}_f", prefix);
+                        let g_name = format!("{}_g", prefix);
+                        let o_name = format!("{}_o", prefix);
+                        let part_shape = Shape::new(vec![batch, hidden_size]);
+                        let i_id = ir.add_intermediate_tensor(i_name.clone(), part_shape.clone(), DataType::Float32);
+                        let f_id = ir.add_intermediate_tensor(f_name.clone(), part_shape.clone(), DataType::Float32);
+                        let g_id = ir.add_intermediate_tensor(g_name.clone(), part_shape.clone(), DataType::Float32);
+                        let o_id = ir.add_intermediate_tensor(o_name.clone(), part_shape.clone(), DataType::Float32);
+                        name_to_id.insert(i_name, i_id);
+                        name_to_id.insert(f_name, f_id);
+                        name_to_id.insert(g_name, g_id);
+                        name_to_id.insert(o_name, o_id);
+
+                        let split_n = ir.add_node(OpType::Split);
+                        ir.add_node_input(split_n, gates_id)?;
+                        ir.add_node_output(split_n, i_id)?;
+                        ir.add_node_output(split_n, f_id)?;
+                        ir.add_node_output(split_n, g_id)?;
+                        ir.add_node_output(split_n, o_id)?;
+                        if let Some(nd) = ir.get_node_mut(split_n) {
+                            nd.add_attribute("split".to_string(), Attribute::IntArray(vec![
+                                hidden_size as i64,
+                                hidden_size as i64,
+                                hidden_size as i64,
+                                hidden_size as i64,
+                            ]));
+                        }
+
+                        // i_act = Sigmoid(i), f_act = Sigmoid(f), g_act = Tanh(g), o_act = Sigmoid(o)
+                        let i_act_name = format!("{}_i_act", prefix);
+                        let f_act_name = format!("{}_f_act", prefix);
+                        let g_act_name = format!("{}_g_act", prefix);
+                        let o_act_name = format!("{}_o_act", prefix);
+                        let i_act_id = ir.add_intermediate_tensor(i_act_name.clone(), part_shape.clone(), DataType::Float32);
+                        let f_act_id = ir.add_intermediate_tensor(f_act_name.clone(), part_shape.clone(), DataType::Float32);
+                        let g_act_id = ir.add_intermediate_tensor(g_act_name.clone(), part_shape.clone(), DataType::Float32);
+                        let o_act_id = ir.add_intermediate_tensor(o_act_name.clone(), part_shape.clone(), DataType::Float32);
+                        name_to_id.insert(i_act_name, i_act_id);
+                        name_to_id.insert(f_act_name, f_act_id);
+                        name_to_id.insert(g_act_name, g_act_id);
+                        name_to_id.insert(o_act_name, o_act_id);
+
+                        let sig_i = ir.add_node(OpType::Sigmoid);
+                        ir.add_node_input(sig_i, i_id)?;
+                        ir.add_node_output(sig_i, i_act_id)?;
+                        let sig_f = ir.add_node(OpType::Sigmoid);
+                        ir.add_node_input(sig_f, f_id)?;
+                        ir.add_node_output(sig_f, f_act_id)?;
+                        let tanh_g = ir.add_node(OpType::Tanh);
+                        ir.add_node_input(tanh_g, g_id)?;
+                        ir.add_node_output(tanh_g, g_act_id)?;
+                        let sig_o = ir.add_node(OpType::Sigmoid);
+                        ir.add_node_input(sig_o, o_id)?;
+                        ir.add_node_output(sig_o, o_act_id)?;
+
+                        // C_t = f*C_prev + i*g
+                        let f_c_name = format!("{}_f_c", prefix);
+                        let i_g_name = format!("{}_i_g", prefix);
+                        let f_c_id = ir.add_intermediate_tensor(f_c_name.clone(), part_shape.clone(), DataType::Float32);
+                        let i_g_id = ir.add_intermediate_tensor(i_g_name.clone(), part_shape.clone(), DataType::Float32);
+                        name_to_id.insert(f_c_name, f_c_id);
+                        name_to_id.insert(i_g_name, i_g_id);
+
+                        let mul_fc = ir.add_node(OpType::Multiply);
+                        ir.add_node_input(mul_fc, f_act_id)?;
+                        ir.add_node_input(mul_fc, c_prev)?;
+                        ir.add_node_output(mul_fc, f_c_id)?;
+                        let mul_ig = ir.add_node(OpType::Multiply);
+                        ir.add_node_input(mul_ig, i_act_id)?;
+                        ir.add_node_input(mul_ig, g_act_id)?;
+                        ir.add_node_output(mul_ig, i_g_id)?;
+
+                        let use_y_h = (t == seq_len - 1) && y_h_id.is_some();
+                        let use_y_c = (t == seq_len - 1) && y_c_id.is_some();
+                        let use_y = (t == seq_len - 1) && seq_len == 1 && y_id.is_some();
+
+                        let c_t_name = format!("{}_ct", prefix);
+                        let c_out_id = if use_y_c {
+                            y_c_id.unwrap()
+                        } else {
+                            let cid = ir.add_intermediate_tensor(c_t_name.clone(), part_shape.clone(), DataType::Float32);
+                            name_to_id.insert(c_t_name, cid);
+                            cid
+                        };
+
+                        let add_ct = ir.add_node(OpType::Add);
+                        ir.add_node_input(add_ct, f_c_id)?;
+                        ir.add_node_input(add_ct, i_g_id)?;
+                        ir.add_node_output(add_ct, c_out_id)?;
+
+                        // H_t = o * Tanh(C_t)
+                        let tanh_ct_name = format!("{}_tanh_ct", prefix);
+                        let tanh_ct_id = ir.add_intermediate_tensor(tanh_ct_name.clone(), part_shape.clone(), DataType::Float32);
+                        name_to_id.insert(tanh_ct_name, tanh_ct_id);
+
+                        let tanh_ct = ir.add_node(OpType::Tanh);
+                        ir.add_node_input(tanh_ct, c_out_id)?;
+                        ir.add_node_output(tanh_ct, tanh_ct_id)?;
+
+                        let h_out_id = if use_y { y_id.unwrap() } else if use_y_h { y_h_id.unwrap() } else {
+                            let h_t_name = format!("{}_ht", prefix);
+                            let hid = ir.add_intermediate_tensor(h_t_name.clone(), part_shape.clone(), DataType::Float32);
+                            name_to_id.insert(h_t_name, hid);
+                            hid
+                        };
+
+                        let mul_ht = ir.add_node(OpType::Multiply);
+                        ir.add_node_input(mul_ht, o_act_id)?;
+                        ir.add_node_input(mul_ht, tanh_ct_id)?;
+                        ir.add_node_output(mul_ht, h_out_id)?;
+
+                        h_outputs.push(h_out_id);
+                        h_prev = h_out_id;
+                        c_prev = c_out_id;
+                    }
+
+                    // Wire Y output: concat of H_t when seq_len > 1
+                    if let Some(yid) = y_id {
+                        if seq_len > 1 {
+                            // Unsqueeze each h_t to [1, batch, hidden], then Concat along axis 0 -> [seq_len, batch, hidden]
+                            let unsqueezed: Vec<TensorId> = h_outputs
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &hid)| {
+                                    let u_name = format!("{}_lstm_y_u{}", node_name, i);
+                                    let u_shape = Shape::new(vec![1, batch, hidden_size]);
+                                    let u_id = ir.add_intermediate_tensor(u_name.clone(), u_shape, DataType::Float32);
+                                    name_to_id.insert(u_name, u_id);
+                                    let n = ir.add_node(OpType::Reshape);
+                                    ir.add_node_input(n, hid).unwrap();
+                                    ir.add_node_output(n, u_id).unwrap();
+                                    if let Some(nd) = ir.get_node_mut(n) {
+                                        nd.add_attribute("unsqueeze_axes".to_string(), Attribute::IntArray(vec![0]));
+                                    }
+                                    u_id
+                                })
+                                .collect();
+                            let concat_n = ir.add_node(OpType::Concatenate);
+                            for &uid in &unsqueezed {
+                                ir.add_node_input(concat_n, uid)?;
+                            }
+                            ir.add_node_output(concat_n, yid)?;
+                            if let Some(nd) = ir.get_node_mut(concat_n) {
+                                nd.add_attribute("axis".to_string(), Attribute::Int(0));
+                            }
+                        }
+                    }
+
+                    return Ok(true);
+                }
                 _ => {}
             }
             Ok(false)

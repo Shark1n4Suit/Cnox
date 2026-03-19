@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Coelanox command-line interface"
 authors = ["Benjamin Morin <benjamin.morin@example.com>"]
-license = "MIT"
+license = "Proprietary"
 repository = "https://github.com/benjamin-morin/coelanox"
 
 [[bin]]

@@ -137,16 +137,64 @@ pub fn permute(
 }
 
 /// Execute slice operation: Extract a slice from a tensor
-/// 
+///
 /// # Attributes
-/// * `starts` - Starting indices for each dimension
-/// * `ends` - Ending indices for each dimension
-/// * `axes` - Axes to slice along
+/// * `starts` - Starting indices for each dimension (IntArray)
+/// * `ends` - Ending indices (exclusive) for each dimension (IntArray)
+/// * `axes` - Axes to slice along (IntArray, optional; default 0..rank)
+/// * `input_shape` - Input tensor shape for multi-dim slice (IntArray, optional)
+///
+/// When starts/ends/input_shape are present, computes offset and count from row-major layout.
+/// When absent, copies input to output (legacy behavior).
 pub fn slice(
     input: &[f32],
     output: &mut [f32],
-    _attributes: &HashMap<String, Attribute>,
+    attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
+    let starts = attributes.get("starts").and_then(|a| match a {
+        Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect::<Vec<_>>()),
+        _ => None,
+    });
+    let ends = attributes.get("ends").and_then(|a| match a {
+        Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect::<Vec<_>>()),
+        _ => None,
+    });
+    let input_shape = attributes.get("input_shape").or(attributes.get("dimensions")).and_then(|a| match a {
+        Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect::<Vec<_>>()),
+        _ => None,
+    });
+
+    if let (Some(st), Some(en), Some(shape)) = (starts, ends, input_shape) {
+        if st.len() != en.len() || st.len() != shape.len() {
+            let len = input.len().min(output.len());
+            output[..len].copy_from_slice(&input[..len]);
+            return Ok(());
+        }
+        // Row-major strides: stride[i] = product of shape[i+1..]
+        let mut stride = vec![1usize; shape.len()];
+        for i in (0..shape.len().saturating_sub(1)).rev() {
+            stride[i] = stride[i + 1] * shape[i + 1];
+        }
+        let mut offset = 0usize;
+        let mut count = 1usize;
+        for i in 0..shape.len() {
+            let s = st[i].min(shape[i]);
+            let e = en[i].min(shape[i]);
+            if s >= e {
+                let len = output.len().min(0);
+                output[..len].copy_from_slice(&input[..len]);
+                return Ok(());
+            }
+            offset += s * stride[i];
+            count *= e - s;
+        }
+        if offset + count <= input.len() && count <= output.len() {
+            output[..count].copy_from_slice(&input[offset..offset + count]);
+            return Ok(());
+        }
+    }
+
+    // Fallback: copy input to output
     let len = input.len().min(output.len());
     output[..len].copy_from_slice(&input[..len]);
     Ok(())

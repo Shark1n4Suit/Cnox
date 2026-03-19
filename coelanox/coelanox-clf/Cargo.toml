@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
 description = "CLF (Coelanox Library File) in-tree reader - parse .clfc/.clf and get blob by op_id (implements public CLF spec)."
-license = "MIT"
+license = "Proprietary"
 repository = "https://github.com/coelanox-ai/coelanox"
 
 [dependencies]
