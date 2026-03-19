@@ -114,16 +114,10 @@ fn test_full_pipeline_package_verify_run() {
     let verify_result = verify_security_hash(container_path);
     assert!(verify_result.is_ok(), "Security hash verification should succeed");
     
-    // Step 5: Load and run (basic test - runtime may need actual model)
+    // Step 5: Load (do NOT execute - minimal/mock container has invalid machine code; execute would SIGSEGV)
     let runtime = CoelanoxRuntime::new();
     let load_result = runtime.load_container(container_path.to_str().unwrap());
-    
-    if load_result.is_ok() {
-        // If container loads, try to execute (may fail if model is invalid, but that's okay)
-        let input_data = vec![0.0f32; 3 * 224 * 224]; // Mock input
-        let _execute_result = runtime.execute("test_output.cnox", &input_data);
-        // Execution may fail for mock models, but loading should work
-    }
+    assert!(load_result.is_ok(), "Load should succeed for packaged container");
     
     // Cleanup
     let _ = fs::remove_file(container_path);
@@ -178,9 +172,8 @@ fn test_verify_load_run_with_config_from_env() {
     assert_eq!(info.manifest.name, "test_model");
     assert_eq!(info.manifest.input_shapes, vec![vec![1, 3, 224, 224]]);
 
-    // 5. Execute may fail for minimal container (no real plan); we only require load succeeded
-    let input_data = vec![0.0f32; 3 * 224 * 224];
-    let _ = runtime.execute(path_str, &input_data);
+    // 5. Do NOT execute - minimal container has invalid/zeroed machine code; execute would SIGSEGV.
+    // We only require load and config path to succeed.
 }
 
 #[test]
