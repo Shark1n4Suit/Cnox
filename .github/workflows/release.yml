@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.6.0-beta). Required when running manually.'
+        required: true
 
 jobs:
   build-linux:
@@ -78,7 +82,6 @@ jobs:
     name: Create GitHub Release
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
@@ -88,12 +91,14 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
             coelanox-linux-x86_64/coelanox-linux-x86_64.tar.gz
             coelanox-windows-x86_64/coelanox-windows-x86_64.zip
           generate_release_notes: true
           body: |
-            ## COELANOX v${{ github.ref_name }}
+            ## COELANOX ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
             Secure AI container runtime. Package, verify, and run inference.
 
@@ -119,6 +124,6 @@ jobs:
             coelanox run -f model.cnox -o out.json
             ```
 
-            See [docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/INSTALL.md) for details.
+            See [docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}/docs/INSTALL.md) for details.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
