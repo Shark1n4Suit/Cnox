@@ -470,7 +470,7 @@ impl CoelanoxManifest {
     
     /// Write manifest to binary stream
     pub fn write_binary<W: Write>(&self, writer: &mut W) -> CoelanoxResult<()> {
-        // Serialize to JSON for now (can be optimized later)
+        // JSON manifest format; binary manifest variant not implemented
         let json_data = serde_json::to_vec(self)
             .map_err(|e| CoelanoxError::ManifestParse(format!("Failed to serialize manifest: {}", e)))?;
         
@@ -734,23 +734,18 @@ impl CoelanoxContainer {
         }
     }
     
-    /// Built-in Zstd decompression (no external dependencies)
+    /// Zstd decompression. Currently falls back to raw-f32 passthrough; native Zstd not implemented.
     fn decompress_zstd(&self, data: &[u8]) -> CoelanoxResult<Vec<f32>> {
-        // For now, use a simple fallback
-        // TODO: Implement built-in Zstd decompression algorithm
         self.decompress_deflate(data)
     }
-    
-    /// Built-in LZ4 decompression (no external dependencies)
+
+    /// LZ4 decompression. Currently falls back to raw-f32 passthrough; native LZ4 not implemented.
     fn decompress_lz4(&self, data: &[u8]) -> CoelanoxResult<Vec<f32>> {
-        // For now, use a simple fallback
-        // TODO: Implement built-in LZ4 decompression algorithm
         self.decompress_deflate(data)
     }
-    
-    /// Built-in Deflate decompression (no external dependencies)
+
+    /// Fallback: treats data as raw little-endian f32 chunks (no actual deflate). Used when CompressionType::None or as passthrough for Zstd/LZ4 until native decompressors exist.
     fn decompress_deflate(&self, data: &[u8]) -> CoelanoxResult<Vec<f32>> {
-        // Simple fallback - assume data is uncompressed f32 values
         let mut weights = Vec::new();
         for chunk in data.chunks(4) {
             if chunk.len() == 4 {
@@ -880,7 +875,7 @@ impl CoelanoxContainer {
             writer.write_all(plan)?;
         }
         
-        // TODO: Write backend hints and security metadata if present
+        // Future: write backend_hints, security metadata if present in manifest
         
         Ok(())
     }
@@ -1013,15 +1008,14 @@ impl CoelanoxContainer {
             None
         };
         
-        // TODO: Read backend hints and security metadata if present
-        // TODO: Determine compression_type from manifest or metadata
+        // Future: read backend_hints, security metadata, compression_type from manifest
         
         Ok(Self {
             header,
             manifest,
             optimized_code,
             compressed_weights,
-            compression_type: CompressionType::None, // TODO: Read from manifest metadata
+            compression_type: CompressionType::None, // Manifest has no field; weights assumed uncompressed on read
             ir_data,
             nvme_backing_data,
             clfmm_data,
@@ -1050,10 +1044,8 @@ impl CoelanoxContainer {
 pub struct CoelanoxValidator;
 
 impl CoelanoxValidator {
-    /// Validate COELANOX file
+    /// Validate COELANOX file (existence check; full header/manifest/hash validation not implemented).
     pub fn validate_file(path: &std::path::Path) -> CoelanoxResult<()> {
-        // TODO: Implement full file validation
-        // For now, just check if file exists
         if !path.exists() {
             return Err(CoelanoxError::FileSystem(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1064,10 +1056,8 @@ impl CoelanoxValidator {
         Ok(())
     }
     
-    /// Validate COELANOX data
+    /// Validate COELANOX data (min size + magic; full validation not implemented).
     pub fn validate_data(data: &[u8]) -> CoelanoxResult<()> {
-        // TODO: Implement full data validation
-        // For now, just check minimum size
         if data.len() < 4 {
             return Err(CoelanoxError::Format("Data too small".to_string()));
         }
@@ -1080,10 +1070,8 @@ impl CoelanoxValidator {
         Ok(())
     }
     
-    /// Parse header from data
+    /// Parse header from data (stub: returns dummy header; full parsing in read_binary).
     pub fn parse_header(_data: &[u8]) -> CoelanoxResult<CoelanoxHeader> {
-        // TODO: Implement header parsing
-        // For now, return dummy header
         Ok(CoelanoxHeader::new(0, 0, 0))
     }
 }

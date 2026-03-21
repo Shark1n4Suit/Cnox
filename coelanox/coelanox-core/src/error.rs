@@ -95,7 +95,7 @@ pub enum CoelanoxError {
     #[error("Missing template parameter: {0}")]
     MissingTemplateParameter(String),
     
-    /// Unsupported operation (placeholder for now)
+    /// Unsupported operation (requested op not supported by backend)
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
     

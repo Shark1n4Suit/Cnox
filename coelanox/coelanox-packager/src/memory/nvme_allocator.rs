@@ -5,7 +5,7 @@
 //! 
 //! **Purpose:**
 //! - Calculate total memory size needed from max shapes
-//! - Create pre-allocated memory layout (zero-initialized for now)
+//! - Create pre-allocated memory layout (zero-initialized; runtime fills at inference)
 //! - Enable unified file approach (NVMe backing appended to container)
 
 use coelanox_core::optimization::MaxShapeMetadata;
@@ -27,26 +27,10 @@ impl NvmeAllocator {
         metadata.total_workspace_bytes()
     }
     
-    /// Create NVMe backing data from max shapes
-    /// 
-    /// Creates a pre-allocated memory layout (zero-initialized) based on
-    /// maximum tensor shapes. This backing data will be appended to the
-    /// container file for unified file approach.
-    /// 
-    /// Creates pre-allocated memory layout from max shapes.
-    /// Size = workspace only (intermediates + input/output), not weights.
-    /// 
-    /// **Future Enhancement:**
-    /// - Structured layout with tensor offsets
-    /// - Alignment handling
-    /// - Memory layout optimization
-    /// 
-    /// # Arguments
-    /// * `metadata` - Maximum shape metadata from MaxShapeReader
-    /// 
-    /// # Returns
-    /// * `Ok(Vec<u8>)` - Pre-allocated backing data (zero-initialized)
-    /// * `Err(CoelanoxError)` - If calculation fails
+    /// Create NVMe backing: zero-initialized workspace buffer appended to container.
+    ///
+    /// Size = workspace only (intermediates + input/output). Weights live in compressed_weights.
+    /// Future: structured layout with tensor offsets, alignment.
     pub fn create_nvme_backing(metadata: &MaxShapeMetadata) -> CoelanoxResult<Vec<u8>> {
         let total_size = Self::calculate_nvme_size(metadata);
         
@@ -66,9 +50,6 @@ impl NvmeAllocator {
             ));
         }
         
-        // Create zero-initialized backing data
-        // This represents pre-allocated memory that will be used at runtime
-        // The actual data will be written by the runtime when tensors are loaded
         let backing_data = vec![0u8; total_size];
         
         Ok(backing_data)

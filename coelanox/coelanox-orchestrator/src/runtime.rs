@@ -1,15 +1,9 @@
-//! COELANOX runtime for executing containers
-//! 
-//! This module provides the runtime functionality for executing COELANOX containers.
-//! The runtime loads binary containers and executes the optimized machine code.
-//! 
-//! # Production Features
-//! - Comprehensive error handling and logging
-//! - Input validation and sanitization
-//! - Memory safety and proper cleanup
-//! - Performance monitoring and metrics
-//! - Security hardening and validation
-//! - Multi-backend execution support
+//! COELANOX orchestrator: loads containers and executes CLFC/CLF machine code.
+//!
+//! Loads .cnox binary containers, validates signatures/hashes, and dispatches execution
+//! via CLF mini-executor (raw blobs or SIMD symbols). Falls back to scalar IR when no
+//! code section present. Supports container-embedded CLFMM (memory) and CLFMP (protection),
+//! or HAL backends when not embedded.
 
 use crate::{
     backend_manager::{BackendKind, BackendManager},
@@ -1125,11 +1119,7 @@ impl CoelanoxRuntime {
         self.validate_config(&config)?;
         *lock_rw_write(&self.config)? = config;
         
-        // Recreate security validator with new config (config already applied above)
-        let config = self.get_config()?;
-        let _new_security_validator = Arc::new(SecurityValidator::new(&config));
-        // Note: We can't directly replace Arc<SecurityValidator> in the struct;
-        // validator uses config from get_config() which was just updated.
+        // Config is now live. SecurityValidator uses get_config() per validation, so no struct swap needed.
 
         Ok(())
     }
@@ -2316,7 +2306,7 @@ impl CoelanoxRuntime {
         Ok(output)
     }
     
-    // Removed create_executable_function: we use raw calling convention above for correctness
+    // Execution uses raw (code_base + offset) function-pointer calls; no trampoline.
 
     /// Apply protection (configure + enable) to the last allocated executable block.
     /// Prefers container-embedded CLFMP when present; otherwise uses protection registry.
@@ -3247,8 +3237,7 @@ pub struct BenchmarkResult {
 
 impl Drop for CoelanoxRuntime {
     fn drop(&mut self) {
-        // Note: We can't call self.cleanup() here because it requires &self, not &mut self
-        // The cleanup will be handled by the Arc<Mutex<>> drop implementations
+        // Cannot call self.cleanup() here (requires &self). Arc/Mutex drops handle teardown.
         info!("🧹 COELANOX Runtime dropped - cleanup handled by Arc<Mutex<>>");
     }
 }

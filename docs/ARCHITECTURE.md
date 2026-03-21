@@ -161,7 +161,7 @@ pub struct DiscoveryResult {
 
 ### Backend Selection Strategies
 
-**Location**: `coelanox-runtime/src/backend_manager.rs`
+**Location**: `coelanox-orchestrator/src/backend_manager.rs`
 
 **Strategies**:
 - `PrimaryOnly` - Use primary backend only (fail if unavailable)
@@ -336,15 +336,13 @@ pub struct CoelanoxManifest {
 
 ### Scalar Fallback
 
-**Location**: `coelanox-runtime/src/runtime.rs`
+**Location**: `coelanox-orchestrator/src/runtime.rs`
 
 **Current Implementation**:
-- Runtime-based scalar fallback operations
+- Scalar fallback in `coelanox-orchestrator/src/fallback/` using `coelanox-core` scalar ops
 - Pure Rust implementations
 - 100% uptime guarantee
 - Supports all OpType variants
-
-**Future**: Will be moved to `coelanox-core/src/scalar/` (Task 2.2)
 
 ## Component Dependencies
 
@@ -353,16 +351,20 @@ coelanox-core
 ├── format.rs          # Container format, security hash
 ├── ir.rs              # Universal IR structures
 ├── error.rs           # Error types
-└── scalar/            # Scalar operations (placeholder)
+└── scalar/            # Scalar operations (reference implementation)
 
 coelanox-packager
 ├── lib.rs             # Packaging logic, AOT selection
-├── generators/        # Code generation
-└── optimizers/        # IR optimization
+├── backend_trait/     # Backend translator trait, op mappings
+├── optimizers/        # IR optimization
+├── translators/       # Model translators (ONNX, BERT, ResNet)
+└── memory/            # NVMe allocator, memory management
 
-coelanox-runtime
-├── runtime.rs         # Runtime execution, scalar fallback
-└── backend_manager.rs # Backend discovery and management
+coelanox-orchestrator
+├── runtime.rs         # Runtime execution, container loading
+├── backend_manager.rs # Backend discovery and management
+├── fallback/          # Scalar fallback (uses coelanox-core scalar)
+└── execution_backend.rs # Execution dispatch
 
 coelanox-cli
 └── main.rs            # CLI commands (package, verify, run)
@@ -411,17 +413,7 @@ coelanox-cli
 
 ### Planned (Post-MVP)
 
-1. **Core Scalar Backend** (Task 2.2)
-   - Move scalar operations to `coelanox-core/src/scalar/`
-   - Pure Rust implementations
-   - Golden reference for vendor backend validation
-
-2. **Scalar Fallback Module** (Task 2.3)
-   - Dedicated fallback module in runtime
-   - Uses core scalar operations
-   - Implements backend traits
-
-3. **Dynamic Backend Loading** (Future)
+1. **Dynamic Backend Loading** (Future)
    - Runtime backend loading (currently package-time only)
    - Hot-swappable backends
    - Backend health monitoring

@@ -6,7 +6,7 @@ This page describes how to install the Coelanox CLI from a pre-built release (no
 
 ## Prerequisites
 
-- A supported platform: Linux (x86_64), macOS (x86_64), or Windows (x86_64).
+- A supported platform: Linux (x86_64) or Windows (x86_64). (macOS: build from source.)
 - No runtime dependencies beyond the single binary; optional CLF backends go in `~/.coelanox/clf/` (see [OPERATIONS.md](OPERATIONS.md)).
 
 ---
@@ -14,9 +14,8 @@ This page describes how to install the Coelanox CLI from a pre-built release (no
 ## Steps
 
 1. **Download**  
-   Go to the [Releases](https://github.com/YOUR_ORG/cnox/releases) page and download the archive for your OS:
+   Go to the [Releases](https://github.com/coelanox-ai/coelanox/releases) page and download the archive for your OS:
    - **Linux:** `coelanox-linux-x86_64.tar.gz`
-   - **macOS:** `coelanox-macos-x86_64.tar.gz`
    - **Windows:** `coelanox-windows-x86_64.zip`
 
 2. **Extract**  
@@ -44,9 +43,9 @@ If you have `curl` and want to install the latest Linux/macOS binary without vis
 ```bash
 # Example: install v1.0.0 for Linux
 COELANOX_VER="v1.0.0"
-REPO="YOUR_ORG/cnox"
+REPO="coelanox-ai/coelanox"
 curl -sL "https://github.com/${REPO}/releases/download/${COELANOX_VER}/coelanox-linux-x86_64.tar.gz" | tar -xzf -
-cd linux && ./install.sh
+./install.sh
 ```
 
 ---

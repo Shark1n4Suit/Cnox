@@ -1097,8 +1097,7 @@ mod impl_ {
 
             // 5) Policy checks on the constructed IR.
             //
-            // Treat ONNX Cast as a preprocessing/export concern for now. We don't support
-            // mixed-precision execution in the Coelanox runtime: everything runs as f32.
+            // Runtime executes in f32 only; Cast is a preprocessing/export concern.
             // If a model still contains Cast, fail fast with a clear, actionable error
             // instead of letting it reach the scalar backend as Custom("Cast").
             for node in &ir.nodes {

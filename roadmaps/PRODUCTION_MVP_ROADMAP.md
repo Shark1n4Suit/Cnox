@@ -275,7 +275,7 @@ It does **not** allocate memory for containers; each container pulls its own via
   - No security vulnerabilities from hash bypass
 
 **1.2 Remove Hardware-Specific Backends** ✅ **COMPLETED**
-- **Location**: `coelanox-runtime/src/backends/`
+- **Location**: `coelanox-orchestrator/src/backends/`
 - **Status**: ✅ All hardware-specific backends removed, only `BackendTranslator` trait remains
 - **Tasks**:
   - Delete `gpu_backend.rs` (vendor-provided)
@@ -291,7 +291,7 @@ It does **not** allocate memory for containers; each container pulls its own via
   - Runtime focuses on container management
 
 **1.3 Create Backend Manager & AOT Binary Selection** ✅ **COMPLETED**
-- **Location**: `coelanox-runtime/src/backend_manager.rs` (new), `coelanox-packager/src/lib.rs`
+- **Location**: `coelanox-orchestrator/src/backend_manager.rs` (new), `coelanox-packager/src/lib.rs`
 - **Status**: ✅ BackendManager implemented with discovery, validation, AOT selection (`--fat`, `--auto`, `--backend-add`). Tests: `test_backend_manager.rs`, `test_aot_selection.rs`
 - **Note**: CLF (.clfc) discovery implemented; backends discovered from search paths
 - **Tasks**:
@@ -360,7 +360,7 @@ It does **not** allocate memory for containers; each container pulls its own via
   - Well-documented as golden reference
 
 **2.3 Create Scalar Fallback Module** ⚠️ **PARTIAL**
-- **Location**: `coelanox-runtime/src/fallback/` (new)
+- **Location**: `coelanox-orchestrator/src/fallback/` (new)
 - **Status**: ⚠️ Structure created, needs full implementation and integration
 - **Tasks**:
   - Create dedicated fallback module
@@ -464,7 +464,7 @@ It does **not** allocate memory for containers; each container pulls its own via
 - **Success Criteria** (Memory HAL): ✅ Trait and registry in core; packager uses HAL for create_backing; runtime uses HAL for executable when backend registered; NvmeMemoryBackend in packager. (Protection HAL): Trait and registry in core; runtime integration deferred to Static Load & Lock / Memory Tier Manager.
 
 **4.3 Static Load & Lock Architecture & InferenceContext**
-- **Location**: `coelanox-runtime/src/memory/`, `coelanox-core/src/runtime/`
+- **Location**: `coelanox-orchestrator/src/memory/`, `coelanox-core/src/runtime/`
 - **Architecture Decision**: "Static Load & Lock" - Custom I/O + Hardware MMU/MPU Protection
   - **Phase I: Load (Custom I/O)**: Container data loaded into physical memory regions
     - Parse container header to identify section sizes
@@ -533,7 +533,7 @@ It does **not** allocate memory for containers; each container pulls its own via
   - OS independence validated (works on bare metal, firmware, embedded, RTOS)
 
 **4.3.1 Platform-Specific MMU/MPU Firewall Implementation**
-- **Location**: `coelanox-runtime/src/memory/mmu_firewall/`
+- **Location**: `coelanox-orchestrator/src/memory/mmu_firewall/`
 - **Purpose**: Implement hardware MMU/MPU configuration code for each target architecture
 - **Architecture**: Trait-based platform abstraction with architecture-specific implementations
 - **Platforms**: ARM (aarch64), x86 (x86_64), RISC-V (riscv64) - compile-time targets via `#[cfg(target_arch)]`
@@ -609,7 +609,7 @@ It does **not** allocate memory for containers; each container pulls its own via
   - Documentation complete for each architecture
 
 **4.3.2 Platform-Specific Storage I/O Implementation**
-- **Location**: `coelanox-runtime/src/memory/custom_io/`
+- **Location**: `coelanox-orchestrator/src/memory/custom_io/`
 - **Purpose**: Implement platform-specific storage controller access for direct hardware I/O (no OS)
 - **Architecture**: Trait-based platform abstraction with architecture-specific implementations
 - **Platforms**: ARM (aarch64), x86 (x86_64), RISC-V (riscv64) - **Same compile-time targets as MMU/MPU firewall**
@@ -701,7 +701,7 @@ It does **not** allocate memory for containers; each container pulls its own via
   - OS bypassed (manual prefetching, no OS involvement)
 
 **5.2 Double Ring Buffer & Async I/O for NVMe Backing**
-- **Location**: `coelanox-core/src/streaming/`, `coelanox-runtime/src/memory/`
+- **Location**: `coelanox-core/src/streaming/`, `coelanox-orchestrator/src/memory/`
 - **Architecture**: NVMe backing uses async I/O (custom I/O) for latency hiding
 - **Tasks**:
   - Implement double ring buffer structure (Buffer A + Buffer B in RAM)
@@ -771,7 +771,7 @@ Double ring buffer (fetch overlaps with compute) is planned for integration with
 #### **Week 6: Memory Tiering System**
 
 **6.1 Memory Tier Manager (Static Load & Lock)**
-- **Location**: `coelanox-core/src/memory/`, `coelanox-runtime/src/memory/`
+- **Location**: `coelanox-core/src/memory/`, `coelanox-orchestrator/src/memory/`
 - **Abstraction**: Memory HAL (`coelanox-core/src/memory_hal.rs`) is the contract for memory backends; tier backends (NVMe, OS, SD) implement `MemoryHAL`. Protection HAL (`coelanox-core/src/protection_hal.rs`) is the contract for MMU/MPU; Lock phase will use `ProtectionBackendRegistry` when wired.
 - **Architecture**: "Static Load & Lock" - Custom I/O + Hardware MMU/MPU Protection
   - **Weights (Both Modes)**: Hardware-protected read-only region (MMU/MPU enforced)
@@ -830,7 +830,7 @@ Double ring buffer (fetch overlaps with compute) is planned for integration with
   - OS independence validated (bare metal, firmware, embedded, RTOS)
 
 **6.2 Dynamic RAM Caching**
-- **Location**: `coelanox-runtime/src/memory/`
+- **Location**: `coelanox-orchestrator/src/memory/`
 - **Tasks**:
   - Implement RAM cache for active tensors
   - Implement cache eviction policy (LRU)
@@ -846,7 +846,7 @@ Double ring buffer (fetch overlaps with compute) is planned for integration with
   - Small models perform identically to all-RAM (100% cache hit rate)
 
 **6.3 Static RAM Flag & Documentation**
-- **Location**: `coelanox-runtime/src/runtime.rs`, `coelanox-cli/src/main.rs`
+- **Location**: `coelanox-orchestrator/src/runtime.rs`, `coelanox-cli/src/main.rs`
 - **Architecture**: "Static Load & Lock" - Custom I/O + Hardware MMU/MPU Protection
   - **Weights (Both Modes)**: Hardware-protected read-only (MMU/MPU enforced, crash-safe)
   - **Code (Both Modes)**: Hardware-protected read-execute (MMU/MPU enforced)
@@ -1473,7 +1473,7 @@ pub fn verify_security_hash(container_path: &Path) -> CoelanoxResult<()> {
 
 #### **Backend Manager & AOT Binary Selection**
 ```rust
-// coelanox-runtime/src/backend_manager.rs
+// coelanox-orchestrator/src/backend_manager.rs
 pub struct BackendManager {
     backends: HashMap<String, Box<dyn Backend>>,
     fallback: FallbackBackend,
@@ -1545,7 +1545,7 @@ coelanox-core/src/scalar/
 ├── normalization.rs      # BatchNorm, LayerNorm
 └── tensor_ops.rs         # Reshape, Transpose, etc.
 
-coelanox-runtime/src/fallback/
+coelanox-orchestrator/src/fallback/
 ├── mod.rs                 # Module exports
 ├── fallback_backend.rs    # FallbackBackend struct
 └── scalar_executor.rs     # Uses coelanox-core scalar
@@ -1638,7 +1638,7 @@ Binary Machine Code (Vec<u8>)
 
 #### **Core Trait: BackendTranslator**
 
-**Location**: `coelanox-packager/src/generators/backend_translators/backend_translator.rs`
+**Location**: `coelanox-packager/src/backend_trait/trait.rs`
 
 **Single Trait with 8 Required Methods** - All hardware vendors implement this:
 
@@ -2432,8 +2432,8 @@ Items here are non-blocking; consider when touching related code or when package
 
 ### **Code References**
 - `coelanox-core/src/format.rs` - Container format
-- `coelanox-runtime/src/backend_manager.rs` - Backend manager
-- `coelanox-runtime/src/fallback/` - Scalar fallback backend
+- `coelanox-orchestrator/src/backend_manager.rs` - Backend manager
+- `coelanox-orchestrator/src/fallback/` - Scalar fallback backend
 - `coelanox-packager/src/generators/` - Code generation
 
 ---

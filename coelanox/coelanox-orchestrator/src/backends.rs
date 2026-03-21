@@ -1,7 +1,4 @@
-//! Backend management module
-//! 
-//! This module will be used for the backend manager system (Task 1.3).
-//! Hardware-specific backends (GPU, NPU, TPU) will be vendor-provided and loaded dynamically.
-//! The runtime focuses on container management, not hardware-specific execution.
-
-// Backend manager will be implemented in Task 1.3
+//! Backend re-exports.
+//!
+//! Package-time CLF discovery is in `backend_manager`. Runtime execution backends
+//! (scalar-fallback, etc.) are in `execution_backend` and registered in the runtime.

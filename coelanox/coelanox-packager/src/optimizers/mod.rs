@@ -1,7 +1,4 @@
-//! Hardware-specific optimizers for COELANOX
-//! 
-//! This module provides hardware-specific optimizers that convert Universal IR
-//! into optimized IR for different hardware targets.
+//! Convert UniversalIR to OptimizedIR per hardware target (CPU adds attributes; no graph fusion).
 
 use coelanox_core::{CoelanoxResult};
 use coelanox_core::format::HardwareTarget;
@@ -43,17 +40,14 @@ impl CpuOptimizer {
     fn replace_with_cpu_optimized_ops(&self, mut node: GraphNode) -> GraphNode {
         match node.op_type {
             OpType::Convolution => {
-                // Replace generic convolution with CPU-optimized version
                 node.add_attribute("cpu_conv_optimized".to_string(), Attribute::Bool(true));
                 node.add_attribute("cpu_conv_type".to_string(), Attribute::String("im2col".to_string()));
             }
             OpType::MatMul => {
-                // Replace generic matmul with CPU-optimized version
                 node.add_attribute("cpu_matmul_optimized".to_string(), Attribute::Bool(true));
                 node.add_attribute("cpu_matmul_type".to_string(), Attribute::String("blas".to_string()));
             }
             _ => {
-                // Add general CPU optimization marker
                 node.add_attribute("cpu_optimized".to_string(), Attribute::Bool(true));
             }
         }
@@ -62,8 +56,7 @@ impl CpuOptimizer {
     
     /// Apply CPU-specific optimizations based on graph analysis
     fn apply_cpu_optimizations(&self, mut node: GraphNode, ir: &UniversalIR) -> GraphNode {
-        // Analyze tensor shapes for optimization opportunities
-        let input_tensors = node.input_tensors.clone(); // Clone to avoid borrow issues
+        let input_tensors = node.input_tensors.clone();
         for tensor_id in &input_tensors {
             if let Some(tensor_ref) = ir.get_tensor(*tensor_id) {
                 match tensor_ref {
@@ -89,15 +82,13 @@ impl CpuOptimizer {
     
     /// Optimize memory layout for CPU execution
     fn optimize_memory_layout(&self, mut node: GraphNode, _ir: &UniversalIR) -> GraphNode {
-        // Add memory layout optimizations
         node.add_attribute("memory_layout".to_string(), Attribute::String("row_major".to_string()));
         node.add_attribute("cache_friendly".to_string(), Attribute::Bool(true));
         node
     }
     
-    /// Add SIMD optimization hints
+    /// Add SIMD optimization hints based on operation type
     fn add_simd_hints(&self, mut node: GraphNode) -> GraphNode {
-        // Add SIMD optimization hints based on operation type
         match node.op_type {
             OpType::Add | OpType::Multiply => {
                 node.add_attribute("simd_enabled".to_string(), Attribute::Bool(true));
@@ -114,10 +105,8 @@ impl CpuOptimizer {
         node
     }
     
-    /// Add nodes from IR to optimized IR (no fusion - keep operations separate)
+    /// Add nodes from IR to optimized IR (no fusion)
     fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
-        // Keep operations separate - no fusion
-        // Simply copy all nodes from IR to optimized IR
         for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
@@ -125,9 +114,8 @@ impl CpuOptimizer {
         Ok(())
     }
     
-    /// Add intermediate tensors from IR (no fusion-specific logic needed)
+    /// Add intermediate tensors from IR
     fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
-        // Copy intermediate tensors from original IR
         for tensor in &ir.intermediate_tensors {
             optimized_ir.add_intermediate_tensor(tensor.clone());
         }
@@ -272,10 +260,8 @@ impl GpuOptimizer {
         node
     }
     
-    /// Add nodes from IR to optimized IR (no fusion - keep operations separate)
+    /// Add nodes from IR to optimized IR (no fusion)
     fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
-        // Keep operations separate - no fusion
-        // Simply copy all nodes from IR to optimized IR
         for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
@@ -283,9 +269,8 @@ impl GpuOptimizer {
         Ok(())
     }
     
-    /// Add intermediate tensors from IR (no fusion-specific logic needed)
+    /// Add intermediate tensors from IR
     fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
-        // Copy intermediate tensors from original IR
         for tensor in &ir.intermediate_tensors {
             optimized_ir.add_intermediate_tensor(tensor.clone());
         }
@@ -430,10 +415,8 @@ impl EdgeOptimizer {
         node
     }
     
-    /// Add nodes from IR to optimized IR (no fusion - keep operations separate)
+    /// Add nodes from IR to optimized IR (no fusion)
     fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
-        // Keep operations separate - no fusion
-        // Simply copy all nodes from IR to optimized IR
         for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
@@ -441,9 +424,8 @@ impl EdgeOptimizer {
         Ok(())
     }
     
-    /// Add intermediate tensors from IR (no fusion-specific logic needed)
+    /// Add intermediate tensors from IR
     fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
-        // Copy intermediate tensors from original IR
         for tensor in &ir.intermediate_tensors {
             optimized_ir.add_intermediate_tensor(tensor.clone());
         }

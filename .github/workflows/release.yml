@@ -1,5 +1,8 @@
 name: Release
 
+permissions:
+  contents: write
+
 on:
   push:
     tags:
@@ -87,6 +90,9 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: release-artifacts
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -94,8 +100,8 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
-            coelanox-linux-x86_64/coelanox-linux-x86_64.tar.gz
-            coelanox-windows-x86_64/coelanox-windows-x86_64.zip
+            release-artifacts/*.tar.gz
+            release-artifacts/*.zip
           generate_release_notes: true
           body: |
             ## COELANOX ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}

@@ -42,6 +42,7 @@ Complete reference for all commands and options.
 | `--backend-add` | — | `<BACKEND_ADD>` | — | Add additional backends, comma-separated: e.g. `amd,intel,qualcomm` |
 | `--fallback-only` | — | flag | false | Package without backend code (scalar fallback only at runtime; for benchmarking) |
 | `--max-workspace` | — | `<MAX_WORKSPACE>` | — | Max dynamic memory (workspace + scratch) in MB; build fails if model needs more (e.g. 64, 1024) |
+| `--signing-key` | — | `<PATH>` | — | Path to Ed25519 secret key (32 raw bytes) to sign container. Env: `COELANOX_SIGNING_KEY` |
 | `--help` | `-h` | — | — | Print help |
 
 **Mutual exclusivity:** Only one of `--fat`, `--auto`, or explicit `--target` may be used.
@@ -66,7 +67,17 @@ Complete reference for all commands and options.
 
 ---
 
-## 3. `verify` — Verify container integrity (pre-deployment check)
+## 3. `keygen` — Generate Ed25519 keypair for container signing
+
+Produces `secret.bin` (32 bytes, keep private) and `public.bin` (32 bytes, share with verifiers). Use with `package --signing-key` and `verify --trusted-key`.
+
+**Usage:** `coelanox keygen [OPTIONS]`
+
+**Optional:** `--output-dir` / `-o` (output directory; default: current dir), `--help`
+
+---
+
+## 4. `verify` — Verify container integrity (pre-deployment check)
 
 **Usage:** `coelanox verify [OPTIONS] --file <FILE>`
 
@@ -81,11 +92,13 @@ Complete reference for all commands and options.
 | Option | Short | Type | Description |
 |--------|--------|------|-------------|
 | `--verbose` | `-v` | flag | Enable verbose output |
+| `--trusted-key` | — | `<PATH>` | Path to Ed25519 public key for signature verification. Env: `COELANOX_TRUSTED_PUBLIC_KEY` |
+| `--require-signature` | — | flag | Fail if container is signed but no trusted key provided |
 | `--help` | `-h` | — | Print help |
 
 ---
 
-## 4. `info` — Show information about a COELANOX container
+## 5. `info` — Show information about a COELANOX container
 
 **Usage:** `coelanox info [OPTIONS] --file <FILE>`
 
@@ -104,7 +117,7 @@ Complete reference for all commands and options.
 
 ---
 
-## 5. `run` — Run inference on a COELANOX container
+## 6. `run` — Run inference on a COELANOX container
 
 **Usage:** `coelanox run [OPTIONS] --file <FILE> --output <OUTPUT>`
 
@@ -124,11 +137,14 @@ Complete reference for all commands and options.
 | `--audit` | — | flag | false | Audit mode: log after each op (op index, type, output size, sample to stderr and optionally to file) |
 | `--audit-output` | — | `<AUDIT_OUTPUT>` | — | When using `--audit`, append audit log lines to this file |
 | `--max-workspace-mb` | — | `<MAX_WORKSPACE_MB>` | — | Max workspace in MB (overrides `COELANOX_MAX_WORKSPACE_MB`). 0 = no cap |
+| `--no-verify` | — | flag | false | Skip integrity verification (dev only; avoid in production) |
+| `--trusted-key` | — | `<PATH>` | — | Path to Ed25519 public key for signature verification. Env: `COELANOX_TRUSTED_PUBLIC_KEY` |
+| `--require-signature` | — | flag | false | Fail if container is signed but no trusted key provided |
 | `--help` | `-h` | — | — | Print help |
 
 ---
 
-## 6. `benchmark` — Benchmark a COELANOX container
+## 7. `benchmark` — Benchmark a COELANOX container
 
 **Usage:** `coelanox benchmark [OPTIONS] --file <FILE>`
 
@@ -146,6 +162,9 @@ Complete reference for all commands and options.
 | `--loop-iterations` | — | `<LOOP_ITERATIONS>` | — | Loop for N iterations (long-run stability); overrides `--iterations` when set |
 | `--output` | — | `<OUTPUT>` | `text` | Output format: `text` or `json` |
 | `--max-workspace-mb` | — | `<MAX_WORKSPACE_MB>` | — | Max workspace in MB (overrides `COELANOX_MAX_WORKSPACE_MB`). 0 = no cap |
+| `--no-verify` | — | flag | false | Skip integrity verification (dev only) |
+| `--trusted-key` | — | `<PATH>` | — | Path to Ed25519 public key for signature verification |
+| `--require-signature` | — | flag | false | Fail if container is signed but no trusted key provided |
 | `--help` | `-h` | — | — | Print help |
 
 ---
@@ -187,7 +206,7 @@ No required arguments. Prints OS, architecture, CPU, memory, GPU (if any), SIMD 
 
 ---
 
-## 9. `extract` — Extract runtime-only binary for deployment
+## 9. `extract` — Extract standalone runtime binary for deployment
 
 Produces a **standalone runtime** that matches this CLI version; deploy it with `.cnox` files only. **Same-arch extract is implemented today.** Cross-arch (`--arm` / `--target`) is **not yet implemented** and will currently print a warning and exit.
 
@@ -221,7 +240,8 @@ coelanox
 ├── -V, --version
 ├── package     (-i, -o required; -m, -t, --use-demo-translator, --fat, --auto, --backend-add, --fallback-only, --max-workspace, …)
 ├── validate    (-f required)
-├── verify      (-f required; -v)
+├── keygen      (-o output-dir)
+├── verify      (-f required; -v, --trusted-key, --require-signature)
 ├── info        (-f required; --dump-plan)
 ├── run         (-f, -o required; -i, -b, --audit, --audit-output, --max-workspace-mb)
 ├── benchmark   (-f required; -i, --loop-iterations, --output, --max-workspace-mb)
@@ -243,6 +263,9 @@ coelanox
 ## Example invocations (copy-paste for your site)
 
 ```bash
+# Keygen (Ed25519 keypair for signing)
+coelanox keygen -o ./keys
+
 # Package (e.g. BERT from bundle, scalar-only)
 coelanox package -i model.bundle -o model.cnox -m nlp --use-demo-translator --fallback-only
 

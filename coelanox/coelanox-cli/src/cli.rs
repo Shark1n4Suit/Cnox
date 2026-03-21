@@ -147,7 +147,7 @@ fn package_model(
         println!("Format: {}", format);
     }
     
-    // TODO: Implement actual packaging logic
+    // Stub: packaging logic lives in main.rs (package subcommand).
     println!("Packaging functionality not yet implemented");
     println!("This would package {:?} into {:?} for {} target", input, output, target);
     
@@ -160,7 +160,7 @@ fn validate_container(container: &PathBuf, verbose: bool) -> Result<(), Box<dyn 
         println!("Validating container: {:?}", container);
     }
     
-    // TODO: Implement actual validation logic
+    // Stub: validation logic lives in main.rs (verify subcommand).
     println!("Validation functionality not yet implemented");
     println!("This would validate {:?}", container);
     
@@ -182,7 +182,7 @@ fn run_container(
         println!("Backend: {}", backend);
     }
     
-    // TODO: Implement actual execution logic
+    // Stub: execution logic lives in main.rs (run subcommand).
     println!("Execution functionality not yet implemented");
     println!("This would run {:?} with backend {}", container, backend);
     
@@ -202,7 +202,7 @@ fn benchmark_container(
         println!("Backend: {}", backend);
     }
     
-    // TODO: Implement actual benchmarking logic
+    // Stub: benchmarking logic lives in main.rs (benchmark subcommand).
     println!("Benchmarking functionality not yet implemented");
     println!("This would benchmark {:?} for {} iterations with backend {}", container, iterations, backend);
     
@@ -216,7 +216,7 @@ fn show_system_info(verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("===========================");
     }
     
-    // TODO: Implement actual system info gathering
+    // Stub: system info logic lives in main.rs (info subcommand).
     println!("System info functionality not yet implemented");
     println!("This would show CPU, GPU, NPU, TPU capabilities and system resources");
     

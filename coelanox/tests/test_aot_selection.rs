@@ -1,5 +1,5 @@
-//! Tests for Task 1.3: AOT Binary Selection Integration
-//! 
+//! Tests for AOT binary selection and backend metadata.
+//!
 //! These tests verify that:
 //! - Packaging with AOT selection flags works correctly
 //! - BackendMetadata is correctly stored in container manifest

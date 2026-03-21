@@ -28,12 +28,12 @@ fn load_runtime_config() -> RuntimeConfig {
     RuntimeConfig::from_env()
 }
 
-/// Ensure output directory exists and return proper output path
+/// Resolve output path: create parent dirs, default to models/output/ for relative paths, add .cnox if no extension.
 fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<PathBuf> {
     let input_path = Path::new(input_path);
     let output_path = Path::new(output_path);
     
-    // Normalize the output path to check if it already starts with models/output
+    // Relative paths (unless already under models/output) go under models/output/
     let normalized_output = output_path
         .iter()
         .map(|s| s.to_string_lossy().to_lowercase())
@@ -439,8 +439,8 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
     // If --fat or --auto, we'll handle selection in packager
     // Otherwise, parse --target (supports both old values and new hardware-specific values)
     let hardware_target = if fat || auto {
-        // Will be determined in packager based on selection mode
-        env.recommended_target() // Temporary, will be overridden
+        // Packager overrides based on --fat/--auto; this is the initial env hint.
+        env.recommended_target()
     } else {
         match target.to_lowercase().as_str() {
             "cpu" | "simd" => HardwareTarget::Cpu,
@@ -702,9 +702,7 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
     }
     println!();
     println!("=== Performance ===");
-    // Calculate actual compression ratio (original file size / COELANOX size)
-    // For now, we don't have access to original file size in info command
-    // This would need to be stored in the manifest or calculated during packaging
+    // Manifest does not store source model size; compression ratio N/A
     println!("Compression ratio: N/A (original size not available)");
     
     Ok(())

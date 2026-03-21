@@ -1,8 +1,10 @@
-//! CLF mini-executor: walks an execution plan and dispatches to SIMD kernels.
+//! CLF mini-executor: walks an execution plan and dispatches to kernel blobs.
 //!
-//! Dispatches by op_id to Rust SIMD kernels (clf-kernels-simd) so each op uses its
-//! correct ABI instead of a single uniform signature. This avoids SIGSEGV when
-//! the container was built from a CLFC whose blobs have per-op ABIs (Add/ReLU/Conv etc.).
+//! Two execution paths:
+//! - **Raw blobs** (`run_with_plan`): Calls (code_base + kernel_offset) as a 6-arg function. Used when
+//!   the container embeds CLFC blobs (from packager's `ClfReader::build_code_section`).
+//! - **Symbol dispatch** (`run_with_plan_symbols`): Dispatches by op_id to Rust SIMD kernels (clf-kernels-simd).
+//!   Used when blobs are not embedded but simd symbols are linked; each op uses its correct ABI.
 
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use std::collections::{HashMap, HashSet};

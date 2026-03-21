@@ -429,10 +429,8 @@ impl SystemEnvironment {
     }
 }
 
-/// Validate file permissions
+/// Validate file (existence check; rwx permission validation not implemented).
 pub fn validate_file_permissions(path: &Path) -> CoelanoxResult<()> {
-    // TODO: Implement file permission validation
-    // For now, just check if file exists
     if !path.exists() {
         return Err(CoelanoxError::FileSystem(std::io::Error::new(
             std::io::ErrorKind::NotFound,

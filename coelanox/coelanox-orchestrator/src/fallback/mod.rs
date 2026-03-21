@@ -91,21 +91,7 @@ impl ScalarFallbackBackend {
         )
     }
     
-    /// Execute a graph node using scalar fallback
-    /// 
-    /// This method extracts operation information from a GraphNode and
-    /// executes it using the scalar fallback.
-    /// 
-    /// # Arguments
-    /// * `node` - Graph node containing operation information
-    /// * `input_a` - First input tensor
-    /// * `input_b` - Second input tensor (optional)
-    /// * `output` - Output tensor buffer
-    /// * `weights` - Weight tensor (optional)
-    /// 
-    /// # Returns
-    /// * `Ok(())` if operation succeeds
-    /// * `Err(CoelanoxError)` if operation fails
+    /// Execute a graph node via scalar backend (delegates to execute_operation).
     pub fn execute_node(
         &self,
         node: &GraphNode,

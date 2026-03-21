@@ -17,9 +17,7 @@ pub mod format_detection {
         match extension.as_str() {
             "onnx" => Some(ModelFormat::Onnx),
             "cnox" => Some(ModelFormat::Coelanox),
-            // PyTorch and TensorFlow support removed - focusing on ONNX only
-            // "pt" | "pth" => Some(ModelFormat::PyTorch),
-            // "pb" | "savedmodel" => Some(ModelFormat::TensorFlow),
+            // ONNX only; PyTorch (.pt/.pth) and TensorFlow (.pb) not supported
             _ => None,
         }
     }
@@ -35,18 +33,7 @@ pub mod format_detection {
         if data.len() >= 8 && &data[0..8] == b"\x08\x00\x00\x00\x00\x00\x00\x00" {
             return Some(ModelFormat::Onnx);
         }
-        
-        // PyTorch and TensorFlow support removed - focusing on ONNX only
-        // Check for PyTorch magic
-        // if data.len() >= 8 && &data[0..8] == b"\x50\x4B\x03\x04\x14\x00\x00\x00" {
-        //     return Some(ModelFormat::PyTorch);
-        // }
-        
-        // Check for TensorFlow magic
-        // if data.len() >= 4 && &data[0..4] == b"\x08\x00\x00\x00" {
-        //     return Some(ModelFormat::TensorFlow);
-        // }
-        
+
         None
     }
     

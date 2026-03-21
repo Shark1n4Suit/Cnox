@@ -1,10 +1,9 @@
-//! Integration tests for full pipeline: package → verify → run
-//! 
+//! Integration tests for full pipeline: package → verify → run.
+//!
 //! These tests verify that:
-//! - Full pipeline works end-to-end (package → verify → run)
+//! - Full pipeline works end-to-end (package → verify → load/run)
 //! - Security hash verification works in pipeline
-//! - AOT selection flags work in full pipeline
-//! - Backend manager integration works
+//! - Backend metadata and device mapping work
 //! - Error handling works at each stage
 
 use coelanox_core::format::{verify_security_hash, HardwareTarget, ModelFormat};
@@ -74,8 +73,7 @@ fn test_full_pipeline_package_verify_run() {
     let packager = CoelanoxPackager::new().expect("Failed to create packager");
     let _output_path = Path::new("test_output.cnox");
     
-    // Note: This will fail if ONNX translator is not available, but that's okay for integration test
-    // The test verifies the pipeline structure, not the actual packaging
+    // May fail if ONNX translator unavailable; verifies pipeline structure.
     let package_result = packager.package(
         model_path,
         HardwareTarget::Cpu,

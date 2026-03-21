@@ -1216,8 +1216,7 @@ impl UniversalIR {
                         TensorRef::Intermediate(tensor) => &tensor.data_type,
                     };
                     
-                    // For now, allow fusion if data types are compatible
-                    // (same type or compatible conversions)
+                    // Allow fusion when data types are compatible (same or convertible)
                     match (output_dtype, input_dtype) {
                         (DataType::Float32, DataType::Float32) => true,
                         (DataType::Float64, DataType::Float64) => true,
@@ -1286,7 +1285,7 @@ impl UniversalIR {
             "ConvReLU" => {
                 // ConvReLU output shape is same as convolution output
                 // For convolution: output_shape = (input_shape - kernel_size + 2*padding) / stride + 1
-                // For now, assume same shape (would need kernel size, stride, padding info from attributes)
+                // Simplified: assume same shape; full conv output would need kernel/stride/padding from attributes
                 if let Some(conv_input_shape) = input_shapes.first() {
                     Some((*conv_input_shape).clone())
                 } else {
@@ -1461,10 +1460,7 @@ mod tests {
         assert_eq!(stats.node_count, 3);
         assert_eq!(stats.weight_tensor_count, 2);
         assert_eq!(stats.intermediate_tensor_count, 3);
-        // Note: Graph may have cycles due to in-place operations (hidden tensor reuse)
-        
-        // Test topological sort (may fail if graph has cycles)
-        // Note: This test creates a cycle by reusing hidden tensor, so we skip this check
+        // Graph may have cycles (in-place ops); this test creates one, so we skip topological_sort.
         // let execution_order = ir.topological_sort().unwrap();
         // assert_eq!(execution_order.len(), 3);
         

@@ -181,9 +181,8 @@ impl BackendTranslatorRegistry {
     /// Check if operation is supported on hardware
     pub fn is_operation_supported(&self, _operation: &OpType, target: &HardwareTarget) -> bool {
         if let Some(_translator) = self.translators.get(target) {
-            // Check if translator supports this operation
-            // This would need to be implemented by each translator
-            true // Placeholder
+            // Assumes supported when translator exists; vendors can override with actual op checks.
+            true
         } else {
             false
         }

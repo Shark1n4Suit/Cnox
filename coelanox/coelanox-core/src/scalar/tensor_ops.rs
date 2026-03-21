@@ -14,10 +14,7 @@ use crate::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
 use crate::ir::Attribute;
 
-/// Execute reshape operation: Change tensor shape (no-op for data, just metadata)
-/// 
-/// Note: Reshape typically doesn't require data movement, just shape metadata change.
-/// This function may be a no-op or may handle data layout changes if needed.
+/// Reshape: copy input to output (shape change is metadata; caller provides layout).
 pub fn reshape(
     input: &[f32],
     output: &mut [f32],

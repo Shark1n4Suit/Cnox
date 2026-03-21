@@ -1,7 +1,6 @@
-//! Backend Translator Parameters and Hints for COELANOX
-//! 
-//! This module defines the parameters and optimization hints used by backend translators.
-//! Operations are now defined in coelanox-core::ir::OpType.
+//! Backend translator parameters and optimization hints.
+//!
+//! Operation types come from coelanox-core::ir::OpType; params/hints augment them for codegen.
 
 use std::collections::HashMap;
 

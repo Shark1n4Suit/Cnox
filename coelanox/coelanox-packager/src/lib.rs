@@ -1,7 +1,4 @@
-//! COELANOX packager for creating containers
-//! 
-//! This module provides the main packaging functionality for COELANOX, including
-//! model translation, optimization, and container creation.
+//! Packager: translate models (ONNX, BERT, ResNet) to UniversalIR, optimize, emit .cnox containers.
 
 use coelanox_core::{
     CoelanoxError, CoelanoxResult,
@@ -17,7 +14,6 @@ use coelanox_executor::build_plan_from_ir;
 use coelanox_core::ir::TensorId;
 use std::collections::{HashMap, HashSet, VecDeque};
 use crate::memory::NvmeAllocator;
-// CodeGenerator trait removed - generators folder deleted
 use crate::optimizers::HardwareOptimizer;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
@@ -84,7 +80,8 @@ fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
     }
 }
 
-/// Serializable version of OptimizedIR (without Arc)
+/// Serializable version of OptimizedIR for container storage.
+/// Weight tensors store metadata only (shape, dtype); actual weights live in compressed_weights.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedOptimizedIR {
     target: HardwareTarget,
@@ -103,7 +100,7 @@ pub mod backend_trait;
 pub mod utils;
 pub mod memory;
 
-/// COELANOX packager for creating containers
+/// Packager instance: translators, CLF backend discovery, memory HAL for container backing.
 pub struct CoelanoxPackager {
     /// Plugin manager for translators
     plugin_manager: plugins::PluginManager,
@@ -121,7 +118,7 @@ impl CoelanoxPackager {
     pub fn new() -> CoelanoxResult<Self> {
         let mut plugin_manager = plugins::PluginManager::new();
         
-        // Load default plugins (none for now - community will add them)
+        // Register in-tree translators (ONNX, BERT, ResNet) based on Cargo features
         plugin_manager.load_default_plugins()?;
         
         // Detect environment
@@ -284,9 +281,6 @@ impl CoelanoxPackager {
                 println!("❌ LZ4 compression failed");
             }
         }
-        
-        // Skip deflate compression for now (has reporting bug)
-        // TODO: Fix deflate compression reporting
         
         let compression_ratio = weight_bytes.len() as f64 / best_size as f64;
         println!("✅ Standard compression complete: {} bytes ({}x compression)", best_size, compression_ratio);
@@ -625,36 +619,11 @@ impl CoelanoxPackager {
             if model_data.starts_with(b"RTM1") {
                 return Ok(coelanox_core::format::ModelFormat::Custom("resnet_tiny_mnist".to_string()));
             }
-            // ONNX files start with protobuf magic (08 is the protobuf field tag)
-            // The second byte can vary, so we just check for 08 as the first byte
+            // ONNX uses protobuf; first byte 0x08 is the field tag for the version field
             if model_data[0] == 0x08 {
                 return Ok(coelanox_core::format::ModelFormat::Onnx);
             }
-            
-            // Check for PyTorch magic (ZIP format) - REMOVED
-            // if model_data[0] == 0x50 && model_data[1] == 0x4B && model_data[2] == 0x03 && model_data[3] == 0x04 {
-            //     return Ok(coelanox_core::format::ModelFormat::PyTorch);
-            // }
-            
-            // Check for TensorFlow SavedModel (directory structure) - REMOVED
-            // if model_data.len() >= 8 {
-            //     let header = &model_data[0..8];
-            //     if header == b"SavedModel" {
-            //         return Ok(coelanox_core::format::ModelFormat::TensorFlow);
-            //     }
-            // }
         }
-        
-        // TensorFlow detection removed - focusing on ONNX only
-        // Check for TensorFlow protobuf
-        // if model_data.len() >= 4 && model_data[0] == 0x08 && model_data[1] == 0x00 && model_data[2] == 0x00 && model_data[3] == 0x00 {
-        //     // Look for TensorFlow-specific markers
-        //     if model_data.windows(4).any(|window| window == b"node") {
-        //         return Ok(coelanox_core::format::ModelFormat::TensorFlow);
-        //     }
-        // }
-        
-        // Fallback to ONNX if we can't determine
         Ok(coelanox_core::format::ModelFormat::Onnx)
     }
     
@@ -706,17 +675,14 @@ impl CoelanoxPackager {
                 HardwareOptimizer::optimize(&optimizer, &ir, target.clone())
             }
             HardwareTarget::Custom(_) => {
-                // For custom targets, use CPU optimizer as fallback
                 let optimizer = optimizers::CpuOptimizer::new();
                 HardwareOptimizer::optimize(&optimizer, &ir, target.clone())
             }
             HardwareTarget::NeuralEngine => {
-                // For Neural Engine, use CPU optimizer as fallback for now
                 let optimizer = optimizers::CpuOptimizer::new();
                 HardwareOptimizer::optimize(&optimizer, &ir, target.clone())
             }
             HardwareTarget::NPU => {
-                // For NPU, use CPU optimizer as fallback for now
                 let optimizer = optimizers::CpuOptimizer::new();
                 HardwareOptimizer::optimize(&optimizer, &ir, target.clone())
             }
@@ -742,9 +708,8 @@ impl CoelanoxPackager {
 
         if let Some(backend_info) = backend_info {
             if backend_info.kind == BackendKind::Clf {
-                // Dictionary-style CLF code section:
-                // - code: one blob per unique op_id (per container)
-                // - kernel_byte_offsets: one offset per node, reusing offsets when op_id repeats
+                // Build code section: one blob per unique op_id, offsets per node for execution plan.
+                // op_offset_cache deduplicates so repeated op_ids reuse the same blob offset.
                 let mut reader = ClfFileReader::open(backend_info.library_path.as_path())
                     .map_err(|e| CoelanoxError::format(&format!("CLF load failed: {}", e)))?;
 
@@ -839,7 +804,7 @@ impl CoelanoxPackager {
     fn create_manifest(&self, ir: &UniversalIR, machine_code_size: usize, backend_metadata: Option<BackendMetadata>) -> CoelanoxResult<CoelanoxManifest> {
         let mut manifest = CoelanoxManifest::new(
             ir.metadata.name.clone(),
-            coelanox_core::format::ModelFormat::Onnx, // TODO: Get from IR
+            coelanox_core::format::ModelFormat::Onnx, // IR has no source_format; default Onnx (translator used)
             ir.metadata.input_shapes.iter().map(|s| s.dimensions.clone()).collect(),
             ir.metadata.output_shapes.iter().map(|s| s.dimensions.clone()).collect(),
             machine_code_size,

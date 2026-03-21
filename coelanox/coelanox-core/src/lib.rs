@@ -6,7 +6,7 @@
 //! ## Frontend SDK
 //!
 //! `coelanox-core` is the **Frontend SDK** for model translators (compiler frontends).
-//! Implement [`CoelanoxTranslator`] to add support for new model formats (ONNX, PyTorch, etc.).
+//! Implement [`CoelanoxTranslator`] to add support for new model formats (ONNX, etc.).
 //! See [`plugins`] and [`ir`] for the stable API.
 
 pub mod format;

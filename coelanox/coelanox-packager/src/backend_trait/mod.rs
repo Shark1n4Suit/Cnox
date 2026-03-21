@@ -1,7 +1,8 @@
-//! Backend Translators for COELANOX
-//! 
-//! This module provides the BackendTranslator trait interface.
-//! All concrete backend translator implementations have been removed - vendors will implement their own.
+//! Backend translator trait for hardware-specific code generation.
+//!
+//! Defines the interface vendors implement to translate IR to machine code.
+//! Packager uses in-tree translators (ONNX→IR) and CLF for code; no in-tree
+//! BackendTranslator implementations (GPU/NPU/etc. are vendor-provided).
 
 pub mod coelanox_operations;
 #[path = "trait.rs"]
@@ -27,18 +28,13 @@ use coelanox_core::{CoelanoxResult, CoelanoxError};
 pub struct BackendTranslatorFactory;
 
 impl BackendTranslatorFactory {
-    /// Create a backend translator for the specified hardware target
-    /// 
-    /// All concrete implementations have been removed - vendors must provide their own
-    /// backend translator implementations via dynamic library loading.
+    /// Create a backend translator for the specified hardware target.
+    /// Returns error; no in-tree implementations (vendors register via registry).
     pub fn create_translator(_target: HardwareTarget) -> CoelanoxResult<Box<dyn BackendTranslator>> {
-        // No default implementations - vendors must provide their own
         Err(CoelanoxError::UnsupportedHardwareTarget(HardwareTarget::Cpu))
     }
     
-    /// Get all supported hardware targets
-    /// 
-    /// Returns empty list - vendors must register their own translators
+    /// Supported hardware targets (empty; vendors register).
     pub fn supported_hardware_targets() -> Vec<HardwareTarget> {
         vec![]
     }
@@ -57,10 +53,7 @@ pub struct BackendTranslatorManager {
 }
 
 impl BackendTranslatorManager {
-    /// Create a new backend translator manager
-    /// 
-    /// No default translators are registered - vendors must provide their own
-    /// implementations via dynamic library loading and register them.
+    /// Create empty manager; vendors register translators via `register_custom_translator`.
     pub fn new() -> Self {
         let registry = BackendTranslatorRegistry::new();
         Self { registry }
@@ -71,7 +64,7 @@ impl BackendTranslatorManager {
         &self.registry
     }
     
-    /// Get mutable reference to the backend translator registry
+    /// Mutable access to the registry
     pub fn registry_mut(&mut self) -> &mut BackendTranslatorRegistry {
         &mut self.registry
     }
@@ -129,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_backend_translator_factory() {
-        // All concrete implementations removed - factory returns error
+        // Factory returns error; no in-tree BackendTranslator
         let cpu_translator = BackendTranslatorFactory::create_translator(HardwareTarget::Cpu);
         assert!(cpu_translator.is_err());
         

@@ -112,9 +112,10 @@ This document lists implemented and planned features for the current release. It
 ## 8. Code generation & executor
 
 ### Implemented
-- **CPU codegen** — x86-64; SIMD loop generation; stack-based buffer layout; operation codegen for supported ops.
-- **CLF mini-executor** — Parses binary execution plan; walks graph; dispatches to kernel blobs by op_id; single ABI (e.g. input/output/weights pointers + lengths).
+- **CLF codegen** — Packager maps IR OpType to CLF op_ids; `ClfReader::build_code_section(op_ids)` produces machine code blobs; code section stored in container.
+- **CLF mini-executor** — Parses binary execution plan; walks graph; dispatches to kernel blobs by op_id; single ABI (input/output/weights pointers + lengths).
 - **Executable memory** — Runtime allocates executable region (mmap/VirtualAlloc or Memory HAL); copies code; runs plan.
+- **Scalar path** — When no CLF/SIMD code, executor uses `coelanox-core` scalar ops (pure Rust).
 
 ### HALs (implemented, integration varies)
 - **Memory HAL** — Trait and registry; packager can use for backing (e.g. NVMe); runtime can use for executable allocation.
@@ -170,7 +171,7 @@ This document lists implemented and planned features for the current release. It
 | Security          | ✅ Hash, path/size limits, logging, Rust safety | Encryption, code signing |
 | Config & ops      | ✅ Env + file config, runbooks, workspace cap | — |
 | Observability     | ✅ Logging, audit, benchmark metrics | Prometheus, health endpoint |
-| Codegen / executor| ✅ CPU codegen, CLF mini-executor, Memory HAL | Protection HAL wired, chunk streaming |
+| Codegen / executor| ✅ CLF codegen, mini-executor, scalar fallback, Memory HAL | Protection HAL wired, chunk streaming |
 | Storage           | ✅ Compression, unified layout | Full tiering, ring buffer |
 | Platform          | ✅ Linux, Windows; x86_64 scalar + CLF | macOS tested; GPU/NPU via vendor |
 | Deployment        | ✅ Full CLI; extract (same-arch runtime binary) | extract --arm/--target (cross-arch) |

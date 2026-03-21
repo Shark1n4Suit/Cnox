@@ -1,5 +1,5 @@
-//! Tests for Task 1.1: Security Hash & Three-Command Architecture
-//! 
+//! Tests for security hash and container validation.
+//!
 //! These tests verify that:
 //! - SHA-256 hash is calculated during packaging
 //! - Hash verification works correctly

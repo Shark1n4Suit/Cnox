@@ -4,8 +4,8 @@
 //! The BackendManager discovers .clfc files from search paths for use during packaging
 //! and container execution.
 //!
-//! **Note:** This is used at package-time by the packager, not at runtime. The location in
-//! `coelanox-orchestrator` - backends for container execution and orchestration.
+//! **Note:** Used at package-time by the packager for CLF discovery. The orchestrator
+//! also holds runtime execution backends (see `execution_backend`, `fallback`).
 
 use coelanox_core::format::HardwareTarget;
 use coelanox_core::{CoelanoxError, CoelanoxResult};
@@ -36,7 +36,7 @@ pub struct BackendInfo {
 }
 
 impl BackendInfo {
-    /// Check backend health (placeholder for future implementation)
+    /// Check backend health (MVP: assumes healthy; future: load library, validate interface, run health check)
     pub fn check_health(&self) -> CoelanoxResult<BackendHealth> {
         // For MVP, assume all discovered backends are healthy
         // In future, this will:
@@ -373,7 +373,7 @@ impl BackendManager {
         Ok(Vec::new())
     }
     
-    /// Select backend using fallback strategy (placeholder for runtime)
+    /// Select backend using fallback strategy (package-time only; runtime uses ExecutionBackend registry)
     pub fn select_backend_with_fallback(
         &self,
         strategy: &BackendSelectionStrategy,

@@ -1,5 +1,5 @@
-//! Tests for Task 1.3: Backend Manager & AOT Binary Selection
-//! 
+//! Tests for Backend Manager and AOT binary selection.
+//!
 //! These tests verify that:
 //! - BackendManager can be created and initialized
 //! - Backend discovery works (even if no backends found)

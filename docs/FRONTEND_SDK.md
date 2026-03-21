@@ -124,6 +124,7 @@ Pin to `coelanox-core` semver. Same major version for IR compatibility.
 The packager gates translators via Cargo features. To build a smaller binary:
 
 ```bash
+cd coelanox
 # ONNX only
 cargo build -p coelanox-packager --no-default-features --features translator-onnx
 
@@ -134,7 +135,7 @@ cargo build -p coelanox-packager --no-default-features --features translator-ber
 cargo build -p coelanox-packager --no-default-features --features translator-resnet
 ```
 
-Default enables all three. See `coelanox-packager/Cargo.toml` for feature definitions.
+Default enables all three. See `coelanox/coelanox-packager/Cargo.toml` for feature definitions.
 
 ---
 

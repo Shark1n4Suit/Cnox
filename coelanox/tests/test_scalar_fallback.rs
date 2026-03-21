@@ -67,8 +67,7 @@ fn test_arithmetic_add_fallback() {
     
     let input_data = vec![1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32, 9.0f32, 10.0f32];
     
-    // Note: Execution may fail if IR structure doesn't match expected format
-    // This test verifies that fallback path exists and is callable
+    // Execution may fail on IR mismatch; verifies fallback path is invoked.
     let _result = runtime.execute("test", &input_data);
     // Result may fail due to IR structure, but fallback should be attempted
 }

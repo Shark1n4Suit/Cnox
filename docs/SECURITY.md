@@ -195,7 +195,7 @@ coelanox run container.cnox --input data.bin
 
 ### File System Security
 
-**Location**: `coelanox-runtime/src/security.rs`
+**Location**: Path validation in `coelanox-orchestrator` and `coelanox-cli`; format validation in `coelanox-core/src/format.rs`
 
 **Protections**:
 - **Path Traversal**: Blocks `..` patterns in paths

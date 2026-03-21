@@ -173,6 +173,20 @@ The runtime enforces the deadline between execution steps (SIMD plan steps or sc
 
 ---
 
+## Deployment targets
+
+Same `.cnox` artifact works across environments; verify once, deploy per target.
+
+| Environment | Container cache | Notes |
+|-------------|-----------------|-------|
+| **Server** | `Arc<CoelanoxContainer>` per entry; TTL and max_containers eviction | Warm cache holds decompressed weights; `COELANOX_MAX_CONTAINERS` and `COELANOX_CONTAINER_CACHE_TTL_SECS` control eviction |
+| **Edge** | Same runtime, typically one/few containers | Same verify-then-run flow; optional `coelanox extract` for runtime-only binary |
+| **Embedded** | No runtime cache | Minimal shim: load `.cnox`, parse plan, run; container is self-contained (IR + weights + code) |
+
+Server uses Arc sharing for loaded containers so requests get pointer clones, not full copies. See `coelanox-orchestrator/src/runtime.rs` for implementation.
+
+---
+
 ## Pre-deployment checklist
 
 - [ ] Run `coelanox verify --file <container>` on every container before deploy.
