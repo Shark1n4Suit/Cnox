@@ -2,7 +2,7 @@
 
 Complete reference for all commands and options.
 
-- **CLI version:** 0.6.0-beta  
+- **CLI version:** Run `coelanox --version` for current version
 - **Invocation:** `coelanox [COMMAND] [OPTIONS]`
 
 ---

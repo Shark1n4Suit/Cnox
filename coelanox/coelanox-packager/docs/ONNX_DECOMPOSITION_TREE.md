@@ -84,7 +84,7 @@ Other
   Identity                 →  (rewire: output name → input tensor; no node)
 ```
 
-**Reshape shape input:** ONNX Reshape has two inputs: `data` and `shape`. The `shape` input is often an int64 initializer. The translator skips int64/int32 initializers as weights, stores them as shape constants, and adds the shape as an IR attribute `"shape"` (IntArray) on the Reshape node. See [FRONTEND_SDK.md](../../../docs/FRONTEND_SDK.md) §4.
+**Reshape shape input:** ONNX Reshape has two inputs: `data` and `shape`. The `shape` input is often an int64 initializer. The translator skips int64/int32 initializers as weights, stores them as shape constants, and adds the shape as an IR attribute `"shape"` (IntArray) on the Reshape node. See [DEVELOPER.md](../../docs/DEVELOPER.md).
 
 ---
 

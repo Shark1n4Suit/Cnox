@@ -36,4 +36,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.6.0-beta] and earlier
 
-- Initial beta: container format (`.cnox`), package/verify/run CLI, scalar and CLF execution paths, backend discovery, ONNX translator, security hash verification. See [docs/FEATURES.md](docs/FEATURES.md) and [roadmaps/PRODUCTION_MVP_ROADMAP.md](roadmaps/PRODUCTION_MVP_ROADMAP.md) for details.
+- Initial beta: container format (`.cnox`), package/verify/run CLI, scalar and CLF execution paths, backend discovery, ONNX translator, security hash verification. See [docs/REFERENCE](docs/REFERENCE.md) and [roadmaps/PRODUCTION_MVP_ROADMAP](roadmaps/PRODUCTION_MVP_ROADMAP.md) for details.

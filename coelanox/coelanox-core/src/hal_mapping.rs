@@ -2,7 +2,7 @@
 //!
 //! Connects OpType/CLF (code) and container regions (code, weights, intermediates)
 //! to Memory HAL (allocation/backing) and Protection HAL (permissions).
-//! See [docs/HAL_MAPPING.md](../../../docs/HAL_MAPPING.md).
+//! See docs/ARCHITECTURE.md "HAL mapping" section.
 
 use crate::protection_hal::RegionPermissions;
 

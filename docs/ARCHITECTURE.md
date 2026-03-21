@@ -2,7 +2,7 @@
 
 ## Overview
 
-COELANOX is a universal binary container system for AI models that provides secure, fast, and hardware-optimized model deployment. This document describes the architecture of the COELANOX system, focusing on Phase 1 features: security hash, backend manager, and AOT selection.
+COELANOX is a universal binary container system for AI models that provides secure, fast, and hardware-optimized model deployment. This document describes the architecture of the COELANOX system: security hash, backend manager, and AOT selection.
 
 ## Three-Command Architecture
 
@@ -13,7 +13,7 @@ COELANOX uses a three-command architecture for defense-in-depth security:
 **Purpose**: Create a COELANOX container from a source model.
 
 **Process**:
-1. Load source model (ONNX, TensorFlow, PyTorch, etc.)
+1. Load source model (ONNX, BERT bundle, ResNet-tiny-MNIST; translator plugins)
 2. Translate to Universal IR
 3. Optimize IR for target hardware
 4. Generate machine code for target hardware
@@ -24,7 +24,7 @@ COELANOX uses a three-command architecture for defense-in-depth security:
 **Key Features**:
 - AOT (Ahead-of-Time) compilation
 - Hardware-specific code generation
-- Weight compression (Zstd/LZ4)
+- Weight storage (Zstd/LZ4 at package time; runtime decompresses or passthrough for None)
 - Security hash calculation
 
 **Location**: `coelanox-packager/src/lib.rs`
@@ -282,7 +282,7 @@ pub struct BackendMetadata {
 ├─────────────────────────────────────────────────────────┤
 │  Compressed Weights Length (4 bytes)                     │
 ├─────────────────────────────────────────────────────────┤
-│  Compressed Weights (binary, Zstd/LZ4)                  │
+│  Compressed Weights (binary; Zstd/LZ4 or uncompressed)   │
 ├─────────────────────────────────────────────────────────┤
 │  IR Data Length (4 bytes)                                │
 ├─────────────────────────────────────────────────────────┤
@@ -418,9 +418,38 @@ coelanox-cli
    - Hot-swappable backends
    - Backend health monitoring
 
+## Codebase map
+
+| Crate | Purpose | Key files |
+|-------|---------|-----------|
+| coelanox-core | Format, IR, scalar ops | `format.rs`, `ir.rs`, `scalar/` |
+| coelanox-packager | Translate → optimize → .cnox | `lib.rs`, `translators/`, `optimizers/` |
+| coelanox-orchestrator | Load, execute (CLF or scalar) | `runtime.rs`, `fallback/` |
+| coelanox-executor | Plan walker, kernel dispatch | `lib.rs` |
+| coelanox-clf | CLF reader, op_id registry | `reader.rs`, `op_registry.rs` |
+| coelanox-cli | Commands | `main.rs` |
+
+## Binary layout (byte-accurate)
+
+| Section | Offset | Size | Description |
+|--------|--------|------|-------------|
+| Header | 0 | 76 | Magic COEL, version, flags, sizes, SHA-256 hash |
+| Manifest | 76 | 4+L | Length (u32 LE) + JSON |
+| Code | 76+4+L | manifest.model_size | Machine code (CLF blobs or empty) |
+| Weights | next | 4+W | Length + bytes |
+| IR data | next | 4+I | Length + bincode OptimizedIR |
+| NVMe backing | next | 8+N | Optional |
+| CLFMM / CLFMP | next | 8+size | Optional HAL blobs |
+
+## HAL mapping (OpType → CLF → region kinds)
+
+OpType (IR) → CLF op_id → kernel blob. Region kinds: **Code** (executable), **Weights** (read-only), **Intermediates** (RW). Protection HAL applies code=X, weights=R, intermediates=RW. See `coelanox-core/src/hal_mapping.rs`.
+
+---
+
 ## References
 
-- [Security Documentation](SECURITY.md)
+- [Operations](OPERATIONS.md) — Config, security, runbooks
+- [Reference](REFERENCE.md) — Product summary, features
 - [Production MVP Roadmap](../roadmaps/PRODUCTION_MVP_ROADMAP.md)
-- [COELANOX Reference](../COELANOX_REFERENCE.md)
 

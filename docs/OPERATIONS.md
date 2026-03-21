@@ -1,6 +1,16 @@
 # COELANOX Operations Guide
 
-This document covers production deployment, configuration, runbooks, and operational procedures for the COELANOX runtime and CLI.
+Configuration, security, deployment, and runbooks for the COELANOX runtime and CLI.
+
+---
+
+## Security
+
+**Integrity** — SHA-256 hash over full container; verified by `verify` and before `run`. Any modification invalidates the hash.
+
+**Signing** — Ed25519 optional: `keygen` (keypair), `package --signing-key`, `verify`/`run`/`benchmark --trusted-key`. Use `--require-signature` to enforce provenance.
+
+**Path & size limits** — Path traversal (`..`) blocked; `COELANOX_ALLOW_ABSOLUTE_PATHS=false` in production; `COELANOX_MAX_CONTAINER_SIZE_BYTES`, `COELANOX_MAX_INPUT_SIZE_BYTES` enforced. See [ARCHITECTURE](ARCHITECTURE.md) for hash flow.
 
 ---
 
@@ -100,6 +110,19 @@ The root and these subdirectories are created automatically when the default pat
 **Override:** Set `COELANOX_CLF_PATH` to a directory (the new root for the four subdirectories) or to the path of a single `.clfc` file (its parent directory is used for discovery). Use this for development or custom installs.
 
 **Additional paths:** Set `COELANOX_BACKEND_PATH` to a colon-separated list of directories to search in addition to the default or overridden CLF path.
+
+---
+
+## FAQ
+
+**Q: Where does COELANOX look for CLF backends?**  
+A: `~/.coelanox/clf/clfc/` by default. Override with `COELANOX_CLF_PATH`. See Backend discovery above.
+
+**Q: Why is execution slow?**  
+A: If no CLF/SIMD code was packaged (or CLF path is wrong), the runtime uses scalar fallback. Run `coelanox env` to check; ensure `.clfc` files are in the discovery path if you expect SIMD.
+
+**Q: How do I get the version?**  
+A: `coelanox --version` for CLI; crate versions are in `coelanox/*/Cargo.toml`.
 
 ---
 
@@ -216,6 +239,6 @@ COELANOX is **ready for production in a “batch or scripted” sense**: verify 
 
 ## References
 
-- [SECURITY.md](SECURITY.md) — Security model and guarantees
+- Security covered in this document (hash, signing, limits)
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System design
 - [Production MVP Roadmap](../roadmaps/PRODUCTION_MVP_ROADMAP.md) — Roadmap and phases

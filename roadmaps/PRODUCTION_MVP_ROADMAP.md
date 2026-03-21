@@ -393,7 +393,7 @@ It does **not** allocate memory for containers; each container pulls its own via
   - Coverage >90% for critical code
 
 **3.2 Code Review & Documentation** ✅ **COMPLETED**
-- **Status**: ✅ Documentation created: `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/CODE_REVIEW_PHASE1.md`
+- **Status**: ✅ Documentation created: `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md` (security section)
 - **Tasks**:
   - Review all changes for correctness
   - Update architecture documentation
@@ -2422,7 +2422,7 @@ Items here are non-blocking; consider when touching related code or when package
 ## 📚 **References**
 
 ### **Architecture Documents**
-- `COELANOX_REFERENCE.md` - Architecture reference
+- `docs/REFERENCE.md` - Product and format reference
 - `coelanox-sdk/docs/ARCHITECTURE.md` - SDK architecture
 - `README.md` - Project overview
 

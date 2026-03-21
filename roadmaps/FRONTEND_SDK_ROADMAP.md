@@ -24,8 +24,8 @@ The frontend needs the same: a **structured contract** for translators. Output i
 | **Translators** | Internal to packager (BERT, ONNX, ResNet); no third-party path |
 | **Discovery** | None – all compiled in via `load_default_plugins()` |
 | **SDK crate** | None – no `coelanox-translator-sdk` or formal frontend SDK |
-| **Documentation** | `docs/FRONTEND_SDK.md` — "How to build a translator" guide |
-| **IR schema** | Documented in `docs/FRONTEND_SDK.md` as SDK output |
+| **Documentation** | `docs/DEVELOPER.md` — "How to build a translator" guide |
+| **IR schema** | Documented in `docs/DEVELOPER.md` as SDK output |
 
 ---
 
@@ -84,7 +84,7 @@ The frontend needs the same: a **structured contract** for translators. Output i
 
 ### 2.1 Create "How to Build a Translator" guide ✅ DONE
 
-**Location:** `docs/FRONTEND_SDK.md`
+**Location:** `docs/DEVELOPER.md`
 
 **Contents:**
 - [x] Trait contract (CoelanoxTranslator)
@@ -97,7 +97,7 @@ The frontend needs the same: a **structured contract** for translators. Output i
 
 ### 2.2 IR schema documentation ✅ DONE
 
-**Location:** Section in `docs/FRONTEND_SDK.md`
+**Location:** Section in `docs/DEVELOPER.md`
 
 **Contents:**
 - [x] UniversalIR fields
@@ -280,5 +280,5 @@ Plugin and host must agree on `coelanox-core` (same major version). Optional han
 - `coelanox-core/src/ir.rs` — UniversalIR, OpType
 - `coelanox-packager/src/plugins/mod.rs` — PluginManager
 - `coelanox-packager/src/translators/` — In-tree translators
-- `docs/FEATURES.md` — Model input / plugin system
+- `docs/REFERENCE.md` — Model input / plugin system
 - `roadmaps/PRODUCTION_MVP_ROADMAP.md` — Frontend SDK overview (Section 1797+)

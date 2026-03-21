@@ -130,6 +130,6 @@ jobs:
             coelanox run -f model.cnox -o out.json
             ```
 
-            See [docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}/docs/INSTALL.md) for details.
+            See [docs/QUICKSTART](https://github.com/${{ github.repository }}/blob/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}/docs/QUICKSTART.md) for details.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

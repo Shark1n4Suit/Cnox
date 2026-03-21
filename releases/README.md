@@ -2,7 +2,7 @@
 
 Pre-built binaries (Linux x86_64, Windows x86_64). No Rust required.
 
-See **[docs/INSTALL.md](../docs/INSTALL.md)** for full installation instructions.
+See **[docs/QUICKSTART](../docs/QUICKSTART.md)** for install and usage.
 
 **Quick (Linux):**
 ```bash

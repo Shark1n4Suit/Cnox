@@ -41,13 +41,13 @@ CLI commands: `package`, `validate`, `keygen`, `verify`, `run`, `info`, `benchma
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Components:** `coelanox-core` (format, IR, security, scalar ops, **Frontend SDK** for translators), `coelanox-packager` (translate, optimize, compress), `coelanox-orchestrator` (load, execute, backends), `coelanox-cli` (commands). See [docs/FRONTEND_SDK.md](docs/FRONTEND_SDK.md) to build a translator.
+**Components:** `coelanox-core` (format, IR, scalar ops), `coelanox-packager` (translate, optimize), `coelanox-orchestrator` (load, execute), `coelanox-cli` (commands). See [docs/DEVELOPER](docs/DEVELOPER.md) to build a translator.
 
 ---
 
 ## Security
 
-- **Integrity** — SHA-256 over full container at package time; verified by `verify` and again before `run`. See [docs/SECURITY.md](docs/SECURITY.md).
+- **Integrity** — SHA-256 over full container at package time; verified by `verify` and again before `run`. See [docs/OPERATIONS](docs/OPERATIONS.md).
 - **Validation** — Path and format checks; configurable limits (container size, memory, timeouts). See [docs/OPERATIONS.md](docs/OPERATIONS.md).
 - **Implementation** — Rust; memory-safe core with explicit validation at load and execution boundaries.
 
@@ -79,7 +79,7 @@ coelanox <command> ...
 
 1. Open [Releases](https://github.com/coelanox-ai/coelanox/releases) and download the archive for your platform (`coelanox-linux-x86_64.tar.gz` or `coelanox-windows-x86_64.zip`).
 2. Extract the archive. **Linux/macOS:** From the extracted folder run `./install.sh` to install into `/usr/local/bin`, or add that folder to your `PATH`. **Windows:** Add the folder containing `coelanox.exe` to your `PATH`.
-3. Run `coelanox --help`. See [docs/INSTALL.md](docs/INSTALL.md) for details.
+3. Run `coelanox --help`. See [docs/QUICKSTART](docs/QUICKSTART.md) for details.
 
 ---
 
@@ -88,12 +88,13 @@ coelanox <command> ...
 | Document | Description |
 |----------|-------------|
 | [docs/README.md](docs/README.md) | Documentation index |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, three-command model, backend and container layout |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Configuration, deployment targets, runbooks, pre-deployment checklist |
-| [docs/SECURITY.md](docs/SECURITY.md) | Security architecture, hash verification, best practices |
-| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | CLI command tree and options |
-| [COELANOX_REFERENCE.md](COELANOX_REFERENCE.md) | Product and format reference |
-| [CHANGELOG.md](CHANGELOG.md) | Version history and notable changes |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | **Start here** — Install, package → verify → run |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | Product summary, `.cnox` format, status |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, codebase map, binary layout |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Config, security, runbooks |
+| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | CLI commands and options |
+| [docs/DEVELOPER.md](docs/DEVELOPER.md) | Translators, CLF integration |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
 
 ---
 
