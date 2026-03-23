@@ -37,7 +37,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::fs::File;
 use std::cell::RefCell;
 use uuid::Uuid;
-use memmap2::{Advice, Mmap};
+#[cfg(unix)]
+use memmap2::Advice;
+use memmap2::Mmap;
 
 thread_local! {
     static EXECUTION_DEADLINE: RefCell<Option<Instant>> = RefCell::new(None);
@@ -1167,7 +1169,8 @@ impl CoelanoxRuntime {
         let container = {
             let file = File::open(path).map_err(CoelanoxError::FileSystem)?;
             let mmap = unsafe { Mmap::map(&file) }.map_err(CoelanoxError::FileSystem)?;
-            // Hint that we will access the whole mapping (hash + parse); helps kernel readahead.
+            // Hint that we will access the whole mapping (hash + parse); helps kernel readahead (Unix-only).
+            #[cfg(unix)]
             let _ = mmap.advise(Advice::WillNeed);
             verify_security_hash_from_slice(&mmap).map_err(|e| {
                 error!(path = %path, err = %e, "security: container integrity verification failed (hash mismatch or tampering)");
@@ -1244,6 +1247,7 @@ impl CoelanoxRuntime {
         let container = {
             let file = File::open(path).map_err(CoelanoxError::FileSystem)?;
             let mmap = unsafe { Mmap::map(&file) }.map_err(CoelanoxError::FileSystem)?;
+            #[cfg(unix)]
             let _ = mmap.advise(Advice::WillNeed);
             if is_container_signed_from_slice(&mmap) {
                 warn!("Container is signed but loaded without verification (hash and signature not checked). Use trusted key for provenance.");
