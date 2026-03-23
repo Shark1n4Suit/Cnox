@@ -223,13 +223,13 @@ impl SystemEnvironment {
         #[cfg(target_os = "windows")]
         {
             // Windows detection would require WMI calls
-            Ok("Windows CPU".to_string())
+            return Ok("Windows CPU".to_string());
         }
         
         #[cfg(target_os = "macos")]
         {
             // macOS detection would require sysctl calls
-            Ok("macOS CPU".to_string())
+            return Ok("macOS CPU".to_string());
         }
         
         Ok("Unknown".to_string())
