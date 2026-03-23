@@ -19,11 +19,12 @@ pub fn relu(
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
-            .for_each(|(o, &x)| *o = if x > 0.0 { x } else { 0.0 });
+            .for_each(|(o, &x)| *o = x.max(0.0));
     } else {
-        for i in 0..len {
-            output[i] = if input[i] > 0.0 { input[i] } else { 0.0 };
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.max(0.0));
     }
     Ok(())
 }
@@ -39,9 +40,10 @@ pub fn sigmoid(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = 1.0 / (1.0 + (-x).exp()));
     } else {
-        for i in 0..len {
-            output[i] = 1.0 / (1.0 + (-input[i]).exp());
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = 1.0 / (1.0 + (-x).exp()));
     }
     Ok(())
 }
@@ -57,9 +59,10 @@ pub fn tanh(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.tanh());
     } else {
-        for i in 0..len {
-            output[i] = input[i].tanh();
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.tanh());
     }
     Ok(())
 }
@@ -128,17 +131,38 @@ pub fn softmax(
         return Ok(());
     }
 
-    // Whole-tensor softmax (default).
-    let max = input[..len].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-    let mut sum = 0.0f32;
-    for i in 0..len {
-        let e = (input[i] - max).exp();
-        output[i] = e;
-        sum += e;
-    }
-    if sum > 0.0 {
+    // Whole-tensor softmax: max, then exp+sum in one pass, then normalize
+    let (_max, sum) = if len >= PAR_THRESHOLD {
+        let max = input[..len]
+            .par_iter()
+            .fold(|| f32::NEG_INFINITY, |a, &b| a.max(b))
+            .reduce(|| f32::NEG_INFINITY, |a, b| a.max(b));
+        let sum: f32 = output[..len]
+            .par_iter_mut()
+            .zip(input[..len].par_iter())
+            .map(|(o, &x)| {
+                let e = (x - max).exp();
+                *o = e;
+                e
+            })
+            .sum();
+        (max, sum)
+    } else {
+        let max = input[..len].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let mut sum = 0.0f32;
         for i in 0..len {
-            output[i] /= sum;
+            let e = (input[i] - max).exp();
+            output[i] = e;
+            sum += e;
+        }
+        (max, sum)
+    };
+    if sum > 0.0 {
+        let inv_sum = 1.0 / sum;
+        if len >= PAR_THRESHOLD {
+            output[..len].par_iter_mut().for_each(|o| *o *= inv_sum);
+        } else {
+            output[..len].iter_mut().for_each(|o| *o *= inv_sum);
         }
     }
     Ok(())
@@ -150,15 +174,16 @@ pub fn gelu(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
+    const INV_SQRT_2: f32 = 0.7071067811865475; // 1/sqrt(2)
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
-            .for_each(|(o, &x)| *o = 0.5 * x * (1.0 + erf(x / std::f32::consts::SQRT_2)));
+            .for_each(|(o, &x)| *o = 0.5 * x * (1.0 + erf(x * INV_SQRT_2)));
     } else {
-        for i in 0..len {
-            let x = input[i];
-            output[i] = 0.5 * x * (1.0 + erf(x / std::f32::consts::SQRT_2));
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = 0.5 * x * (1.0 + erf(x * INV_SQRT_2)));
     }
     Ok(())
 }
@@ -192,10 +217,10 @@ pub fn swish(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x / (1.0 + (-x).exp()));
     } else {
-        for i in 0..len {
-            let x = input[i];
-            output[i] = x / (1.0 + (-x).exp());
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x / (1.0 + (-x).exp()));
     }
     Ok(())
 }
@@ -210,7 +235,14 @@ pub fn log_softmax(
     if len == 0 {
         return Ok(());
     }
-    let max = input[..len].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let max = if len >= PAR_THRESHOLD {
+        input[..len]
+            .par_iter()
+            .fold(|| f32::NEG_INFINITY, |a, &b| a.max(b))
+            .reduce(|| f32::NEG_INFINITY, |a, b| a.max(b))
+    } else {
+        input[..len].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b))
+    };
     let sum: f32 = if len >= PAR_THRESHOLD {
         input.par_iter().take(len).map(|&x| (x - max).exp()).sum()
     } else {
@@ -221,9 +253,10 @@ pub fn log_softmax(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x - log_sum);
     } else {
-        for i in 0..len {
-            output[i] = input[i] - log_sum;
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x - log_sum);
     }
     Ok(())
 }

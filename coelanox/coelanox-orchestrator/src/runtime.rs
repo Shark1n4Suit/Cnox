@@ -76,6 +76,8 @@ const WORKSPACE_POOL_CAP: usize = 2;
 struct WarmCacheEntry {
     weights: Vec<f32>,
     ir: Option<OptimizedIR>,
+    /// Time (ms) to decompress on first load; used by benchmark when cache hit.
+    decompress_time_ms: Option<u64>,
 }
 
 /// Percentile from sorted latencies (0.0..=100.0). Returns 0 if empty.
@@ -2575,10 +2577,16 @@ impl CoelanoxRuntime {
                 }));
             }
         }
+        let decompress_start = std::time::Instant::now();
         let weights = container.decompress_weights()?;
+        let decompress_time_ms = decompress_start.elapsed().as_millis() as u64;
         lock_rw_write(&self.warm_cache)?.insert(
             container_name.to_string(),
-            WarmCacheEntry { weights: weights.clone(), ir: None },
+            WarmCacheEntry {
+                weights: weights.clone(),
+                ir: None,
+                decompress_time_ms: Some(decompress_time_ms),
+            },
         );
         Ok(Some(ContainerWarmData {
             decompressed_weights: weights,
@@ -2607,16 +2615,33 @@ impl CoelanoxRuntime {
         let mut cache = lock_rw_write(&self.warm_cache)?;
         let (weights, ir) = if let Some(entry) = cache.get(container_name) {
             let weights = entry.weights.clone();
+            let decompress_ms = entry.decompress_time_ms;
             let ir = match &entry.ir {
                 Some(ir) => ir.clone(),
                 None => deserialize_optimized_ir(&container.ir_data)?,
             };
-            cache.insert(container_name.to_string(), WarmCacheEntry { weights: weights.clone(), ir: Some(ir.clone()) });
+            cache.insert(
+                container_name.to_string(),
+                WarmCacheEntry {
+                    weights: weights.clone(),
+                    ir: Some(ir.clone()),
+                    decompress_time_ms: decompress_ms,
+                },
+            );
             (weights, ir)
         } else {
+            let decompress_start = std::time::Instant::now();
             let weights = container.decompress_weights()?;
+            let decompress_time_ms = decompress_start.elapsed().as_millis() as u64;
             let ir = deserialize_optimized_ir(&container.ir_data)?;
-            cache.insert(container_name.to_string(), WarmCacheEntry { weights: weights.clone(), ir: Some(ir.clone()) });
+            cache.insert(
+                container_name.to_string(),
+                WarmCacheEntry {
+                    weights: weights.clone(),
+                    ir: Some(ir.clone()),
+                    decompress_time_ms: Some(decompress_time_ms),
+                },
+            );
             (weights, ir)
         };
         Ok(Some(ContainerWarmData {
@@ -3054,11 +3079,20 @@ impl CoelanoxRuntime {
         self.execute_with_backend(container_name, &input_data, backend)?;
         let true_cold_time_us = lock_mutex(&self.stats)?.avg_execution_time;
 
-        // Time single decompress and get weights size (after true cold so report has these metrics)
-        let decompress_start = std::time::Instant::now();
-        let weights = container.decompress_weights()?;
-        let decompress_time_ms = decompress_start.elapsed().as_millis() as u64;
-        let weights_bytes = weights.len() * std::mem::size_of::<f32>();
+        // Get weights size and decompress time from cache (populated by true cold run above)
+        let (weights_bytes, decompress_time_ms) = {
+            let cache = lock_rw_read(&self.warm_cache)?;
+            if let Some(entry) = cache.get(container_name) {
+                (
+                    entry.weights.len() * std::mem::size_of::<f32>(),
+                    entry.decompress_time_ms.unwrap_or(0),
+                )
+            } else {
+                return Err(CoelanoxError::Runtime(
+                    "Benchmark: warm cache missing after true cold run".to_string(),
+                ));
+            }
+        };
 
         // Warm up
         for _ in 0..WARM_UP_RUNS {

@@ -20,9 +20,10 @@ pub fn sqrt(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.sqrt());
     } else {
-        for i in 0..len {
-            output[i] = input[i].sqrt();
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.sqrt());
     }
     Ok(())
 }
@@ -45,9 +46,10 @@ pub fn pow(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.powf(exponent));
     } else {
-        for i in 0..len {
-            output[i] = input[i].powf(exponent);
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.powf(exponent));
     }
     Ok(())
 }
@@ -63,9 +65,10 @@ pub fn cos(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.cos());
     } else {
-        for i in 0..len {
-            output[i] = input[i].cos();
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.cos());
     }
     Ok(())
 }
@@ -81,9 +84,10 @@ pub fn sin(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.sin());
     } else {
-        for i in 0..len {
-            output[i] = input[i].sin();
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.sin());
     }
     Ok(())
 }
@@ -99,9 +103,10 @@ pub fn exp(
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.exp());
     } else {
-        for i in 0..len {
-            output[i] = input[i].exp();
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.exp());
     }
     Ok(())
 }
@@ -112,14 +117,16 @@ pub fn log(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
+    const EPS: f32 = 1e-8;
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
         output.par_iter_mut().take(len).zip(input.par_iter().take(len))
-            .for_each(|(o, &x)| *o = (x + f32::EPSILON).ln());
+            .for_each(|(o, &x)| *o = (x + EPS).ln());
     } else {
-        for i in 0..len {
-            output[i] = (input[i] + f32::EPSILON).ln();
-        }
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = (x + EPS).ln());
     }
     Ok(())
 }

@@ -21,8 +21,24 @@ pub fn batch_norm(
         .and_then(|a| match a { crate::ir::Attribute::Float(f) => Some(*f), _ => None })
         .unwrap_or(1e-5);
     let len = input.len().min(output.len());
-    let mean = input.iter().sum::<f32>() / len as f32;
-    let var = input.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / len as f32 + epsilon;
+    // Single pass: mean and E[x^2] for var = E[x^2] - mean^2
+    let (sum_x, sum_x2) = if len >= PAR_THRESHOLD {
+        input[..len]
+            .par_iter()
+            .fold(
+                || (0.0f32, 0.0f32),
+                |(s, s2), &x| (s + x, s2 + x * x),
+            )
+            .reduce(|| (0.0, 0.0), |(a, a2), (b, b2)| (a + b, a2 + b2))
+    } else {
+        let (s, s2) = input[..len]
+            .iter()
+            .fold((0.0f32, 0.0f32), |(s, s2), &x| (s + x, s2 + x * x));
+        (s, s2)
+    };
+    let n = len as f32;
+    let mean = sum_x / n;
+    let var = sum_x2 / n - mean * mean + epsilon;
     let std_inv = 1.0 / var.sqrt();
     let gamma = weights.get(0).copied().unwrap_or(1.0);
     let beta = weights.get(1).copied().unwrap_or(0.0);
@@ -88,12 +104,17 @@ pub fn layer_norm(
     }
 
     let num_rows = len / h;
+    let h_f = h as f32;
     if num_rows >= PAR_THRESHOLD / h.max(1) {
         output.par_chunks_mut(h)
             .zip(input.par_chunks(h))
             .for_each(|(row_out, row_in): (&mut [f32], &[f32])| {
-                let mean: f32 = row_in.iter().sum::<f32>() / h as f32;
-                let var: f32 = row_in.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / h as f32 + epsilon;
+                // Single pass: sum and sum of squares for var = E[x^2] - mean^2
+                let (sum_x, sum_x2): (f32, f32) = row_in
+                    .iter()
+                    .fold((0.0, 0.0), |(s, s2), &x| (s + x, s2 + x * x));
+                let mean = sum_x / h_f;
+                let var = sum_x2 / h_f - mean * mean + epsilon;
                 let std_inv = 1.0 / var.sqrt();
                 for i in 0..h {
                     row_out[i] = gamma[i] * (row_in[i] - mean) * std_inv + beta[i];
@@ -106,8 +127,11 @@ pub fn layer_norm(
             let row_in = &input[start..end];
             let row_out = &mut output[start..end];
 
-            let mean: f32 = row_in.iter().sum::<f32>() / h as f32;
-            let var: f32 = row_in.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / h as f32 + epsilon;
+            let (sum_x, sum_x2): (f32, f32) = row_in
+                .iter()
+                .fold((0.0, 0.0), |(s, s2), &x| (s + x, s2 + x * x));
+            let mean = sum_x / h_f;
+            let var = sum_x2 / h_f - mean * mean + epsilon;
             let std_inv = 1.0 / var.sqrt();
 
             for i in 0..h {

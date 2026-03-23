@@ -694,7 +694,7 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
     println!("Header size: {} bytes", coelanox_core::format::COELANOX_HEADER_SIZE);
     println!("Manifest size: ~{} bytes", serde_json::to_string(&container.manifest).unwrap_or_default().len());
     println!("Machine code size: {} bytes", container.optimized_code.len());
-    println!("Compressed weights size: {} bytes", container.compressed_weights.len());
+    println!("Compressed weights size: {} bytes", container.compressed_weights_len());
     println!("IR data size: {} bytes", container.ir_data.len());
     if let Some(elements) = container.manifest.workspace_required_elements {
         let mb = (elements * 4 + 1024 * 1024 - 1) / (1024 * 1024);
@@ -1053,7 +1053,7 @@ fn debug_command(
     println!("Input shapes: {:?}", container_info.manifest.input_shapes);
     println!("Output shapes: {:?}", container_info.manifest.output_shapes);
     println!("Machine code size: {} bytes", container_info.optimized_code.len());
-    println!("Compressed weights size: {} bytes", container_info.compressed_weights.len());
+    println!("Compressed weights size: {} bytes", container_info.compressed_weights_len());
     println!();
     
     // Load input data
@@ -1121,7 +1121,7 @@ fn debug_command(
                     "input_shapes": container_info.manifest.input_shapes,
                     "output_shapes": container_info.manifest.output_shapes,
                     "machine_code_size": container_info.optimized_code.len(),
-                    "compressed_weights_size": container_info.compressed_weights.len(),
+                    "compressed_weights_size": container_info.compressed_weights_len(),
                 },
                 "output": result,
             });
@@ -1150,7 +1150,7 @@ fn debug_command(
                     "input_shapes": container_info.manifest.input_shapes,
                     "output_shapes": container_info.manifest.output_shapes,
                     "machine_code_size": container_info.optimized_code.len(),
-                    "compressed_weights_size": container_info.compressed_weights.len(),
+                    "compressed_weights_size": container_info.compressed_weights_len(),
                 },
             });
             

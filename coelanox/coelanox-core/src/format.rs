@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use sha2::{Sha256, Digest};
-use zerocopy::Ref;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
@@ -546,8 +545,10 @@ pub struct CoelanoxContainer {
     pub manifest: CoelanoxManifest,
     /// Optimized machine code
     pub optimized_code: Vec<u8>,
-    /// Compressed model weights
-    pub compressed_weights: Vec<u8>,
+    /// Compressed model weights. Wrapped in Arc+Mutex so runtime can release after first decompress
+    /// to avoid holding both compressed and decompressed in memory (~500MB+ savings for BERT).
+    #[serde(skip)]
+    pub compressed_weights: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
     /// Compression type used for weights
     pub compression_type: CompressionType,
     /// IR data (serialized OptimizedIR using bincode)
@@ -652,7 +653,7 @@ impl CoelanoxContainer {
             header: CoelanoxHeader::new_with_flags(total_size, COELANOX_HEADER_SIZE as u64, code_offset, header_flags),
             manifest,
             optimized_code,
-            compressed_weights,
+            compressed_weights: std::sync::Arc::new(std::sync::Mutex::new(Some(compressed_weights))),
             compression_type,
             ir_data,
             nvme_backing_data,
@@ -688,48 +689,45 @@ impl CoelanoxContainer {
     pub fn total_size(&self) -> usize {
         self.header.container_size as usize
     }
+
+    /// Size of compressed weights in bytes (0 if already released to save memory).
+    pub fn compressed_weights_len(&self) -> usize {
+        self.compressed_weights
+            .lock()
+            .map(|g| g.as_ref().map(|v| v.len()).unwrap_or(0))
+            .unwrap_or(0)
+    }
     
-    /// Load weights into a Vec<f32>. For CompressionType::None this is not decompression:
-    /// the payload is already raw LE f32 bytes; we copy/reinterpret into Vec<f32> for execution.
-    /// For Zstd/Lz4/Deflate this step actually decompresses then converts.
+    /// Load weights into a Vec<f32>. Consumes the compressed buffer on first call so the runtime
+    /// can avoid holding both compressed and decompressed in memory (~500MB+ savings for BERT).
+    /// Subsequent calls return an error if weights were already released; use warm cache instead.
     pub fn decompress_weights(&self) -> CoelanoxResult<Vec<f32>> {
+        let data = self
+            .compressed_weights
+            .lock()
+            .map_err(|_| CoelanoxError::Runtime("compressed_weights mutex poisoned".to_string()))?
+            .take()
+            .ok_or_else(|| {
+                CoelanoxError::Runtime(
+                    "Weights already decompressed and released; use warm cache".to_string(),
+                )
+            })?;
         match self.compression_type {
-            CompressionType::Zstd => {
-                self.decompress_zstd(&self.compressed_weights)
-            }
-            CompressionType::Lz4 => {
-                self.decompress_lz4(&self.compressed_weights)
-            }
-            CompressionType::Deflate => {
-                self.decompress_deflate(&self.compressed_weights)
-            }
+            CompressionType::Zstd => self.decompress_zstd(&data),
+            CompressionType::Lz4 => self.decompress_lz4(&data),
+            CompressionType::Deflate => self.decompress_deflate(&data),
             CompressionType::None => {
-                // Not compressed: payload is raw little-endian f32. Use zerocopy for
-                // OS-independent, safe reinterpret (Pod semantics; no per-byte work).
-                // Aligned path (typical for Vec<u8> from allocator): Ref::new_slice → one bulk copy.
-                // Misaligned fallback (e.g. mmap at arbitrary offset): chunk conversion.
-                // Same contract on all OSes; hybrid interpreter/CLF can share this path.
-                let data = &self.compressed_weights[..];
                 if data.len() % 4 != 0 {
                     return Err(CoelanoxError::PayloadValidation(
                         "Uncompressed weights length is not a multiple of 4".to_string(),
                     ));
                 }
                 let n = data.len() / 4;
-                if let Some(ref_slice) = Ref::<_, [f32]>::new_slice(data) {
-                    // Aligned: zerocopy view, then one bulk copy into Vec for current API.
-                    let view = &*ref_slice;
-                    let mut weights = Vec::with_capacity(view.len());
-                    weights.extend_from_slice(view);
-                    Ok(weights)
-                } else {
-                    // Misaligned (e.g. mmap or OS-specific buffer): chunk conversion fallback.
-                    let mut weights = Vec::with_capacity(n);
-                    weights.extend(
-                        data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())),
-                    );
-                    Ok(weights)
-                }
+                let mut weights = Vec::with_capacity(n);
+                weights.extend(
+                    data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())),
+                );
+                Ok(weights)
             }
         }
     }
@@ -786,12 +784,19 @@ impl CoelanoxContainer {
         // Write container to buffer (header with hash=0)
         let mut buffer = Vec::new();
         {
+            let cw = self
+                .compressed_weights
+                .lock()
+                .map_err(|_| CoelanoxError::Runtime("compressed_weights mutex poisoned".to_string()))?;
+            let cw_ref = cw
+                .as_ref()
+                .ok_or_else(|| CoelanoxError::Runtime("Cannot write container: weights already released".to_string()))?;
             let mut cursor = std::io::Cursor::new(&mut buffer);
             header.write_binary(&mut cursor)?;
             self.manifest.write_binary(&mut cursor)?;
             cursor.write_all(&self.optimized_code)?;
-            cursor.write_all(&(self.compressed_weights.len() as u32).to_le_bytes())?;
-            cursor.write_all(&self.compressed_weights)?;
+            cursor.write_all(&(cw_ref.len() as u32).to_le_bytes())?;
+            cursor.write_all(cw_ref)?;
             cursor.write_all(&(self.ir_data.len() as u32).to_le_bytes())?;
             cursor.write_all(&self.ir_data)?;
             if let Some(ref nvme) = self.nvme_backing_data {
@@ -844,8 +849,15 @@ impl CoelanoxContainer {
         writer.write_all(&self.optimized_code)?;
         
         // Write compressed weights with length prefix
-        writer.write_all(&(self.compressed_weights.len() as u32).to_le_bytes())?;
-        writer.write_all(&self.compressed_weights)?;
+        let cw = self
+            .compressed_weights
+            .lock()
+            .map_err(|_| CoelanoxError::Runtime("compressed_weights mutex poisoned".to_string()))?;
+        let cw_ref = cw
+            .as_ref()
+            .ok_or_else(|| CoelanoxError::Runtime("Cannot write container: weights already released".to_string()))?;
+        writer.write_all(&(cw_ref.len() as u32).to_le_bytes())?;
+        writer.write_all(cw_ref)?;
         
         // Write IR data with length prefix
         writer.write_all(&(self.ir_data.len() as u32).to_le_bytes())?;
@@ -906,8 +918,10 @@ impl CoelanoxContainer {
         let weights_len = u32::from_le_bytes(weights_len_bytes) as usize;
         
         // Read compressed weights
-        let mut compressed_weights = vec![0u8; weights_len];
-        reader.read_exact(&mut compressed_weights)?;
+        let mut compressed_weights_raw = vec![0u8; weights_len];
+        reader.read_exact(&mut compressed_weights_raw)?;
+        let compressed_weights =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(compressed_weights_raw)));
         
         // Read IR data length
         let mut ir_len_bytes = [0u8; 4];

@@ -71,6 +71,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release\windows-x86_64
           Copy-Item coelanox\target\release\coelanox.exe release\windows-x86_64\
+          Copy-Item scripts\install.ps1 release\windows-x86_64\
           cd release
           Compress-Archive -Path windows-x86_64\* -DestinationPath coelanox-windows-x86_64.zip
           Move-Item coelanox-windows-x86_64.zip ..
@@ -94,14 +95,22 @@ jobs:
           merge-multiple: true
           path: release-artifacts
 
+      - name: Flatten release artifacts
+        run: |
+          mkdir -p dist
+          find release-artifacts -name "*.tar.gz" -exec cp {} dist/ \;
+          find release-artifacts -name "*.zip" -exec cp {} dist/ \;
+          ls -la dist/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          target: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.ref_name }}
           files: |
-            release-artifacts/*.tar.gz
-            release-artifacts/*.zip
+            dist/coelanox-linux-x86_64.tar.gz
+            dist/coelanox-windows-x86_64.zip
           generate_release_notes: true
           body: |
             ## COELANOX ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -119,8 +128,8 @@ jobs:
 
             **Windows:**
             1. Extract `coelanox-windows-x86_64.zip`
-            2. Add the folder to your PATH
-            3. Run `coelanox --help`
+            2. In the extracted folder run `.\install.ps1` (copies to `%LOCALAPPDATA%\coelanox\bin` and adds to PATH)
+            3. Restart your terminal, then run `coelanox --help`
 
             ### Quick Start
 

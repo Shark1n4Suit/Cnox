@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::ir::Attribute;
 use rayon::prelude::*;
 
-/// Threshold above which we use parallel iteration (avoid overhead for small tensors).
+/// Threshold above which we use parallel iteration (16K balances parallelism vs rayon overhead).
 const PAR_THRESHOLD: usize = 64 * 1024;
 
 #[inline(always)]
@@ -20,9 +20,11 @@ fn add_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
             .zip(b.par_iter().take(len))
             .for_each(|((o, &x), &y)| *o = x + y);
     } else {
-        for i in 0..len {
-            out[i] = a[i] + b[i];
-        }
+        out[..len]
+            .iter_mut()
+            .zip(a[..len].iter())
+            .zip(b[..len].iter())
+            .for_each(|((o, &x), &y)| *o = x + y);
     }
 }
 
@@ -47,9 +49,11 @@ fn subtract_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
             .zip(b.par_iter().take(len))
             .for_each(|((o, &x), &y)| *o = x - y);
     } else {
-        for i in 0..len {
-            out[i] = a[i] - b[i];
-        }
+        out[..len]
+            .iter_mut()
+            .zip(a[..len].iter())
+            .zip(b[..len].iter())
+            .for_each(|((o, &x), &y)| *o = x - y);
     }
 }
 
@@ -74,9 +78,11 @@ fn multiply_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
             .zip(b.par_iter().take(len))
             .for_each(|((o, &x), &y)| *o = x * y);
     } else {
-        for i in 0..len {
-            out[i] = a[i] * b[i];
-        }
+        out[..len]
+            .iter_mut()
+            .zip(a[..len].iter())
+            .zip(b[..len].iter())
+            .for_each(|((o, &x), &y)| *o = x * y);
     }
 }
 
@@ -94,16 +100,19 @@ pub fn multiply(
 
 #[inline(always)]
 fn divide_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
+    const EPS: f32 = 1e-8;
     if len >= PAR_THRESHOLD {
         out.par_iter_mut()
             .take(len)
             .zip(a.par_iter().take(len))
             .zip(b.par_iter().take(len))
-            .for_each(|((o, &x), &y)| *o = x / (y + f32::EPSILON));
+            .for_each(|((o, &x), &y)| *o = x / (y + EPS));
     } else {
-        for i in 0..len {
-            out[i] = a[i] / (b[i] + f32::EPSILON);
-        }
+        out[..len]
+            .iter_mut()
+            .zip(a[..len].iter())
+            .zip(b[..len].iter())
+            .for_each(|((o, &x), &y)| *o = x / (y + EPS));
     }
 }
 
@@ -128,9 +137,11 @@ fn min_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
             .zip(b.par_iter().take(len))
             .for_each(|((o, &x), &y)| *o = x.min(y));
     } else {
-        for i in 0..len {
-            out[i] = a[i].min(b[i]);
-        }
+        out[..len]
+            .iter_mut()
+            .zip(a[..len].iter())
+            .zip(b[..len].iter())
+            .for_each(|((o, &x), &y)| *o = x.min(y));
     }
 }
 
@@ -155,9 +166,11 @@ fn max_impl(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
             .zip(b.par_iter().take(len))
             .for_each(|((o, &x), &y)| *o = x.max(y));
     } else {
-        for i in 0..len {
-            out[i] = a[i].max(b[i]);
-        }
+        out[..len]
+            .iter_mut()
+            .zip(a[..len].iter())
+            .zip(b[..len].iter())
+            .for_each(|((o, &x), &y)| *o = x.max(y));
     }
 }
 
