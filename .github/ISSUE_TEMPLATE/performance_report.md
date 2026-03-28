@@ -18,7 +18,7 @@ assignees: ''
 
 **Environment**
 - OS: [e.g. Ubuntu 20.04, macOS 12.0, Windows 11]
-- CNOX Version: [e.g. v0.5.0-beta]
+- CNOX Version: [e.g. v0.7.0]
 - Rust Version: [e.g. 1.70.0]
 - Backend: [e.g. CPU (OpenVINO), GPU (TensorRT)]
 - Hardware: [e.g. Intel i7-10700K, NVIDIA RTX 3080, 32GB RAM]

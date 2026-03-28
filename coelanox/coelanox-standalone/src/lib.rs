@@ -5,6 +5,9 @@
 //! container is loaded and executed (container is self-contained; this crate is a
 //! thin entry point that uses the orchestrator under the hood).
 //!
+//! The **`coelanox-run`** binary also supports **`--serve`**: framed binary IPC v1 on stdin/stdout
+//! (same protocol as `coelanox serve`), implemented via `coelanox-ipc`.
+//!
 //! For server use (multiple containers, cache, TTL), use `coelanox-orchestrator` directly.
 
 use coelanox_core::CoelanoxResult;

@@ -1,6 +1,6 @@
 [package]
 name = "coelanox-executor"
-version = "0.1.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
 description = "CLF mini-executor: runs multi-blob containers via execution plan (graph walk + kernel dispatch)"

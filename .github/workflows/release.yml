@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.6.0-beta). Required when running manually.'
+        description: 'Release tag (e.g. v0.7.0). Required when running manually.'
         required: true
 
 jobs:
@@ -26,12 +26,13 @@ jobs:
       - name: Build
         run: |
           cd coelanox
-          cargo build --release -p coelanox-cli
+          cargo build --release -p coelanox-cli -p coelanox-standalone
 
       - name: Create Linux package
         run: |
           mkdir -p release/linux-x86_64
           cp coelanox/target/release/coelanox release/linux-x86_64/
+          cp coelanox/target/release/coelanox-run release/linux-x86_64/
           cat > release/linux-x86_64/install.sh << 'EOF'
           #!/bin/bash
           set -e
@@ -40,7 +41,11 @@ jobs:
           mkdir -p "$INSTALL_DIR"
           cp -f "$SCRIPT_DIR/coelanox" "$INSTALL_DIR/coelanox"
           chmod +x "$INSTALL_DIR/coelanox"
-          echo "Installed coelanox to $INSTALL_DIR"
+          if [ -f "$SCRIPT_DIR/coelanox-run" ]; then
+            cp -f "$SCRIPT_DIR/coelanox-run" "$INSTALL_DIR/coelanox-run"
+            chmod +x "$INSTALL_DIR/coelanox-run"
+          fi
+          echo "Installed coelanox (and coelanox-run if present) to $INSTALL_DIR"
           EOF
           chmod +x release/linux-x86_64/install.sh
           cd release
@@ -65,12 +70,13 @@ jobs:
       - name: Build
         run: |
           cd coelanox
-          cargo build --release -p coelanox-cli
+          cargo build --release -p coelanox-cli -p coelanox-standalone
 
       - name: Create Windows package
         run: |
           New-Item -ItemType Directory -Force -Path release\windows-x86_64
           Copy-Item coelanox\target\release\coelanox.exe release\windows-x86_64\
+          Copy-Item coelanox\target\release\coelanox-run.exe release\windows-x86_64\
           Copy-Item scripts\install.ps1 release\windows-x86_64\
           cd release
           Compress-Archive -Path windows-x86_64\* -DestinationPath coelanox-windows-x86_64.zip

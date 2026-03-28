@@ -2707,7 +2707,7 @@ impl CoelanoxRuntime {
                         let warm_data = self.resolve_full(container_name, container)?;
                         self.try_scalar_fallback(container, input_data, warm_data.as_ref())
                     });
-            }
+            } 
         }
         if backend.eq_ignore_ascii_case("scalar") {
             let warm_data = self.resolve_full(container_name, container)?;

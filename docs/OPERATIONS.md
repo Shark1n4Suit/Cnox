@@ -226,14 +226,14 @@ Server uses Arc sharing for loaded containers so requests get pointer clones, no
 |--------|--------|--------|
 | **CLI for batch / single-run** | ✅ Ready | `run`, `verify`, `benchmark`, `debug` with config from env/file; integrity check, limits, and security logging in place. |
 | **Config and limits** | ✅ Ready | `RuntimeConfig::from_env()` / `from_file()`; SecurityValidator enforces path and size; runbooks in this doc. |
-| **Long-running server** | ⚠️ Partial | Runtime supports cache, TTL, timeouts; no HTTP/gRPC server, health endpoint, or metrics export in-tree. Use CLI in scripts or wrap in your own service. |
+| **Long-running server** | ⚠️ Partial | **`coelanox serve`** provides stdin/stdout framed IPC for a single loaded container; there is still no HTTP/gRPC server, health endpoint, or metrics export in-tree. Wrap `serve` or the orchestrator in your own service for APIs and observability. |
 | **Observability** | ⚠️ Partial | Structured logging (tracing) and security events; no built-in Prometheus/OpenTelemetry. Rely on stdout + RUST_LOG and your log pipeline. |
 | **Hardening** | ✅ Done | Lock expect() instead of unwrap(), security event logging, optional strict path policy, container size cap. |
 | **Vendor / multi-backend** | ⚠️ Roadmap | Backend manager and CLF path work; AMD reference and full vendor SDK still on roadmap. |
 
 ### Summary
 
-COELANOX is **ready for production in a “batch or scripted” sense**: verify then run (or benchmark) with explicit config and limits, in CI or on a server where you control the environment. For a **long-lived inference service** with health checks and metrics, you would run the CLI from your own process (or use the orchestrator as a library) and add your API and observability layer.
+COELANOX is **ready for production in a “batch or scripted” sense**: verify then run (or benchmark) with explicit config and limits, in CI or on a server where you control the environment. For a **long-lived inference service** with health checks and metrics, use **`coelanox serve`** for process-local IPC, or embed the orchestrator as a library and add your API and observability layer.
 
 ---
 

@@ -7,6 +7,7 @@ use crate::{CoelanoxError, CoelanoxResult};
 use std::path::Path;
 use std::collections::HashMap;
 use std::arch::asm;
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// System environment information
 #[derive(Debug, Clone)]
@@ -77,9 +78,13 @@ impl SystemEnvironment {
         let os = Self::detect_os()?;
         let architecture = Self::detect_architecture()?;
         let cpu_vendor = Self::detect_cpu_vendor()?;
-        let cpu_model = Self::detect_cpu_model()?;
+        // One sysinfo refresh for CPU brand + total RAM (Windows needs this for correct model/RAM).
+        let (sysinfo_brand, ram_bytes) = Self::sysinfo_cpu_brand_and_ram_bytes();
+        let cpu_model = sysinfo_brand
+            .or_else(|| Self::cpu_model_linux_proc())
+            .unwrap_or_else(|| "Unknown".to_string());
+        let memory_gb = Self::memory_gb_from_ram_bytes(ram_bytes);
         let cpu_cores = Self::detect_cpu_cores()?;
-        let memory_gb = Self::detect_memory()?;
         let gpu_info = Self::detect_gpu()?;
         let simd_capabilities = Self::detect_simd_capabilities()?;
         let capabilities = Self::detect_capabilities()?;
@@ -152,37 +157,18 @@ impl SystemEnvironment {
         }
     }
     
-    /// Detect CPU vendor
+    /// Detect CPU vendor (x86: stable `__cpuid(0)` — avoids broken inline asm on some targets).
     fn detect_cpu_vendor() -> CoelanoxResult<String> {
         #[cfg(target_arch = "x86_64")]
         {
-            // Use CPUID to detect vendor (function 0)
-            // Note: rbx is reserved by LLVM, so we use r10 and move the value
             let vendor = unsafe {
-                let mut r10_result = 0u64; // Temporary for ebx
-                let mut edx = 0u32;
-                let mut ecx = 0u32;
-                
-                asm!("push rbx; cpuid; mov {result}, rbx; pop rbx", 
-                     in("eax") 0u32,
-                     out("edx") edx,
-                     out("ecx") ecx,
-                     result = out(reg) r10_result,
-                     lateout("rax") _,
-                     options(nomem, preserves_flags));
-                
-                let ebx = (r10_result & 0xFFFFFFFF) as u32;
-                
-                // Vendor string is in EBX, EDX, ECX (in that order)
-                let vendor_bytes = [
-                    ebx.to_le_bytes(),
-                    edx.to_le_bytes(),
-                    ecx.to_le_bytes(),
-                ].concat();
-                
-                String::from_utf8_lossy(&vendor_bytes).to_string()
+                let cp = std::arch::x86_64::__cpuid(0);
+                let mut buf = [0u8; 12];
+                buf[0..4].copy_from_slice(&cp.ebx.to_le_bytes());
+                buf[4..8].copy_from_slice(&cp.edx.to_le_bytes());
+                buf[8..12].copy_from_slice(&cp.ecx.to_le_bytes());
+                String::from_utf8_lossy(&buf).trim().to_string()
             };
-            
             Ok(vendor)
         }
         
@@ -206,58 +192,73 @@ impl SystemEnvironment {
         }
     }
     
-    /// Detect CPU model
-    fn detect_cpu_model() -> CoelanoxResult<String> {
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-                for line in content.lines() {
-                    if line.starts_with("model name") {
-                        let model = line.split(':').nth(1).unwrap_or("Unknown").trim();
-                        return Ok(model.to_string());
-                    }
+    /// Single refresh: CPU brand string and total RAM in bytes (sysinfo).
+    fn sysinfo_cpu_brand_and_ram_bytes() -> (Option<String>, u64) {
+        let mut sys = System::new();
+        sys.refresh_specifics(
+            RefreshKind::new()
+                .with_cpu(CpuRefreshKind::everything())
+                .with_memory(MemoryRefreshKind::new().with_ram()),
+        );
+        let brand = sys
+            .cpus()
+            .first()
+            .map(|c| c.brand().trim().to_string())
+            .filter(|s| !s.is_empty());
+        (brand, sys.total_memory())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cpu_model_linux_proc() -> Option<String> {
+        let content = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+        for line in content.lines() {
+            if line.starts_with("model name") {
+                let model = line.split(':').nth(1)?.trim();
+                if !model.is_empty() {
+                    return Some(model.to_string());
                 }
             }
         }
-        
-        #[cfg(target_os = "windows")]
-        {
-            // Windows detection would require WMI calls
-            return Ok("Windows CPU".to_string());
+        None
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn cpu_model_linux_proc() -> Option<String> {
+        None
+    }
+
+    fn memory_gb_from_ram_bytes(ram_bytes: u64) -> usize {
+        if ram_bytes > 0 {
+            return (ram_bytes / (1024 * 1024 * 1024)) as usize;
         }
-        
-        #[cfg(target_os = "macos")]
+        #[cfg(target_os = "linux")]
         {
-            // macOS detection would require sysctl calls
-            return Ok("macOS CPU".to_string());
+            if let Some(gb) = Self::memory_gb_linux_proc() {
+                return gb;
+            }
         }
-        
-        Ok("Unknown".to_string())
+        8
+    }
+
+    #[cfg(target_os = "linux")]
+    fn memory_gb_linux_proc() -> Option<usize> {
+        let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+        for line in content.lines() {
+            if line.starts_with("MemTotal:") {
+                let kb = line
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse::<usize>()
+                    .ok()?;
+                return Some(kb / 1024 / 1024);
+            }
+        }
+        None
     }
     
     /// Detect number of CPU cores
     fn detect_cpu_cores() -> CoelanoxResult<usize> {
         Ok(num_cpus::get())
-    }
-    
-    /// Detect available memory
-    fn detect_memory() -> CoelanoxResult<usize> {
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-                for line in content.lines() {
-                    if line.starts_with("MemTotal:") {
-                        let kb = line.split_whitespace().nth(1)
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .unwrap_or(0);
-                        return Ok(kb / 1024 / 1024); // Convert to GB
-                    }
-                }
-            }
-        }
-        
-        // Fallback to system info
-        Ok(8) // Default assumption
     }
     
     /// Detect GPU information

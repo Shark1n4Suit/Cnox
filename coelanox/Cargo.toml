@@ -6,6 +6,7 @@ members = [
     "coelanox-executor",
     "coelanox-packager",
     "coelanox-orchestrator",
+    "coelanox-ipc",
     "coelanox-cli",
     "coelanox-standalone",
     "tests",

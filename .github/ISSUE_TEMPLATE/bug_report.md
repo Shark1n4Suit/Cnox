@@ -24,7 +24,7 @@ A clear and concise description of what actually happened.
 
 **Environment (please complete the following information):**
  - OS: [e.g. Ubuntu 20.04, macOS 12.0, Windows 11]
- - CNOX Version: [e.g. v0.5.0-beta]
+ - CNOX Version: [e.g. v0.7.0]
  - Rust Version: [e.g. 1.70.0]
  - Backend: [e.g. CPU (OpenVINO), GPU (TensorRT)]
 

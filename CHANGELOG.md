@@ -10,27 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- (Placeholder: document new features here.)
-
 ### Changed
 
-- (Placeholder: document changes in existing behavior here.)
-
-### Deprecated
-
-- (Placeholder: document soon-to-be removed features here.)
-
-### Removed
-
-- (Placeholder: document removed features here.)
+- **`coelanox extract`:** Default output name is **`coelanox`** (full CLI copy, includes `serve`/IPC). New **`--minimal`** copies sibling **`coelanox-run`** for smaller deployments. Release CI builds and ships both binaries.
+- **`coelanox-run`:** **`--serve`** mode — same framed stdin/stdout IPC v1 as **`coelanox serve`**.
 
 ### Fixed
 
-- (Placeholder: document bug fixes here.)
+---
 
-### Security
+## [0.7.0] — 2026-03-28
 
-- (Placeholder: document security-related changes here.)
+### Added
+
+- **`coelanox serve`**: long-lived process with framed binary IPC on stdin/stdout (`CREQ` / `CROk` / `CREr` / `CNXT`), implemented in the **`coelanox-ipc`** crate. Container format unchanged; IPC wraps the runtime only.
+- **`coelanox uninstall`**: prints removal steps for the installed CLI and optional `--purge-audit` to delete `./coelanox_audit` in the current working directory.
+
+### Changed
+
+- Workspace crates aligned to **0.7.0**; CLI reports **`0.7.0`**. Logging for `serve` uses **stderr only** so stdout stays binary-clean for IPC frames.
+
+### Fixed
+
+- CPU vendor detection in `coelanox env` (stable `__cpuid` on x86_64); CPU model/RAM via **sysinfo** on supported platforms.
 
 ---
 
