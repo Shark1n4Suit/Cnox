@@ -31,7 +31,7 @@ pub fn peak_scratch_elements_for_op(
         // Element-wise, no scratch
         OpType::Add | OpType::Subtract | OpType::Multiply | OpType::Divide
         | OpType::Relu | OpType::Sigmoid | OpType::Tanh | OpType::Gelu | OpType::Swish
-        | OpType::Sqrt | OpType::Pow | OpType::Cos | OpType::Sin | OpType::Exp | OpType::Log
+        | OpType::Sqrt | OpType::Abs | OpType::Pow | OpType::Cos | OpType::Sin | OpType::Exp | OpType::Log
         | OpType::BatchNorm | OpType::Dropout
         | OpType::Reshape | OpType::Transpose | OpType::Permute
         | OpType::Concatenate | OpType::Split | OpType::Slice | OpType::Gather | OpType::Scatter

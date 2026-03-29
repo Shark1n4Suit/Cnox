@@ -1,12 +1,17 @@
-//! ONNX translator: converts ONNX models (opset 13) to Coelanox UniversalIR.
+//! ONNX translator: converts ONNX models (**target ONNX opset 13** semantics) to Coelanox UniversalIR.
 //!
-//! Uses rten-onnx for parsing. Supports a subset of ONNX ops that map to existing
-//! IR OpTypes. Unsupported ops are translated as Custom(name).
+//! - **Implemented:** a large subset of ops via direct [`OpType`] mapping, [`decompose_node`], or graph rewiring.
+//! - **Not implemented:** operators that have no lowering yet become [`OpType::Custom`]; packaging then **fails**
+//!   with an explicit message (we do not silently run `Custom` in the scalar backend).
+//! - **Application-layer / export:** dynamic control flow (`If` / `Loop` / `Scan`), `Cast`, sequence ops, etc. are
+//!   **rejected at package time** with actionable text (normalize types and graphs before `coelanox package`).
+//! - **Recent additions:** **`Where`** (mask select), **`Square`**, **`Clip`** (opset 11+ optional min/max tensors), variadic **`Sum`**, **`Celu`**, **`LpNormalization`** (p=2), `Sign`, `ReduceL1`/`L2`/`SumSquare`/`LogSum`/`LogSumExp`, `Selu`, `Mish`;
+//!   `forward_onnx_reduce_attrs` copies `axes` / `keepdims` / `noop_with_empty_axes` onto lowered `ReduceSum` nodes.
 
 #[cfg(feature = "onnx-protobuf")]
 mod impl_ {
     use coelanox_core::ir::{
-        Attribute, DataType, OpType, Shape, TensorId, UniversalIR,
+        Attribute, DataType, NodeId, OpType, Shape, TensorId, UniversalIR,
     };
     use coelanox_core::plugins::CoelanoxTranslator;
     use coelanox_core::format::ModelFormat;
@@ -28,6 +33,70 @@ mod impl_ {
                 .map_err(|e| CoelanoxError::format(&format!("ONNX parse error: {}", e)))
         }
 
+        /// Ops that must not appear in the graph (or must be fixed in export). Returns a full user-facing message.
+        fn onnx_op_rejected_at_package_time(op_type: &str) -> Option<&'static str> {
+            match op_type {
+                "Cast" => Some(
+                    "ONNX Cast is not supported: the Coelanox runtime executes a single numeric type (float32). \
+                     Remove Cast nodes by exporting the model in float32, or fold casts in your training/export pipeline \
+                     (this is an application / export concern, not something the container can fix at runtime).",
+                ),
+                "If" | "Loop" | "Scan" => Some(
+                    "ONNX control flow (If / Loop / Scan) is not supported inside the packaged model. \
+                     Unroll loops, specialize branches, or move control flow to your application; then export a single static graph.",
+                ),
+                "SequenceAt" | "SequenceConstruct" | "SequenceEmpty" | "SequenceErase"
+                | "SequenceInsert" | "SequenceLength" => Some(
+                    "ONNX Sequence_* operators are not supported. Use tensors only (no sequence-of-tensor graphs); \
+                     reshape or batch your data in the application and re-export.",
+                ),
+                "Optional" | "OptionalGetElement" | "OptionalHasElement" => Some(
+                    "ONNX Optional* operators are not supported. Export a model without optional types.",
+                ),
+                "MatMulInteger" | "QLinearMatMul" | "ConvInteger" | "QLinearConv" => Some(
+                    "Integer / quantized MatMul and Conv are not supported. Export float32 MatMul/Gemm/Conv or dequantize outside the graph.",
+                ),
+                "QuantizeLinear" | "DequantizeLinear" => Some(
+                    "ONNX QuantizeLinear / DequantizeLinear are not supported. Export a float32 graph or run dequantization outside the packaged model.",
+                ),
+                _ => None,
+            }
+        }
+
+        /// Explains why a Custom ONNX op name cannot be packaged yet (fallback after translation).
+        fn unimplemented_custom_onnx_op_message(name: &str) -> String {
+            match name {
+                "Cast" => Self::onnx_op_rejected_at_package_time("Cast")
+                    .expect("Cast rejection message")
+                    .to_string(),
+                "Einsum" => "ONNX Einsum is not implemented. Expand to MatMul/Transpose in export, or use a simpler expression.".to_string(),
+                "Resize" | "Upsample" => "ONNX Resize/Upsample is not implemented for this runtime. Use fixed spatial sizes or pre-process images outside the model.".to_string(),
+                "NonMaxSuppression" | "RoiAlign" | "NonZero" => format!(
+                    "ONNX operator '{}' is not implemented in the Coelanox ONNX translator (opset 13 subset).",
+                    name
+                ),
+                "Pad" => "ONNX Pad is not implemented. Use explicit padding in the graph export or conv with padding, if applicable.".to_string(),
+                "InstanceNormalization" | "GroupNormalization" => format!(
+                    "ONNX {} is not implemented in the translator. Use BatchNorm/LayerNorm in export or extend the translator.",
+                    name
+                ),
+                "Tile" => "ONNX Tile is not implemented. Use Expand or repeat via Concat in export, or extend the translator.".to_string(),
+                "TopK" | "ArgMax" | "ArgMin" => format!(
+                    "ONNX operator '{}' is not implemented in the translator. Avoid top-k / arg reductions in the packaged path, or extend the translator.",
+                    name
+                ),
+                "GRU" | "RNN" => format!(
+                    "ONNX {} is not implemented (LSTM has a partial decomposition). Export without recurrent cells or extend the translator.",
+                    name
+                ),
+                other => format!(
+                    "ONNX operator '{}' is not implemented in the Coelanox ONNX translator (opset 13 target; growing subset). \
+                     Simplify or replace it in your export, or add a mapping/decomposition in coelanox-packager/src/translators/onnx.rs.",
+                    other
+                ),
+            }
+        }
+
         /// Maps ONNX op names (opset 13) to IR OpType. Ops that require decomposition
         /// are not mapped here; they are handled in build_ir.
         fn map_op_type(op_type: &str) -> OpType {
@@ -44,6 +113,8 @@ mod impl_ {
                 "Softmax" => OpType::Softmax,
                 "LogSoftmax" => OpType::LogSoftmax,
                 "Gelu" => OpType::Gelu,
+                // Swish = x * sigmoid(x); native IR op (common in PyTorch exports)
+                "Swish" => OpType::Swish,
                 // Matrix
                 "MatMul" => OpType::MatMul,
                 "Gemm" => OpType::Gemm,
@@ -73,11 +144,9 @@ mod impl_ {
                 "ReduceMax" => OpType::ReduceMax,
                 "ReduceMin" => OpType::ReduceMin,
                 "ReduceProd" => OpType::ReduceProd,
-                "ReduceL1" | "ReduceL2" | "ReduceLogSum" | "ReduceLogSumExp" | "ReduceSumSquare" => {
-                    OpType::Custom(op_type.to_string())
-                }
                 // Math
                 "Sqrt" => OpType::Sqrt,
+                "Abs" => OpType::Abs,
                 "Pow" => OpType::Pow,
                 "Exp" => OpType::Exp,
                 "Log" => OpType::Log,
@@ -306,20 +375,38 @@ mod impl_ {
 
             match op_type_str {
                 "Clip" => {
-                    // Clip(x, min?, max?) -> Min(Max(x, min), max). Use attributes or default bounds.
-                    let x_id = input_ids.first().ok_or_else(|| {
-                        CoelanoxError::format("Clip requires at least one input")
-                    })?;
-                    let min_val = Self::get_attr(node, "min")
-                        .and_then(|a| a.as_float())
-                        .unwrap_or(f32::MIN);
-                    let max_val = Self::get_attr(node, "max")
-                        .and_then(|a| a.as_float())
-                        .unwrap_or(f32::MAX);
-                    let min_name = format!("{}_clip_min", node_name);
-                    let max_name = format!("{}_clip_max", node_name);
-                    let min_tid = Self::add_scalar_constant(ir, min_name, min_val);
-                    let max_tid = Self::add_scalar_constant(ir, max_name, max_val);
+                    // Clip(x, min?, max?) -> Min(Max(x, min), max). Opset 11+: optional tensor min/max; else attributes / defaults.
+                    let x_id = node
+                        .input
+                        .first()
+                        .filter(|s| !s.is_empty())
+                        .and_then(|n| name_to_id.get(n).copied())
+                        .ok_or_else(|| CoelanoxError::format("Clip requires data input"))?;
+
+                    let min_tid = if node.input.len() > 1 && !node.input[1].is_empty() {
+                        name_to_id
+                            .get(&node.input[1])
+                            .copied()
+                            .ok_or_else(|| CoelanoxError::format("Clip: min tensor not found"))?
+                    } else {
+                        let min_val = Self::get_attr(node, "min")
+                            .and_then(|a| a.as_float())
+                            .unwrap_or(f32::MIN);
+                        Self::add_scalar_constant(ir, format!("{}_clip_min", node_name), min_val)
+                    };
+
+                    let max_tid = if node.input.len() > 2 && !node.input[2].is_empty() {
+                        name_to_id
+                            .get(&node.input[2])
+                            .copied()
+                            .ok_or_else(|| CoelanoxError::format("Clip: max tensor not found"))?
+                    } else {
+                        let max_val = Self::get_attr(node, "max")
+                            .and_then(|a| a.as_float())
+                            .unwrap_or(f32::MAX);
+                        Self::add_scalar_constant(ir, format!("{}_clip_max", node_name), max_val)
+                    };
+
                     let mid_name = format!("{}_clip_mid", node_name);
                     let mid_tid = ir.add_intermediate_tensor(
                         mid_name.clone(),
@@ -329,7 +416,7 @@ mod impl_ {
                     name_to_id.insert(mid_name, mid_tid);
 
                     let n_max = ir.add_node(OpType::Max);
-                    ir.add_node_input(n_max, *x_id)?;
+                    ir.add_node_input(n_max, x_id)?;
                     ir.add_node_input(n_max, min_tid)?;
                     ir.add_node_output(n_max, mid_tid)?;
 
@@ -337,6 +424,55 @@ mod impl_ {
                     ir.add_node_input(n_min, mid_tid)?;
                     ir.add_node_input(n_min, max_tid)?;
                     ir.add_node_output(n_min, out_id)?;
+                    return Ok(true);
+                }
+                "Where" => {
+                    // Where(cond, X, Y) with float mask cond in {0,1}: cond * X + (1 - cond) * Y (opset 9+).
+                    if input_ids.len() != 3 {
+                        return Err(CoelanoxError::format(
+                            "Where requires three inputs (condition, X, Y); optional ONNX inputs must be omitted, not unknown tensors.",
+                        ));
+                    }
+                    let cond = input_ids[0];
+                    let x_t = input_ids[1];
+                    let y_t = input_ids[2];
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_where_1", node_name), 1.0);
+                    let om_name = format!("{}_where_1mc", node_name);
+                    let om_tid = ir.add_intermediate_tensor(om_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(om_name, om_tid);
+                    let n_sub = ir.add_node(OpType::Subtract);
+                    ir.add_node_input(n_sub, one_c)?;
+                    ir.add_node_input(n_sub, cond)?;
+                    ir.add_node_output(n_sub, om_tid)?;
+                    let t1_name = format!("{}_where_cx", node_name);
+                    let t1_tid = ir.add_intermediate_tensor(t1_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t1_name, t1_tid);
+                    let n_mx = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mx, cond)?;
+                    ir.add_node_input(n_mx, x_t)?;
+                    ir.add_node_output(n_mx, t1_tid)?;
+                    let t2_name = format!("{}_where_cy", node_name);
+                    let t2_tid = ir.add_intermediate_tensor(t2_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t2_name, t2_tid);
+                    let n_my = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_my, om_tid)?;
+                    ir.add_node_input(n_my, y_t)?;
+                    ir.add_node_output(n_my, t2_tid)?;
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, t1_tid)?;
+                    ir.add_node_input(n_add, t2_tid)?;
+                    ir.add_node_output(n_add, out_id)?;
+                    return Ok(true);
+                }
+                "Square" => {
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("Square requires one input")
+                    })?;
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_sq2", node_name), 2.0);
+                    let n = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n, *x_id)?;
+                    ir.add_node_input(n, two_c)?;
+                    ir.add_node_output(n, out_id)?;
                     return Ok(true);
                 }
                 "Neg" => {
@@ -365,6 +501,675 @@ mod impl_ {
                     ir.add_node_output(n, out_id)?;
                     return Ok(true);
                 }
+                "LeakyRelu" => {
+                    // LeakyRelu(x) = Relu(x) - alpha * Relu(-x); default alpha = 0.01 (ONNX opset 13).
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("LeakyRelu requires one input")
+                    })?;
+                    let alpha = Self::get_attr(node, "alpha")
+                        .and_then(|a| a.as_float())
+                        .unwrap_or(0.01f32);
+                    let neg_x_name = format!("{}_leaky_negx", node_name);
+                    let neg_x_tid = ir.add_intermediate_tensor(
+                        neg_x_name.clone(),
+                        Shape::new(vec![1]),
+                        DataType::Float32,
+                    );
+                    name_to_id.insert(neg_x_name, neg_x_tid);
+                    let m_neg1 = ir.add_node(OpType::Multiply);
+                    let neg_one = Self::add_scalar_constant(ir, format!("{}_leaky_m1", node_name), -1.0);
+                    ir.add_node_input(m_neg1, *x_id)?;
+                    ir.add_node_input(m_neg1, neg_one)?;
+                    ir.add_node_output(m_neg1, neg_x_tid)?;
+
+                    let r_pos_name = format!("{}_leaky_rpos", node_name);
+                    let r_pos_tid = ir.add_intermediate_tensor(
+                        r_pos_name.clone(),
+                        Shape::new(vec![1]),
+                        DataType::Float32,
+                    );
+                    name_to_id.insert(r_pos_name, r_pos_tid);
+                    let relu1 = ir.add_node(OpType::Relu);
+                    ir.add_node_input(relu1, *x_id)?;
+                    ir.add_node_output(relu1, r_pos_tid)?;
+
+                    let r_neg_name = format!("{}_leaky_rneg", node_name);
+                    let r_neg_tid = ir.add_intermediate_tensor(
+                        r_neg_name.clone(),
+                        Shape::new(vec![1]),
+                        DataType::Float32,
+                    );
+                    name_to_id.insert(r_neg_name, r_neg_tid);
+                    let relu2 = ir.add_node(OpType::Relu);
+                    ir.add_node_input(relu2, neg_x_tid)?;
+                    ir.add_node_output(relu2, r_neg_tid)?;
+
+                    let alpha_tid = Self::add_scalar_constant(ir, format!("{}_leaky_alpha", node_name), alpha);
+                    let scaled_name = format!("{}_leaky_scaled", node_name);
+                    let scaled_tid = ir.add_intermediate_tensor(
+                        scaled_name.clone(),
+                        Shape::new(vec![1]),
+                        DataType::Float32,
+                    );
+                    name_to_id.insert(scaled_name, scaled_tid);
+                    let mul_s = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(mul_s, r_neg_tid)?;
+                    ir.add_node_input(mul_s, alpha_tid)?;
+                    ir.add_node_output(mul_s, scaled_tid)?;
+
+                    let sub_n = ir.add_node(OpType::Subtract);
+                    ir.add_node_input(sub_n, r_pos_tid)?;
+                    ir.add_node_input(sub_n, scaled_tid)?;
+                    ir.add_node_output(sub_n, out_id)?;
+                    return Ok(true);
+                }
+                "Elu" => {
+                    // Elu(x) = x if x>0 else alpha*(exp(x)-1); alpha default 1.0
+                    // = Relu(x) + alpha * (Exp(Min(x,0)) - 1)
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("Elu requires one input")
+                    })?;
+                    let alpha = Self::get_attr(node, "alpha")
+                        .and_then(|a| a.as_float())
+                        .unwrap_or(1.0f32);
+                    let zero_c = Self::add_scalar_constant(ir, format!("{}_elu_z", node_name), 0.0);
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_elu_one", node_name), 1.0);
+                    let alpha_c = Self::add_scalar_constant(ir, format!("{}_elu_alpha", node_name), alpha);
+                    let m_name = format!("{}_elu_min", node_name);
+                    let m_tid = ir.add_intermediate_tensor(m_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(m_name, m_tid);
+                    let n_min = ir.add_node(OpType::Min);
+                    ir.add_node_input(n_min, *x_id)?;
+                    ir.add_node_input(n_min, zero_c)?;
+                    ir.add_node_output(n_min, m_tid)?;
+                    let e_name = format!("{}_elu_exp", node_name);
+                    let e_tid = ir.add_intermediate_tensor(e_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(e_name, e_tid);
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, m_tid)?;
+                    ir.add_node_output(n_exp, e_tid)?;
+                    let t_name = format!("{}_elu_em1", node_name);
+                    let t_tid = ir.add_intermediate_tensor(t_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t_name, t_tid);
+                    let n_sub = ir.add_node(OpType::Subtract);
+                    ir.add_node_input(n_sub, e_tid)?;
+                    ir.add_node_input(n_sub, one_c)?;
+                    ir.add_node_output(n_sub, t_tid)?;
+                    let neg_b_name = format!("{}_elu_negb", node_name);
+                    let neg_b_tid = ir.add_intermediate_tensor(neg_b_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(neg_b_name, neg_b_tid);
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, t_tid)?;
+                    ir.add_node_input(n_mul, alpha_c)?;
+                    ir.add_node_output(n_mul, neg_b_tid)?;
+                    let pos_name = format!("{}_elu_pos", node_name);
+                    let pos_tid = ir.add_intermediate_tensor(pos_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(pos_name, pos_tid);
+                    let n_relu = ir.add_node(OpType::Relu);
+                    ir.add_node_input(n_relu, *x_id)?;
+                    ir.add_node_output(n_relu, pos_tid)?;
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, pos_tid)?;
+                    ir.add_node_input(n_add, neg_b_tid)?;
+                    ir.add_node_output(n_add, out_id)?;
+                    return Ok(true);
+                }
+                "PRelu" => {
+                    // PRelu(x, slope): x if x>=0 else slope*x  =>  Relu(x) + slope * Min(x, 0)
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("PRelu requires X input")
+                    })?;
+                    let slope_id = *input_ids.get(1).ok_or_else(|| {
+                        CoelanoxError::format("PRelu requires slope input")
+                    })?;
+                    let zero_c = Self::add_scalar_constant(ir, format!("{}_prelu_z", node_name), 0.0);
+                    let neg_name = format!("{}_prelu_neg", node_name);
+                    let neg_tid = ir.add_intermediate_tensor(neg_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(neg_name, neg_tid);
+                    let n_min = ir.add_node(OpType::Min);
+                    ir.add_node_input(n_min, *x_id)?;
+                    ir.add_node_input(n_min, zero_c)?;
+                    ir.add_node_output(n_min, neg_tid)?;
+                    let sn_name = format!("{}_prelu_sn", node_name);
+                    let sn_tid = ir.add_intermediate_tensor(sn_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sn_name, sn_tid);
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, slope_id)?;
+                    ir.add_node_input(n_mul, neg_tid)?;
+                    ir.add_node_output(n_mul, sn_tid)?;
+                    let pos_name = format!("{}_prelu_pos", node_name);
+                    let pos_tid = ir.add_intermediate_tensor(pos_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(pos_name, pos_tid);
+                    let n_relu = ir.add_node(OpType::Relu);
+                    ir.add_node_input(n_relu, *x_id)?;
+                    ir.add_node_output(n_relu, pos_tid)?;
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, pos_tid)?;
+                    ir.add_node_input(n_add, sn_tid)?;
+                    ir.add_node_output(n_add, out_id)?;
+                    return Ok(true);
+                }
+                "HardSigmoid" => {
+                    // max(0, min(1, alpha*x + beta)); defaults alpha=0.2, beta=0.5 (ONNX)
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("HardSigmoid requires one input")
+                    })?;
+                    let alpha = Self::get_attr(node, "alpha")
+                        .and_then(|a| a.as_float())
+                        .unwrap_or(0.2f32);
+                    let beta = Self::get_attr(node, "beta")
+                        .and_then(|a| a.as_float())
+                        .unwrap_or(0.5f32);
+                    let alpha_c = Self::add_scalar_constant(ir, format!("{}_hs_a", node_name), alpha);
+                    let beta_c = Self::add_scalar_constant(ir, format!("{}_hs_b", node_name), beta);
+                    let zero_c = Self::add_scalar_constant(ir, format!("{}_hs_z", node_name), 0.0);
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_hs_o", node_name), 1.0);
+                    let t1_name = format!("{}_hs_ax", node_name);
+                    let t1_tid = ir.add_intermediate_tensor(t1_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t1_name, t1_tid);
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, *x_id)?;
+                    ir.add_node_input(n_mul, alpha_c)?;
+                    ir.add_node_output(n_mul, t1_tid)?;
+                    let t2_name = format!("{}_hs_lin", node_name);
+                    let t2_tid = ir.add_intermediate_tensor(t2_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t2_name, t2_tid);
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, t1_tid)?;
+                    ir.add_node_input(n_add, beta_c)?;
+                    ir.add_node_output(n_add, t2_tid)?;
+                    let t3_name = format!("{}_hs_lo", node_name);
+                    let t3_tid = ir.add_intermediate_tensor(t3_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t3_name, t3_tid);
+                    let n_mx = ir.add_node(OpType::Max);
+                    ir.add_node_input(n_mx, t2_tid)?;
+                    ir.add_node_input(n_mx, zero_c)?;
+                    ir.add_node_output(n_mx, t3_tid)?;
+                    let n_mn = ir.add_node(OpType::Min);
+                    ir.add_node_input(n_mn, t3_tid)?;
+                    ir.add_node_input(n_mn, one_c)?;
+                    ir.add_node_output(n_mn, out_id)?;
+                    return Ok(true);
+                }
+                "Softplus" => {
+                    // Softplus(x) = log(exp(x) + 1)
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("Softplus requires one input")
+                    })?;
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_sp1", node_name), 1.0);
+                    let e_name = format!("{}_spex", node_name);
+                    let e_tid = ir.add_intermediate_tensor(e_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(e_name, e_tid);
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, *x_id)?;
+                    ir.add_node_output(n_exp, e_tid)?;
+                    let s_name = format!("{}_sp_s", node_name);
+                    let s_tid = ir.add_intermediate_tensor(s_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(s_name, s_tid);
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, e_tid)?;
+                    ir.add_node_input(n_add, one_c)?;
+                    ir.add_node_output(n_add, s_tid)?;
+                    let n_log = ir.add_node(OpType::Log);
+                    ir.add_node_input(n_log, s_tid)?;
+                    ir.add_node_output(n_log, out_id)?;
+                    return Ok(true);
+                }
+                "HardSwish" => {
+                    // x * clip(x+3, 0, 6) / 6  (MobileNet-style; ONNX op may be opset 14+ but we accept the name)
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("HardSwish requires one input")
+                    })?;
+                    let three = Self::add_scalar_constant(ir, format!("{}_hsw3", node_name), 3.0);
+                    let zero_c = Self::add_scalar_constant(ir, format!("{}_hswz", node_name), 0.0);
+                    let six_c = Self::add_scalar_constant(ir, format!("{}_hsw6", node_name), 6.0);
+                    let six_inv = Self::add_scalar_constant(ir, format!("{}_hsw_inv6", node_name), 1.0 / 6.0);
+                    let t0_name = format!("{}_hsw_x3", node_name);
+                    let t0_tid = ir.add_intermediate_tensor(t0_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t0_name, t0_tid);
+                    let n_a = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_a, *x_id)?;
+                    ir.add_node_input(n_a, three)?;
+                    ir.add_node_output(n_a, t0_tid)?;
+                    let t1_name = format!("{}_hsw_cl1", node_name);
+                    let t1_tid = ir.add_intermediate_tensor(t1_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t1_name, t1_tid);
+                    let n_mx = ir.add_node(OpType::Max);
+                    ir.add_node_input(n_mx, t0_tid)?;
+                    ir.add_node_input(n_mx, zero_c)?;
+                    ir.add_node_output(n_mx, t1_tid)?;
+                    let t2_name = format!("{}_hsw_cl2", node_name);
+                    let t2_tid = ir.add_intermediate_tensor(t2_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t2_name, t2_tid);
+                    let n_mn = ir.add_node(OpType::Min);
+                    ir.add_node_input(n_mn, t1_tid)?;
+                    ir.add_node_input(n_mn, six_c)?;
+                    ir.add_node_output(n_mn, t2_tid)?;
+                    let t3_name = format!("{}_hsw_mul", node_name);
+                    let t3_tid = ir.add_intermediate_tensor(t3_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t3_name, t3_tid);
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, *x_id)?;
+                    ir.add_node_input(n_mul, t2_tid)?;
+                    ir.add_node_output(n_mul, t3_tid)?;
+                    let n_out = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_out, t3_tid)?;
+                    ir.add_node_input(n_out, six_inv)?;
+                    ir.add_node_output(n_out, out_id)?;
+                    return Ok(true);
+                }
+                "Softsign" => {
+                    // Softsign(x) = x / (1 + |x|); |x| = Sqrt(Pow(x,2))
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("Softsign requires one input")
+                    })?;
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_ss1", node_name), 1.0);
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_ss2", node_name), 2.0);
+                    let sq_name = format!("{}_ss_sq", node_name);
+                    let sq_tid = ir.add_intermediate_tensor(sq_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sq_name, sq_tid);
+                    let n_pow = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n_pow, *x_id)?;
+                    ir.add_node_input(n_pow, two_c)?;
+                    ir.add_node_output(n_pow, sq_tid)?;
+                    let ax_name = format!("{}_ss_abs", node_name);
+                    let ax_tid = ir.add_intermediate_tensor(ax_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(ax_name, ax_tid);
+                    let n_sqrt = ir.add_node(OpType::Sqrt);
+                    ir.add_node_input(n_sqrt, sq_tid)?;
+                    ir.add_node_output(n_sqrt, ax_tid)?;
+                    let den_name = format!("{}_ss_den", node_name);
+                    let den_tid = ir.add_intermediate_tensor(den_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(den_name, den_tid);
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, one_c)?;
+                    ir.add_node_input(n_add, ax_tid)?;
+                    ir.add_node_output(n_add, den_tid)?;
+                    let n_div = ir.add_node(OpType::Divide);
+                    ir.add_node_input(n_div, *x_id)?;
+                    ir.add_node_input(n_div, den_tid)?;
+                    ir.add_node_output(n_div, out_id)?;
+                    return Ok(true);
+                }
+                "Sign" => {
+                    // sign(x) ≈ x / (|x| + eps) for float (ONNX Sign)
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("Sign requires one input")
+                    })?;
+                    let eps_c = Self::add_scalar_constant(ir, format!("{}_sg_eps", node_name), 1e-12f32);
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_sg2", node_name), 2.0);
+                    let sq_name = format!("{}_sg_sq", node_name);
+                    let sq_tid = ir.add_intermediate_tensor(sq_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sq_name, sq_tid);
+                    let n_pow = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n_pow, *x_id)?;
+                    ir.add_node_input(n_pow, two_c)?;
+                    ir.add_node_output(n_pow, sq_tid)?;
+                    let ax_name = format!("{}_sg_abs", node_name);
+                    let ax_tid = ir.add_intermediate_tensor(ax_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(ax_name, ax_tid);
+                    let n_sqrt = ir.add_node(OpType::Sqrt);
+                    ir.add_node_input(n_sqrt, sq_tid)?;
+                    ir.add_node_output(n_sqrt, ax_tid)?;
+                    let den_name = format!("{}_sg_den", node_name);
+                    let den_tid = ir.add_intermediate_tensor(den_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(den_name, den_tid);
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, ax_tid)?;
+                    ir.add_node_input(n_add, eps_c)?;
+                    ir.add_node_output(n_add, den_tid)?;
+                    let n_div = ir.add_node(OpType::Divide);
+                    ir.add_node_input(n_div, *x_id)?;
+                    ir.add_node_input(n_div, den_tid)?;
+                    ir.add_node_output(n_div, out_id)?;
+                    return Ok(true);
+                }
+                "Sum" => {
+                    // Variadic Sum = chained Add (opset 13).
+                    let n_in = input_ids.len();
+                    if n_in == 0 {
+                        return Err(CoelanoxError::format("Sum requires at least one input"));
+                    }
+                    if n_in == 1 {
+                        let z = Self::add_scalar_constant(ir, format!("{}_sum_z", node_name), 0.0);
+                        let add_n = ir.add_node(OpType::Add);
+                        ir.add_node_input(add_n, input_ids[0])?;
+                        ir.add_node_input(add_n, z)?;
+                        ir.add_node_output(add_n, out_id)?;
+                        return Ok(true);
+                    }
+                    let mut cur = input_ids[0];
+                    for i in 1..n_in {
+                        let add_n = ir.add_node(OpType::Add);
+                        if i + 1 == n_in {
+                            ir.add_node_input(add_n, cur)?;
+                            ir.add_node_input(add_n, input_ids[i])?;
+                            ir.add_node_output(add_n, out_id)?;
+                        } else {
+                            let tmp_name = format!("{}_sum_{}", node_name, i);
+                            let tmp_tid = ir.add_intermediate_tensor(
+                                tmp_name.clone(),
+                                Shape::new(vec![1]),
+                                DataType::Float32,
+                            );
+                            name_to_id.insert(tmp_name, tmp_tid);
+                            ir.add_node_input(add_n, cur)?;
+                            ir.add_node_input(add_n, input_ids[i])?;
+                            ir.add_node_output(add_n, tmp_tid)?;
+                            cur = tmp_tid;
+                        }
+                    }
+                    return Ok(true);
+                }
+                "ReduceL2" => {
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("ReduceL2 requires input")
+                    })?;
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_rl2_2", node_name), 2.0);
+                    let sq_name = format!("{}_rl2_sq", node_name);
+                    let sq_tid = ir.add_intermediate_tensor(sq_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sq_name, sq_tid);
+                    let n_pow = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n_pow, *x_id)?;
+                    ir.add_node_input(n_pow, two_c)?;
+                    ir.add_node_output(n_pow, sq_tid)?;
+                    let rs_name = format!("{}_rl2_rs", node_name);
+                    let rs_tid = ir.add_intermediate_tensor(rs_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(rs_name, rs_tid);
+                    let n_rs = ir.add_node(OpType::ReduceSum);
+                    ir.add_node_input(n_rs, sq_tid)?;
+                    ir.add_node_output(n_rs, rs_tid)?;
+                    forward_onnx_reduce_attrs(ir, n_rs, node);
+                    let n_sqrt = ir.add_node(OpType::Sqrt);
+                    ir.add_node_input(n_sqrt, rs_tid)?;
+                    ir.add_node_output(n_sqrt, out_id)?;
+                    return Ok(true);
+                }
+                "ReduceL1" => {
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("ReduceL1 requires input")
+                    })?;
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_rl1_2", node_name), 2.0);
+                    let sq_name = format!("{}_rl1_sq", node_name);
+                    let sq_tid = ir.add_intermediate_tensor(sq_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sq_name, sq_tid);
+                    let n_pow = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n_pow, *x_id)?;
+                    ir.add_node_input(n_pow, two_c)?;
+                    ir.add_node_output(n_pow, sq_tid)?;
+                    let ax_name = format!("{}_rl1_abs", node_name);
+                    let ax_tid = ir.add_intermediate_tensor(ax_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(ax_name, ax_tid);
+                    let n_sqrt = ir.add_node(OpType::Sqrt);
+                    ir.add_node_input(n_sqrt, sq_tid)?;
+                    ir.add_node_output(n_sqrt, ax_tid)?;
+                    let n_rs = ir.add_node(OpType::ReduceSum);
+                    ir.add_node_input(n_rs, ax_tid)?;
+                    ir.add_node_output(n_rs, out_id)?;
+                    forward_onnx_reduce_attrs(ir, n_rs, node);
+                    return Ok(true);
+                }
+                "ReduceSumSquare" => {
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("ReduceSumSquare requires input")
+                    })?;
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_rss_2", node_name), 2.0);
+                    let sq_name = format!("{}_rss_sq", node_name);
+                    let sq_tid = ir.add_intermediate_tensor(sq_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sq_name, sq_tid);
+                    let n_pow = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n_pow, *x_id)?;
+                    ir.add_node_input(n_pow, two_c)?;
+                    ir.add_node_output(n_pow, sq_tid)?;
+                    let n_rs = ir.add_node(OpType::ReduceSum);
+                    ir.add_node_input(n_rs, sq_tid)?;
+                    ir.add_node_output(n_rs, out_id)?;
+                    forward_onnx_reduce_attrs(ir, n_rs, node);
+                    return Ok(true);
+                }
+                "LpNormalization" => {
+                    // L2 norm along axis: x / sqrt(reduce_sum(x^2, axis, keepdims=1)). Only p=2.
+                    let p = Self::get_attr(node, "p").and_then(|a| a.as_int()).unwrap_or(2);
+                    if p != 2 {
+                        return Err(CoelanoxError::format(
+                            "LpNormalization: only p=2 is implemented; use another export or extend the translator.",
+                        ));
+                    }
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("LpNormalization requires input")
+                    })?;
+                    let axis = Self::get_attr(node, "axis").and_then(|a| a.as_int()).unwrap_or(-1);
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_lpn2", node_name), 2.0);
+                    let sq_name = format!("{}_lpn_sq", node_name);
+                    let sq_tid = ir.add_intermediate_tensor(sq_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sq_name, sq_tid);
+                    let n_pow = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n_pow, *x_id)?;
+                    ir.add_node_input(n_pow, two_c)?;
+                    ir.add_node_output(n_pow, sq_tid)?;
+                    let ss_name = format!("{}_lpn_ss", node_name);
+                    let ss_tid = ir.add_intermediate_tensor(ss_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(ss_name, ss_tid);
+                    let n_rs = ir.add_node(OpType::ReduceSum);
+                    ir.add_node_input(n_rs, sq_tid)?;
+                    ir.add_node_output(n_rs, ss_tid)?;
+                    if let Some(n) = ir.get_node_mut(n_rs) {
+                        n.add_attribute("axes".to_string(), Attribute::IntArray(vec![axis]));
+                        n.add_attribute("keepdims".to_string(), Attribute::Int(1));
+                    }
+                    let norm_name = format!("{}_lpn_n", node_name);
+                    let norm_tid = ir.add_intermediate_tensor(norm_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(norm_name, norm_tid);
+                    let n_sqrt = ir.add_node(OpType::Sqrt);
+                    ir.add_node_input(n_sqrt, ss_tid)?;
+                    ir.add_node_output(n_sqrt, norm_tid)?;
+                    let n_div = ir.add_node(OpType::Divide);
+                    ir.add_node_input(n_div, *x_id)?;
+                    ir.add_node_input(n_div, norm_tid)?;
+                    ir.add_node_output(n_div, out_id)?;
+                    return Ok(true);
+                }
+                "ReduceLogSum" => {
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("ReduceLogSum requires input")
+                    })?;
+                    let e_name = format!("{}_rls_e", node_name);
+                    let e_tid = ir.add_intermediate_tensor(e_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(e_name, e_tid);
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, *x_id)?;
+                    ir.add_node_output(n_exp, e_tid)?;
+                    let s_name = format!("{}_rls_s", node_name);
+                    let s_tid = ir.add_intermediate_tensor(s_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(s_name, s_tid);
+                    let n_rs = ir.add_node(OpType::ReduceSum);
+                    ir.add_node_input(n_rs, e_tid)?;
+                    ir.add_node_output(n_rs, s_tid)?;
+                    forward_onnx_reduce_attrs(ir, n_rs, node);
+                    let n_log = ir.add_node(OpType::Log);
+                    ir.add_node_input(n_log, s_tid)?;
+                    ir.add_node_output(n_log, out_id)?;
+                    return Ok(true);
+                }
+                "ReduceLogSumExp" => {
+                    // Log(ReduceSum(Exp(x))) — naive; numerically unstable vs two-pass log-sum-exp.
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("ReduceLogSumExp requires input")
+                    })?;
+                    let e_name = format!("{}_rlse_e", node_name);
+                    let e_tid = ir.add_intermediate_tensor(e_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(e_name, e_tid);
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, *x_id)?;
+                    ir.add_node_output(n_exp, e_tid)?;
+                    let s_name = format!("{}_rlse_s", node_name);
+                    let s_tid = ir.add_intermediate_tensor(s_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(s_name, s_tid);
+                    let n_rs = ir.add_node(OpType::ReduceSum);
+                    ir.add_node_input(n_rs, e_tid)?;
+                    ir.add_node_output(n_rs, s_tid)?;
+                    forward_onnx_reduce_attrs(ir, n_rs, node);
+                    let n_log = ir.add_node(OpType::Log);
+                    ir.add_node_input(n_log, s_tid)?;
+                    ir.add_node_output(n_log, out_id)?;
+                    return Ok(true);
+                }
+                "Selu" => {
+                    // Selu(x) = gamma * Elu(x) with ONNX defaults alpha=1.67326..., gamma=1.0507...
+                    let x_id = input_ids.first().ok_or_else(|| CoelanoxError::format("Selu requires one input"))?;
+                    let alpha = Self::get_attr(node, "alpha")
+                        .and_then(|a| a.as_float())
+                        .unwrap_or(1.6732632f32);
+                    let gamma = Self::get_attr(node, "gamma")
+                        .and_then(|a| a.as_float())
+                        .unwrap_or(1.050701f32);
+                    let zero_c = Self::add_scalar_constant(ir, format!("{}_selu_z", node_name), 0.0);
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_selu_one", node_name), 1.0);
+                    let alpha_c = Self::add_scalar_constant(ir, format!("{}_selu_alpha", node_name), alpha);
+                    let m_name = format!("{}_selu_min", node_name);
+                    let m_tid = ir.add_intermediate_tensor(m_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(m_name, m_tid);
+                    let n_min = ir.add_node(OpType::Min);
+                    ir.add_node_input(n_min, *x_id)?;
+                    ir.add_node_input(n_min, zero_c)?;
+                    ir.add_node_output(n_min, m_tid)?;
+                    let e_name = format!("{}_selu_exp", node_name);
+                    let e_tid = ir.add_intermediate_tensor(e_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(e_name, e_tid);
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, m_tid)?;
+                    ir.add_node_output(n_exp, e_tid)?;
+                    let t_name = format!("{}_selu_em1", node_name);
+                    let t_tid = ir.add_intermediate_tensor(t_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t_name, t_tid);
+                    let n_sub = ir.add_node(OpType::Subtract);
+                    ir.add_node_input(n_sub, e_tid)?;
+                    ir.add_node_input(n_sub, one_c)?;
+                    ir.add_node_output(n_sub, t_tid)?;
+                    let neg_b_name = format!("{}_selu_negb", node_name);
+                    let neg_b_tid = ir.add_intermediate_tensor(neg_b_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(neg_b_name, neg_b_tid);
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, t_tid)?;
+                    ir.add_node_input(n_mul, alpha_c)?;
+                    ir.add_node_output(n_mul, neg_b_tid)?;
+                    let pos_name = format!("{}_selu_pos", node_name);
+                    let pos_tid = ir.add_intermediate_tensor(pos_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(pos_name, pos_tid);
+                    let n_relu = ir.add_node(OpType::Relu);
+                    ir.add_node_input(n_relu, *x_id)?;
+                    ir.add_node_output(n_relu, pos_tid)?;
+                    let elu_name = format!("{}_selu_elu", node_name);
+                    let elu_tid = ir.add_intermediate_tensor(elu_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(elu_name, elu_tid);
+                    let n_add_elu = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add_elu, pos_tid)?;
+                    ir.add_node_input(n_add_elu, neg_b_tid)?;
+                    ir.add_node_output(n_add_elu, elu_tid)?;
+                    let gamma_c = Self::add_scalar_constant(ir, format!("{}_selu_g", node_name), gamma);
+                    let n_g = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_g, elu_tid)?;
+                    ir.add_node_input(n_g, gamma_c)?;
+                    ir.add_node_output(n_g, out_id)?;
+                    return Ok(true);
+                }
+                "Celu" => {
+                    // Celu(x) = max(0,x) + min(0, alpha * (exp(x/alpha) - 1))
+                    let x_id = input_ids.first().ok_or_else(|| CoelanoxError::format("Celu requires one input"))?;
+                    let alpha = Self::get_attr(node, "alpha")
+                        .and_then(|a| a.as_float())
+                        .unwrap_or(1.0f32);
+                    let zero_c = Self::add_scalar_constant(ir, format!("{}_celu_z", node_name), 0.0);
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_celu_one", node_name), 1.0);
+                    let alpha_c = Self::add_scalar_constant(ir, format!("{}_celu_a", node_name), alpha);
+                    let m_name = format!("{}_celu_m", node_name);
+                    let m_tid = ir.add_intermediate_tensor(m_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(m_name, m_tid);
+                    let n_min = ir.add_node(OpType::Min);
+                    ir.add_node_input(n_min, *x_id)?;
+                    ir.add_node_input(n_min, zero_c)?;
+                    ir.add_node_output(n_min, m_tid)?;
+                    let t_name = format!("{}_celu_t", node_name);
+                    let t_tid = ir.add_intermediate_tensor(t_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(t_name, t_tid);
+                    let n_div = ir.add_node(OpType::Divide);
+                    ir.add_node_input(n_div, m_tid)?;
+                    ir.add_node_input(n_div, alpha_c)?;
+                    ir.add_node_output(n_div, t_tid)?;
+                    let e_name = format!("{}_celu_e", node_name);
+                    let e_tid = ir.add_intermediate_tensor(e_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(e_name, e_tid);
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, t_tid)?;
+                    ir.add_node_output(n_exp, e_tid)?;
+                    let u_name = format!("{}_celu_u", node_name);
+                    let u_tid = ir.add_intermediate_tensor(u_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(u_name, u_tid);
+                    let n_sub = ir.add_node(OpType::Subtract);
+                    ir.add_node_input(n_sub, e_tid)?;
+                    ir.add_node_input(n_sub, one_c)?;
+                    ir.add_node_output(n_sub, u_tid)?;
+                    let v_name = format!("{}_celu_v", node_name);
+                    let v_tid = ir.add_intermediate_tensor(v_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(v_name, v_tid);
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, alpha_c)?;
+                    ir.add_node_input(n_mul, u_tid)?;
+                    ir.add_node_output(n_mul, v_tid)?;
+                    let w_name = format!("{}_celu_w", node_name);
+                    let w_tid = ir.add_intermediate_tensor(w_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(w_name, w_tid);
+                    let n_min2 = ir.add_node(OpType::Min);
+                    ir.add_node_input(n_min2, zero_c)?;
+                    ir.add_node_input(n_min2, v_tid)?;
+                    ir.add_node_output(n_min2, w_tid)?;
+                    let pos_name = format!("{}_celu_pos", node_name);
+                    let pos_tid = ir.add_intermediate_tensor(pos_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(pos_name, pos_tid);
+                    let n_relu = ir.add_node(OpType::Relu);
+                    ir.add_node_input(n_relu, *x_id)?;
+                    ir.add_node_output(n_relu, pos_tid)?;
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, pos_tid)?;
+                    ir.add_node_input(n_add, w_tid)?;
+                    ir.add_node_output(n_add, out_id)?;
+                    return Ok(true);
+                }
+                "Mish" => {
+                    // Mish(x) = x * Tanh(Softplus(x))
+                    let x_id = input_ids.first().ok_or_else(|| CoelanoxError::format("Mish requires one input"))?;
+                    let one_c = Self::add_scalar_constant(ir, format!("{}_m1", node_name), 1.0);
+                    let e_name = format!("{}_m_e", node_name);
+                    let e_tid = ir.add_intermediate_tensor(e_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(e_name, e_tid);
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, *x_id)?;
+                    ir.add_node_output(n_exp, e_tid)?;
+                    let s_name = format!("{}_m_s", node_name);
+                    let s_tid = ir.add_intermediate_tensor(s_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(s_name, s_tid);
+                    let n_add = ir.add_node(OpType::Add);
+                    ir.add_node_input(n_add, e_tid)?;
+                    ir.add_node_input(n_add, one_c)?;
+                    ir.add_node_output(n_add, s_tid)?;
+                    let sp_name = format!("{}_m_sp", node_name);
+                    let sp_tid = ir.add_intermediate_tensor(sp_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sp_name, sp_tid);
+                    let n_log = ir.add_node(OpType::Log);
+                    ir.add_node_input(n_log, s_tid)?;
+                    ir.add_node_output(n_log, sp_tid)?;
+                    let th_name = format!("{}_m_th", node_name);
+                    let th_tid = ir.add_intermediate_tensor(th_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(th_name, th_tid);
+                    let n_tanh = ir.add_node(OpType::Tanh);
+                    ir.add_node_input(n_tanh, sp_tid)?;
+                    ir.add_node_output(n_tanh, th_tid)?;
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, *x_id)?;
+                    ir.add_node_input(n_mul, th_tid)?;
+                    ir.add_node_output(n_mul, out_id)?;
+                    return Ok(true);
+                }
                 "Flatten" => {
                     // Flatten(axis) -> Reshape with shape [dim0*..*dim(axis-1), dim(axis)*..*dim(n)].
                     let x_id = input_ids.first().ok_or_else(|| {
@@ -378,32 +1183,6 @@ mod impl_ {
                         nd.add_attribute("axis".to_string(), Attribute::Int(axis));
                         nd.add_attribute("shape".to_string(), Attribute::IntArray(vec![0, -1]));
                     }
-                    return Ok(true);
-                }
-                "Abs" => {
-                    // Abs(x) = Sqrt(Pow(x, 2))
-                    let x_id = input_ids.first().ok_or_else(|| {
-                        CoelanoxError::format("Abs requires one input")
-                    })?;
-                    let two = Self::add_scalar_constant(
-                        ir,
-                        format!("{}_abs_two", node_name),
-                        2.0,
-                    );
-                    let mid_name = format!("{}_abs_sq", node_name);
-                    let mid_tid = ir.add_intermediate_tensor(
-                        mid_name.clone(),
-                        Shape::new(vec![1]),
-                        DataType::Float32,
-                    );
-                    name_to_id.insert(mid_name, mid_tid);
-                    let n_pow = ir.add_node(OpType::Pow);
-                    ir.add_node_input(n_pow, *x_id)?;
-                    ir.add_node_input(n_pow, two)?;
-                    ir.add_node_output(n_pow, mid_tid)?;
-                    let n_sqrt = ir.add_node(OpType::Sqrt);
-                    ir.add_node_input(n_sqrt, mid_tid)?;
-                    ir.add_node_output(n_sqrt, out_id)?;
                     return Ok(true);
                 }
                 "Mean" => {
@@ -1039,12 +1818,8 @@ mod impl_ {
             for node in &graph.node {
                 let op_type_str = node.op_type.as_deref().unwrap_or("Unknown");
 
-                // Control flow belongs in the application layer, not in the model IR.
-                if op_type_str == "If" || op_type_str == "Loop" {
-                    return Err(CoelanoxError::format(
-                        "ONNX control flow (If/Loop) is not supported in the model. \
-                         Move control flow to the application layer and export a model with a fixed execution path.",
-                    ));
+                if let Some(msg) = Self::onnx_op_rejected_at_package_time(op_type_str) {
+                    return Err(CoelanoxError::format(msg));
                 }
 
                 // Identity: rewire output name to input tensor (no node; avoids dead code).
@@ -1095,21 +1870,11 @@ mod impl_ {
                 }
             }
 
-            // 5) Policy checks on the constructed IR.
-            //
-            // Runtime executes in f32 only; Cast is a preprocessing/export concern.
-            // If a model still contains Cast, fail fast with a clear, actionable error
-            // instead of letting it reach the scalar backend as Custom("Cast").
+            // 5) Any remaining Custom op means the translator has no lowering — fail at package time
+            // with a specific or generic message (never rely on the runtime scalar backend for Custom).
             for node in &ir.nodes {
                 if let OpType::Custom(name) = &node.op_type {
-                    if name == "Cast" {
-                        return Err(CoelanoxError::format(
-                            "ONNX Cast is not supported in the Coelanox runtime. \
-                             This beta build executes models in a single numeric type (f32). \
-                             Please normalize your model to f32 (e.g., convert weights and activations) \
-                             or remove Cast in your preprocessing/export pipeline before packaging.",
-                        ));
-                    }
+                    return Err(CoelanoxError::format(Self::unimplemented_custom_onnx_op_message(name)));
                 }
             }
 
@@ -1132,6 +1897,26 @@ mod impl_ {
             _ => return None,
         };
         Some((name, value))
+    }
+
+    /// Forwards ONNX Reduce* attributes onto an IR [`ReduceSum`] / reduction node.
+    fn forward_onnx_reduce_attrs(
+        ir: &mut UniversalIR,
+        node_id: NodeId,
+        onnx_node: &rten_onnx::onnx::NodeProto,
+    ) {
+        for attr in &onnx_node.attribute {
+            if let Some((k, v)) = convert_attr(attr) {
+                match k.as_str() {
+                    "axes" | "keepdims" | "noop_with_empty_axes" => {
+                        if let Some(n) = ir.get_node_mut(node_id) {
+                            n.add_attribute(k, v);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     impl Default for OnnxTranslator {

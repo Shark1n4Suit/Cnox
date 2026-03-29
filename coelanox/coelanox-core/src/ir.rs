@@ -203,6 +203,8 @@ pub enum OpType {
     
     // Mathematical primitives (for RMSNorm, RoPE, etc.)
     Sqrt,
+    /// Element-wise absolute value (|x|); prefer over sqrt(x²) for cost and clarity.
+    Abs,
     Pow,
     Cos,
     Sin,

@@ -16,8 +16,8 @@
 //! | 14    | LogSoftmax | 33    | GlobalMaxPool | 51    | Gemm          |
 //! | 15    | Gelu       | 34    | GlobalAvgPool | 60    | ReduceSum     |
 //! | 16    | Swish      | 35    | BatchNorm     | 61    | ReduceMean    |
-//! |       | 17–19 reserved | 36 | LayerNorm    | 62    | ReduceMax     |
-//! |       |            | 37    | Dropout       | 63    | ReduceMin     |
+//! | 19    | Abs        | 36    | LayerNorm     | 62    | ReduceMax     |
+//! |       | 17–18 reserved | 37 | Dropout       | 63    | ReduceMin     |
 //! |       | 26–29 reserved | 38–39 reserved | 64    | ReduceProd    |
 //! |       |            |       |               | 70–71 | Broadcast, Expand |
 //! |       |            |       |               | 80–85 | Equal,NotEqual,Greater,GreaterEqual,Less,LessEqual |
@@ -944,6 +944,33 @@ pub unsafe extern "C" fn clf_simd_swish(out: *mut f32, x: *const f32, count: usi
     swish_scalar(out, x, count);
 }
 
+// --------------- Abs (19): |x| ---------------
+#[inline(always)]
+fn abs_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        let v = unsafe { *x.add(i) };
+        unsafe { *out.add(i) = v.abs(); }
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn abs_avx2(out: *mut f32, x: *const f32, count: usize) {
+    let mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFF_FFFFu32 as i32));
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        let v = _mm256_loadu_ps(x.add(i));
+        _mm256_storeu_ps(out.add(i), _mm256_and_ps(v, mask));
+        i += LANE_F32;
+    }
+    abs_scalar(out.add(i), x.add(i), count - i);
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_abs(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { abs_avx2(out, x, count); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { abs_scalar(out, x, count); }
+}
+
 // --------------- Sqrt (20), Pow (21), Cos (22), Sin (23), Exp (24), Log (25) ---------------
 #[inline(always)]
 fn sqrt_scalar(out: *mut f32, x: *const f32, count: usize) {
@@ -1512,6 +1539,23 @@ pub unsafe extern "C" fn clf_abi6_relu(
     relu_avx2(output_ptr, input_ptr, in_len);
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))]
     relu_scalar(output_ptr, input_ptr, in_len);
+}
+
+/// CLFE 6-arg entry for Abs (op_id 19). Plan: in=input_ptr, out=output_ptr, element count=in_len. Weights unused (same unary pattern as ReLU).
+#[link_section = ".text.clf_abi6_abs"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_abi6_abs(
+    input_ptr: *const f32,
+    output_ptr: *mut f32,
+    _weights_ptr: *const f32,
+    in_len: usize,
+    _out_len: usize,
+    _w_len: usize,
+) {
+    if in_len == 0 {
+        return;
+    }
+    clf_simd_abs(output_ptr, input_ptr, in_len);
 }
 
 /// CLFE 6-arg entry for BatchNorm. Weights: scale,bias,mean,var each c elements => w_len=4*c. If w_len==0, identity copy.

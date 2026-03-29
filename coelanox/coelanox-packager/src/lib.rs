@@ -34,6 +34,7 @@ fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
         Ir::LogSoftmax => Clf::LogSoftmax,
         Ir::Gelu => Clf::Gelu,
         Ir::Swish => Clf::Swish,
+        Ir::Abs => Clf::Abs,
         Ir::Sqrt => Clf::Sqrt,
         Ir::Pow => Clf::Pow,
         Ir::Cos => Clf::Cos,

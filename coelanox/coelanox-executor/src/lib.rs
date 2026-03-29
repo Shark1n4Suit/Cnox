@@ -19,7 +19,7 @@ use clf_kernels_simd::{
     clf_simd_or, clf_simd_and, clf_simd_permute, clf_simd_concatenate, clf_simd_split, clf_simd_slice,
     clf_simd_scatter, clf_simd_pow, clf_simd_reduce_mean, clf_simd_reduce_max, clf_simd_reduce_min,
     clf_simd_reduce_prod, clf_simd_reduce_sum, clf_simd_relu, clf_simd_reshape, clf_simd_sigmoid,
-    clf_simd_sin, clf_simd_softmax, clf_simd_sqrt, clf_simd_subtract, clf_simd_swish, clf_simd_tanh,
+    clf_simd_sin, clf_simd_softmax, clf_simd_abs, clf_simd_sqrt, clf_simd_subtract, clf_simd_swish, clf_simd_tanh,
     clf_simd_transpose,
 };
 
@@ -449,7 +449,8 @@ pub fn run_with_plan(
                     clf_simd_log_softmax(out_ptr, in_ptr, rows, cols);
                 }
                 16 => clf_simd_swish(out_ptr, in_ptr, in_len),
-                // Math 20–25 (Pow uses first weight as exponent if w_len >= 1)
+                // Math 19–25 (Pow uses first weight as exponent if w_len >= 1)
+                19 => clf_simd_abs(out_ptr, in_ptr, in_len),
                 20 => clf_simd_sqrt(out_ptr, in_ptr, in_len),
                 21 => {
                     let exp = if w_len > 0 { *w_ptr } else { 2.0 };
@@ -918,6 +919,7 @@ where
                     clf_simd_log_softmax(out_ptr, in_ptr, rows, cols);
                 }
                 16 => clf_simd_swish(out_ptr, in_ptr, in_len),
+                19 => clf_simd_abs(out_ptr, in_ptr, in_len),
                 20 => clf_simd_sqrt(out_ptr, in_ptr, in_len),
                 21 => {
                     let exp = if w_len > 0 { *w_ptr } else { 2.0 };

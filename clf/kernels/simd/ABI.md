@@ -116,6 +116,20 @@ void clf_simd_matmul(
 
 ---
 
+## 7. Abs
+
+```c
+void clf_simd_abs(float *out, const float *x, size_t count);
+```
+
+- **out**: output buffer, `count` elements.
+- **x**: input buffer, `count` elements.
+- **count**: number of elements.
+- **Semantics**: `out[i] = fabsf(x[i])` (element-wise absolute value).
+- **CLFE 6-arg wrapper**: `clf_abi6_abs` — same contract as ReLU unary: `in_len` is the element count; `weights_ptr`, `out_len`, and `w_len` are unused by the kernel. Packed as **op_id 19** in `.clfc` when the packer includes `abs.bin` from `.text.clf_abi6_abs`.
+
+---
+
 ## CLFE uniform 6-arg ABI (packed blobs)
 
 The **.clfc** blobs use a **single uniform signature** so the runtime can call every kernel the same way (CLFE dispatch contract):
@@ -146,8 +160,8 @@ cd /path/to/CLF/kernels/simd
 This will:
 
 1. Build the crate with AVX2 (`libclf_kernels_simd.a`).
-2. Extract each **CLFE 6-arg wrapper** (`.text.clf_abi6_*`) into `blobs/*.bin` (one blob per op_id; each uses the uniform 6-arg ABI).
-3. Run `coelanox-packer` to produce **`resnet_tiny_mnist_simd.clfc`** with op_ids: 1 (Add), 10 (Relu), 30 (Convolution), 34 (GlobalAvgPool), 35 (BatchNorm), 50 (MatMul).
+2. Extract each **CLFE 6-arg wrapper** (`.text.clf_abi6_*`) into `blobs/*.bin` (one blob per op_id; each uses the uniform 6-arg ABI). Includes **19 (Abs)** via `clf_abi6_abs` when packed.
+3. Run `coelanox-packer` to produce **`resnet_tiny_mnist_simd.clfc`** with op_ids: 1 (Add), 10 (Relu), 19 (Abs), 30 (Convolution), 34 (GlobalAvgPool), 35 (BatchNorm), 50 (MatMul).
 
 Point the Coelanox backend at this `.clfc` when building a ResNet-tiny container for the **x86_64-AVX2** target. The runtime loads each blob and calls it with **(input_ptr, output_ptr, weights_ptr, in_len, out_len, w_len)** (CLFE uniform 6-arg ABI).
 

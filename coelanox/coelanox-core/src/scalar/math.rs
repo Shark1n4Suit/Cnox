@@ -9,6 +9,25 @@ use rayon::prelude::*;
 
 const PAR_THRESHOLD: usize = 64 * 1024;
 
+/// Execute absolute value: output[i] = |input[i]|
+pub fn abs(
+    input: &[f32],
+    output: &mut [f32],
+    _attributes: &HashMap<String, Attribute>,
+) -> CoelanoxResult<()> {
+    let len = input.len().min(output.len());
+    if len >= PAR_THRESHOLD {
+        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+            .for_each(|(o, &x)| *o = x.abs());
+    } else {
+        output[..len]
+            .iter_mut()
+            .zip(input[..len].iter())
+            .for_each(|(o, &x)| *o = x.abs());
+    }
+    Ok(())
+}
+
 /// Execute square root: output = sqrt(input)
 pub fn sqrt(
     input: &[f32],

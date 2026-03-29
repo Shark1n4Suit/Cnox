@@ -201,6 +201,15 @@ fn scalar_sqrt_correctness() {
 }
 
 #[test]
+fn scalar_abs_correctness() {
+    let input = [2.0f32, -3.0f32, 0.0f32];
+    let mut out = [0.0f32; 3];
+    execute_scalar_op(&OpType::Abs, &input, None, &mut out, None, &empty_attrs())
+        .expect("Abs should succeed");
+    assert_slice_eq(&out, &[2.0, 3.0, 0.0], "Abs");
+}
+
+#[test]
 fn scalar_pow_correctness() {
     let input = [2.0f32, 3.0f32];
     let mut out = [0.0f32; 2];

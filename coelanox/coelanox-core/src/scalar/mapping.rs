@@ -15,7 +15,7 @@ use super::{
     // Activations
     relu, sigmoid, tanh, softmax, log_softmax, gelu, swish,
     // Math
-    sqrt, pow, cos, sin, exp, log,
+    sqrt, abs, pow, cos, sin, exp, log,
     // Pooling
     max_pool, avg_pool, global_max_pool, global_avg_pool,
     // Normalization
@@ -95,6 +95,7 @@ pub fn execute_scalar_op(
         
         // Mathematical primitives
         OpType::Sqrt => sqrt(input_a, output, attributes),
+        OpType::Abs => abs(input_a, output, attributes),
         OpType::Pow => pow(input_a, output, attributes),
         OpType::Cos => cos(input_a, output, attributes),
         OpType::Sin => sin(input_a, output, attributes),

@@ -150,6 +150,7 @@ impl ScalarFallbackBackend {
             OpType::Swish,
             // Math
             OpType::Sqrt,
+            OpType::Abs,
             OpType::Pow,
             OpType::Cos,
             OpType::Sin,
