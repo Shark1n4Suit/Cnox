@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "coelanox")]
 #[command(about = "Use the `coelanox` binary from this crate (see src/main.rs).")]
-#[command(version = "0.7.0")]
+#[command(version = "0.7.1")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

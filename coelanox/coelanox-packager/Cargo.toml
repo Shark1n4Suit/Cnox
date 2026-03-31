@@ -1,6 +1,6 @@
 [package]
 name = "coelanox-packager"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
 description = "COELANOX Packager - Model packaging and optimization tool"

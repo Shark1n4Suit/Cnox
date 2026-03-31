@@ -1,6 +1,6 @@
 [package]
 name = "coelanox-standalone"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "Minimal entry point to load and run a single COELANOX container (no CLI, no multi-container)"
 authors = ["Benjamin Morin <benjamin.morin@example.com>"]

@@ -75,7 +75,7 @@ fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<Pat
 #[derive(Parser)]
 #[command(name = "coelanox")]
 #[command(about = "COELANOX — package, verify, and run secure AI inference containers (.cnox)")]
-#[command(version = "0.7.0")]
+#[command(version = "0.7.1")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
