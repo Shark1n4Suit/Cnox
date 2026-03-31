@@ -5,7 +5,7 @@
 //!   with an explicit message (we do not silently run `Custom` in the scalar backend).
 //! - **Application-layer / export:** dynamic control flow (`If` / `Loop` / `Scan`), `Cast`, sequence ops, etc. are
 //!   **rejected at package time** with actionable text (normalize types and graphs before `coelanox package`).
-//! - **Recent additions:** **`Where`** (mask select), **`Square`**, **`Clip`** (opset 11+ optional min/max tensors), variadic **`Sum`**, **`Celu`**, **`LpNormalization`** (p=2), `Sign`, `ReduceL1`/`L2`/`SumSquare`/`LogSum`/`LogSumExp`, `Selu`, `Mish`;
+//! - **Recent additions:** **`GlobalLpPool`** (p=2, 4D NCHW spatial axes `[2,3]`), binary **`Pow`** (`exp(y*log(max(x,eps)))`), **`Where`**, **`Square`**, **`Clip`**, variadic **`Sum`**, **`Celu`**, **`LpNormalization`** (p=2), `Sign`, `ReduceL1`/`L2`/…, `Selu`, `Mish`;
 //!   `forward_onnx_reduce_attrs` copies `axes` / `keepdims` / `noop_with_empty_axes` onto lowered `ReduceSum` nodes.
 
 #[cfg(feature = "onnx-protobuf")]
@@ -56,8 +56,18 @@ mod impl_ {
                 "MatMulInteger" | "QLinearMatMul" | "ConvInteger" | "QLinearConv" => Some(
                     "Integer / quantized MatMul and Conv are not supported. Export float32 MatMul/Gemm/Conv or dequantize outside the graph.",
                 ),
-                "QuantizeLinear" | "DequantizeLinear" => Some(
-                    "ONNX QuantizeLinear / DequantizeLinear are not supported. Export a float32 graph or run dequantization outside the packaged model.",
+                "QuantizeLinear" | "DequantizeLinear" | "DynamicQuantizeLinear" => Some(
+                    "ONNX QuantizeLinear / DequantizeLinear / DynamicQuantizeLinear are not supported. Export a float32 graph or run dequantization outside the packaged model.",
+                ),
+                "QLinearAdd" | "QLinearMul" | "QLinearAveragePool" | "QLinearConcat" | "QLinearLeakyRelu"
+                | "QLinearSigmoid" => Some(
+                    "ONNX QLinear* operators are not supported. Export float32 activations and pooling, or dequantize outside the graph.",
+                ),
+                "ConvTranspose" => Some(
+                    "ONNX ConvTranspose (transposed convolution) is not supported. Use a regular Conv export, different architecture, or extend the translator.",
+                ),
+                "Floor" | "Ceil" | "Round" | "IsNaN" | "IsInf" => Some(
+                    "ONNX Floor / Ceil / Round / IsNaN / IsInf are not supported in the float32 path. Fold or remove these nodes in export, or extend the translator.",
                 ),
                 _ => None,
             }
@@ -473,6 +483,39 @@ mod impl_ {
                     ir.add_node_input(n, *x_id)?;
                     ir.add_node_input(n, two_c)?;
                     ir.add_node_output(n, out_id)?;
+                    return Ok(true);
+                }
+                "Pow" => {
+                    // Binary Pow(X, Y): X^Y ≈ exp(Y * log(max(X, eps))) for X > 0 (negative bases are not IEEE-correct here).
+                    if input_ids.len() < 2 {
+                        return Ok(false);
+                    }
+                    let x_id = input_ids[0];
+                    let y_id = input_ids[1];
+                    let eps_c = Self::add_scalar_constant(ir, format!("{}_pow_eps", node_name), 1e-12f32);
+                    let mx_name = format!("{}_pow_mx", node_name);
+                    let mx_tid = ir.add_intermediate_tensor(mx_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(mx_name, mx_tid);
+                    let n_max = ir.add_node(OpType::Max);
+                    ir.add_node_input(n_max, x_id)?;
+                    ir.add_node_input(n_max, eps_c)?;
+                    ir.add_node_output(n_max, mx_tid)?;
+                    let lg_name = format!("{}_pow_lg", node_name);
+                    let lg_tid = ir.add_intermediate_tensor(lg_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(lg_name, lg_tid);
+                    let n_log = ir.add_node(OpType::Log);
+                    ir.add_node_input(n_log, mx_tid)?;
+                    ir.add_node_output(n_log, lg_tid)?;
+                    let ml_name = format!("{}_pow_ml", node_name);
+                    let ml_tid = ir.add_intermediate_tensor(ml_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(ml_name, ml_tid);
+                    let n_mul = ir.add_node(OpType::Multiply);
+                    ir.add_node_input(n_mul, y_id)?;
+                    ir.add_node_input(n_mul, lg_tid)?;
+                    ir.add_node_output(n_mul, ml_tid)?;
+                    let n_exp = ir.add_node(OpType::Exp);
+                    ir.add_node_input(n_exp, ml_tid)?;
+                    ir.add_node_output(n_exp, out_id)?;
                     return Ok(true);
                 }
                 "Neg" => {
@@ -958,6 +1001,48 @@ mod impl_ {
                         n.add_attribute("keepdims".to_string(), Attribute::Int(1));
                     }
                     let norm_name = format!("{}_lpn_n", node_name);
+                    let norm_tid = ir.add_intermediate_tensor(norm_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(norm_name, norm_tid);
+                    let n_sqrt = ir.add_node(OpType::Sqrt);
+                    ir.add_node_input(n_sqrt, ss_tid)?;
+                    ir.add_node_output(n_sqrt, norm_tid)?;
+                    let n_div = ir.add_node(OpType::Divide);
+                    ir.add_node_input(n_div, *x_id)?;
+                    ir.add_node_input(n_div, norm_tid)?;
+                    ir.add_node_output(n_div, out_id)?;
+                    return Ok(true);
+                }
+                "GlobalLpPool" => {
+                    // L2 global pool over spatial dims: x / sqrt(reduce_sum(x^2, axes=[2,3], keepdims=1)).
+                    // Assumes **4D NCHW** (spatial H×W); not valid for NHWC or 3D without extending the translator.
+                    let p = Self::get_attr(node, "p").and_then(|a| a.as_int()).unwrap_or(2);
+                    if p != 2 {
+                        return Err(CoelanoxError::format(
+                            "GlobalLpPool: only p=2 is implemented; use another export or extend the translator.",
+                        ));
+                    }
+                    let x_id = input_ids.first().ok_or_else(|| {
+                        CoelanoxError::format("GlobalLpPool requires input")
+                    })?;
+                    let two_c = Self::add_scalar_constant(ir, format!("{}_glp2", node_name), 2.0);
+                    let sq_name = format!("{}_glp_sq", node_name);
+                    let sq_tid = ir.add_intermediate_tensor(sq_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(sq_name, sq_tid);
+                    let n_pow = ir.add_node(OpType::Pow);
+                    ir.add_node_input(n_pow, *x_id)?;
+                    ir.add_node_input(n_pow, two_c)?;
+                    ir.add_node_output(n_pow, sq_tid)?;
+                    let ss_name = format!("{}_glp_ss", node_name);
+                    let ss_tid = ir.add_intermediate_tensor(ss_name.clone(), Shape::new(vec![1]), DataType::Float32);
+                    name_to_id.insert(ss_name, ss_tid);
+                    let n_rs = ir.add_node(OpType::ReduceSum);
+                    ir.add_node_input(n_rs, sq_tid)?;
+                    ir.add_node_output(n_rs, ss_tid)?;
+                    if let Some(n) = ir.get_node_mut(n_rs) {
+                        n.add_attribute("axes".to_string(), Attribute::IntArray(vec![2, 3]));
+                        n.add_attribute("keepdims".to_string(), Attribute::Int(1));
+                    }
+                    let norm_name = format!("{}_glp_n", node_name);
                     let norm_tid = ir.add_intermediate_tensor(norm_name.clone(), Shape::new(vec![1]), DataType::Float32);
                     name_to_id.insert(norm_name, norm_tid);
                     let n_sqrt = ir.add_node(OpType::Sqrt);

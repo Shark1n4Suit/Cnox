@@ -41,7 +41,7 @@ CLI commands: `package`, `validate`, `keygen`, `verify`, `run`, `info`, `benchma
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Components:** `coelanox-core` (format, IR, scalar ops), `coelanox-packager` (translate, optimize), `coelanox-orchestrator` (load, execute), `coelanox-cli` (commands). See [docs/DEVELOPER](docs/DEVELOPER.md) to build a translator.
+**Components:** `coelanox-core` (format, IR, scalar ops), `coelanox-packager` (translate, optimize), `coelanox-orchestrator` (load, execute), `coelanox-cli` (commands). See [docs/sdk](docs/sdk/README.md) to build a translator.
 
 ---
 
@@ -93,7 +93,7 @@ coelanox <command> ...
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, codebase map, binary layout |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Config, security, runbooks |
 | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | CLI commands and options |
-| [docs/DEVELOPER.md](docs/DEVELOPER.md) | Translators, CLF integration |
+| [docs/DEVELOPER.md](docs/DEVELOPER.md) | Hub → [docs/sdk/](docs/sdk/README.md) (translators, pipeline, CLF) |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 
 ---

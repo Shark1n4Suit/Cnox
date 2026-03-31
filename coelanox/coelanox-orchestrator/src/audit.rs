@@ -1,9 +1,10 @@
 //! Audit mode: log after each op during inference for traceability and debugging.
-//! Set via CLI `run --audit`; state is thread-local so only the current run is audited.
+//! Enabled via CLI `run --audit` / `serve --audit`; state is process-global so
+//! worker threads in all backend paths can contribute to a single run audit.
 //! When audit_output path has extension .json, writes a JSON array of op entries; otherwise plain text lines.
 
-use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Mutex;
 
 #[derive(serde::Serialize)]
 struct AuditEntry {
@@ -13,23 +14,30 @@ struct AuditEntry {
     out_sample: Vec<f32>,
 }
 
-thread_local! {
-    static AUDIT_ENABLED: RefCell<bool> = RefCell::new(false);
-    static AUDIT_LOG_PATH: RefCell<Option<std::path::PathBuf>> = RefCell::new(None);
-    static AUDIT_ENTRIES: RefCell<Vec<AuditEntry>> = RefCell::new(Vec::new());
+struct AuditState {
+    enabled: bool,
+    log_path: Option<std::path::PathBuf>,
+    entries: Vec<AuditEntry>,
 }
 
-/// Enable or disable audit mode for the current thread. Optionally set a file path to write logs.
+static AUDIT_STATE: Mutex<AuditState> = Mutex::new(AuditState {
+    enabled: false,
+    log_path: None,
+    entries: Vec::new(),
+});
+
+/// Enable or disable audit mode. Optionally set a file path to write logs.
 /// When disabling, if path was set and extension is .json, writes a JSON array; otherwise plain text lines.
 pub fn set_audit_mode(enabled: bool, log_path: Option<&Path>) {
+    let mut state = AUDIT_STATE.lock().expect("audit state mutex poisoned");
     if enabled {
-        AUDIT_ENTRIES.with(|c| c.borrow_mut().clear());
-        AUDIT_LOG_PATH.with(|c| *c.borrow_mut() = log_path.map(|p| p.to_path_buf()));
-        AUDIT_ENABLED.with(|c| *c.borrow_mut() = true);
+        state.entries.clear();
+        state.log_path = log_path.map(|p| p.to_path_buf());
+        state.enabled = true;
     } else {
-        AUDIT_ENABLED.with(|c| *c.borrow_mut() = false);
-        let path = AUDIT_LOG_PATH.with(|c| c.take());
-        let entries = AUDIT_ENTRIES.with(|e| e.take());
+        state.enabled = false;
+        let path = state.log_path.take();
+        let entries = std::mem::take(&mut state.entries);
         if let Some(path) = path {
             if !entries.is_empty() {
                 let is_json = path.extension().map_or(false, |e| e == "json");
@@ -59,7 +67,10 @@ pub fn set_audit_mode(enabled: bool, log_path: Option<&Path>) {
 
 /// Returns true if audit mode is enabled (call from execution path).
 pub fn is_enabled() -> bool {
-    AUDIT_ENABLED.with(|c| *c.borrow())
+    AUDIT_STATE
+        .lock()
+        .expect("audit state mutex poisoned")
+        .enabled
 }
 
 /// Log one op: node index, op type, output size, and output sample. Buffered until set_audit_mode(false).
@@ -70,7 +81,8 @@ pub fn log_after_op(
     output_len: usize,
     output_sample: &[f32],
 ) {
-    if !is_enabled() {
+    let mut state = AUDIT_STATE.lock().expect("audit state mutex poisoned");
+    if !state.enabled {
         return;
     }
     let sample: Vec<f32> = output_sample.iter().take(4).copied().collect();
@@ -84,5 +96,5 @@ pub fn log_after_op(
         "audit op {} {} out_len={} out_sample=[{:?}]",
         entry.op_index, entry.op_type, entry.out_len, entry.out_sample
     );
-    AUDIT_ENTRIES.with(|c| c.borrow_mut().push(entry));
+    state.entries.push(entry);
 }

@@ -24,8 +24,8 @@ The frontend needs the same: a **structured contract** for translators. Output i
 | **Translators** | Internal to packager (BERT, ONNX, ResNet); no third-party path |
 | **Discovery** | None – all compiled in via `load_default_plugins()` |
 | **SDK crate** | None – no `coelanox-translator-sdk` or formal frontend SDK |
-| **Documentation** | `docs/DEVELOPER.md` — "How to build a translator" guide |
-| **IR schema** | Documented in `docs/DEVELOPER.md` as SDK output |
+| **Documentation** | `docs/sdk/frontend.md` — "How to build a translator"; [docs/sdk/README.md](../docs/sdk/README.md) index |
+| **IR schema** | Documented under `docs/sdk/` as SDK output |
 
 ---
 
@@ -84,7 +84,7 @@ The frontend needs the same: a **structured contract** for translators. Output i
 
 ### 2.1 Create "How to Build a Translator" guide ✅ DONE
 
-**Location:** `docs/DEVELOPER.md`
+**Location:** `docs/sdk/frontend.md` (see [sdk/README.md](../docs/sdk/README.md))
 
 **Contents:**
 - [x] Trait contract (CoelanoxTranslator)
@@ -97,7 +97,7 @@ The frontend needs the same: a **structured contract** for translators. Output i
 
 ### 2.2 IR schema documentation ✅ DONE
 
-**Location:** Section in `docs/DEVELOPER.md`
+**Location:** `docs/sdk/` (see [sdk/README.md](../docs/sdk/README.md))
 
 **Contents:**
 - [x] UniversalIR fields

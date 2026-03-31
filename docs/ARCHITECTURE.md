@@ -106,6 +106,8 @@ The security hash is calculated during packaging:
 
 The Backend Manager discovers and manages CLF (Coelanox Library File) backends. It operates at **package time** to discover .clfc files for AOT compilation.
 
+For the **CLF binary layout**, **`coelanox-clf`** reader API (`ClfReader`, `get_blob`, `build_code_section`), the canonical **`op_id`** registry, and how execution plans tie IR to blobs vs linked SIMD symbols, see **[sdk/clf.md](sdk/clf.md)** and **[sdk/pipeline.md](sdk/pipeline.md)**.
+
 ### Components
 
 #### BackendManager
