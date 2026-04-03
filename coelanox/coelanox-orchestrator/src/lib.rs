@@ -6,6 +6,7 @@ pub mod container_clfmp_backend;
 pub mod execution_backend;
 pub mod fallback;
 pub mod audit;
+pub use audit::AuditStrategy;
 
 pub use runtime::*;
 #[allow(unused_imports)]

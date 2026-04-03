@@ -30,3 +30,4 @@ memmap2 = { workspace = true }
 [dev-dependencies]
 tokio-test = "0.4"
 coelanox-packager = { path = "../coelanox-packager" }
+tempfile = "3.8"

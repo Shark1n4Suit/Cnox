@@ -698,8 +698,8 @@ impl OptimizedIR {
     }
 }
 
-/// Serialized shape for container ir_data (must match packager SerializedOptimizedIR).
-#[derive(Debug, Clone, Deserialize)]
+/// Serialized shape for container `ir_data` (single wire format for packager + runtime).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedOptimizedIR {
     target: HardwareTarget,
     optimized_nodes: Vec<GraphNode>,
@@ -707,6 +707,30 @@ struct SerializedOptimizedIR {
     optimization_metadata: HashMap<String, String>,
     original_model_name: String,
     weight_tensors: Vec<WeightTensor>,
+}
+
+/// Serialize optimized IR for container storage (matches [`deserialize_optimized_ir`]).
+/// Weight tensors are written as metadata-only; actual weights live in `compressed_weights`.
+pub fn serialize_optimized_ir_for_container(ir: &OptimizedIR) -> CoelanoxResult<Vec<u8>> {
+    let weight_tensors: Vec<WeightTensor> = ir
+        .shared_weights
+        .as_ref()
+        .iter()
+        .map(|wt| {
+            WeightTensor::metadata_only(wt.name.clone(), wt.shape.clone(), wt.data_type.clone())
+        })
+        .collect();
+    let s = SerializedOptimizedIR {
+        target: ir.target.clone(),
+        optimized_nodes: ir.optimized_nodes.clone(),
+        intermediate_tensors: ir.intermediate_tensors.clone(),
+        optimization_metadata: ir.optimization_metadata.clone(),
+        original_model_name: ir.original_model_name.clone(),
+        weight_tensors,
+    };
+    bincode::serialize(&s).map_err(|e| {
+        CoelanoxError::Runtime(format!("Failed to serialize IR: {}", e))
+    })
 }
 
 /// Deserialize container IR bytes into OptimizedIR (for runtime warm cache).
@@ -1610,5 +1634,23 @@ mod tests {
             "dimensions attribute must survive bincode round-trip (bug would cause 16min BERT scalar run)"
         );
         assert_eq!(dims.unwrap(), &[128, 768, 768, 768]);
+    }
+
+    #[test]
+    fn container_ir_wire_format_roundtrips() {
+        use crate::format::HardwareTarget;
+        use std::collections::HashMap;
+        let ir = OptimizedIR::from_deserialized(
+            HardwareTarget::Cpu,
+            vec![],
+            vec![],
+            HashMap::new(),
+            "empty".into(),
+            vec![],
+        );
+        let bytes = serialize_optimized_ir_for_container(&ir).expect("serialize");
+        let back = deserialize_optimized_ir(&bytes).expect("deserialize");
+        assert_eq!(back.original_model_name, "empty");
+        assert_eq!(back.node_count(), 0);
     }
 }

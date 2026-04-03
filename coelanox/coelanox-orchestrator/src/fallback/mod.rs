@@ -238,11 +238,10 @@ impl ScalarExecutionBackend {
         warm_data: Option<&ContainerWarmData>,
     ) -> CoelanoxResult<Vec<f32>> {
         match warm_data {
-            Some(warm) if warm.optimized_ir.is_some() => {
-                let ir = warm.optimized_ir.as_ref().unwrap();
-                return self.execute_ir_with(container, input_data, ir, warm.decompressed_weights.as_slice());
-            }
             Some(warm) => {
+                if let Some(ref ir) = warm.optimized_ir {
+                    return self.execute_ir_with(container, input_data, ir, warm.decompressed_weights.as_slice());
+                }
                 // Weights cached but IR not (plan path ran first); deserialize IR only.
                 use coelanox_core::ir::deserialize_optimized_ir;
                 let ir_owned = deserialize_optimized_ir(&container.ir_data)?;
@@ -408,17 +407,25 @@ impl ScalarExecutionBackend {
             #[allow(clippy::type_complexity)]
             let jobs: Vec<(usize, Arc<Vec<f32>>, Option<Arc<Vec<f32>>>, Option<(usize, usize)>, usize, OpType, HashMap<String, Attribute>, Vec<TensorId>)> = ready
                 .iter()
-                .filter_map(|&node_index| {
+                .map(|&node_index| -> CoelanoxResult<_> {
                     let node = &nodes[node_index];
-                    let tid_a = node.input_tensors.first()?;
+                    let tid_a = node.input_tensors.first().ok_or_else(|| {
+                        CoelanoxError::Runtime(format!("Node {} has no input tensors", node_index))
+                    })?;
                     let input_a = if tid_a.is_weight() {
                         let idx = tid_a.index();
-                        let start = *weight_offsets_ref.get(idx)?;
-                        let end = *weight_offsets_ref.get(idx + 1)?;
-                        Some(Arc::new(weights_ref[start..end].to_vec()))
+                        let start = *weight_offsets_ref.get(idx).ok_or_else(|| {
+                            CoelanoxError::Runtime(format!("Invalid weight tensor index {} on node {}", idx, node_index))
+                        })?;
+                        let end = *weight_offsets_ref.get(idx + 1).ok_or_else(|| {
+                            CoelanoxError::Runtime(format!("Invalid weight tensor range end {} on node {}", idx + 1, node_index))
+                        })?;
+                        Arc::new(weights_ref[start..end].to_vec())
                     } else {
-                        tensor_data.get(tid_a).cloned()
-                    }?;
+                        tensor_data.get(tid_a).cloned().ok_or_else(|| {
+                            CoelanoxError::Runtime(format!("Missing input tensor {:?} for node {}", tid_a, node_index))
+                        })?
+                    };
                     let input_b = node.input_tensors.get(1).and_then(|&tid| {
                         if tid.is_weight() {
                             let idx = tid.index();
@@ -449,12 +456,17 @@ impl ScalarExecutionBackend {
                         .copied()
                         .collect();
                     if out_tids.is_empty() {
-                        return None;
+                        return Err(CoelanoxError::Runtime(format!(
+                            "Node {} has no intermediate outputs",
+                            node_index
+                        )));
                     }
                     // For Conv, add input_shape so scalar can use im2col+sgemm (2D NCHW).
                     let mut attrs = node.attributes.clone();
                     if matches!(node.op_type, OpType::Convolution) {
-                        let in_tid = node.input_tensors.iter().find(|t| !t.is_weight())?;
+                        let in_tid = node.input_tensors.iter().find(|t| !t.is_weight()).ok_or_else(|| {
+                            CoelanoxError::Runtime(format!("Convolution node {} has no non-weight input", node_index))
+                        })?;
                         if in_tid.is_intermediate() {
                             if let Some(t) = ir.intermediate_tensors.get(in_tid.index()) {
                                 if t.shape.dimensions.len() >= 4 {
@@ -466,7 +478,7 @@ impl ScalarExecutionBackend {
                             }
                         }
                     }
-                    Some((
+                    Ok((
                         node_index,
                         input_a,
                         input_b,
@@ -477,7 +489,7 @@ impl ScalarExecutionBackend {
                         out_tids,
                     ))
                 })
-                .collect();
+                .collect::<CoelanoxResult<Vec<_>>>()?;
 
             // Return audit data from workers so we log from the main thread (thread_local audit only sees main thread otherwise)
             type JobResult = Result<(usize, Vec<f32>, Vec<TensorId>, Option<(OpType, usize, Vec<f32>)>), CoelanoxError>;

@@ -2,8 +2,11 @@
 
 use coelanox_core::{
     CoelanoxError, CoelanoxResult,
-    format::{BackendMetadata, CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat, OptimizationLevel, COELANOX_FLAG_AUDIT_REQUIRED},
-    ir::{GraphNode, IntermediateTensor, OpType as IrOpType, UniversalIR, WeightTensor},
+    format::{
+        BackendMetadata, CoelanoxContainer, CoelanoxManifest, CompressionType, COELANOX_IR_SEMANTICS_VERSION,
+        HardwareTarget, ModelFormat, OptimizationLevel, PackagingFingerprint, COELANOX_FLAG_AUDIT_REQUIRED,
+    },
+    ir::{OpType as IrOpType, UniversalIR},
     memory_hal::MemoryBackendRegistry,
     optimization::MaxShapeReader,
     utils::SystemEnvironment,
@@ -16,8 +19,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::memory::NvmeAllocator;
 use crate::optimizers::HardwareOptimizer;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
-
 /// Map coelanox-core IR OpType to CLF crate OpType for canonical op_id lookup.
 fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
     use IrOpType as Ir;
@@ -79,18 +80,6 @@ fn ir_op_type_to_clf_op_type(op_type: &IrOpType) -> ClfOpType {
         Ir::Max => Clf::Max,
         Ir::Custom(s) => Clf::Custom(s.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32)) % 0xFE + 256),
     }
-}
-
-/// Serializable version of OptimizedIR for container storage.
-/// Weight tensors store metadata only (shape, dtype); actual weights live in compressed_weights.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SerializedOptimizedIR {
-    target: HardwareTarget,
-    optimized_nodes: Vec<GraphNode>,
-    intermediate_tensors: Vec<IntermediateTensor>,
-    optimization_metadata: HashMap<String, String>,
-    original_model_name: String,
-    weight_tensors: Vec<WeightTensor>,
 }
 
 pub mod plugins;
@@ -401,7 +390,7 @@ impl CoelanoxPackager {
         let optimization_level = self.determine_optimization_level(&target);
         
         // Optimize IR for target hardware
-        let optimized_ir = self.optimize_ir(ir.clone(), &target, optimization_level)?;
+        let optimized_ir = self.optimize_ir(ir.clone(), &target, optimization_level.clone())?;
         
         // Generate machine code (and kernel offsets for CLF execution plan). When fallback_only, skip all backends.
         let (machine_code, kernel_byte_offsets) = if fallback_only {
@@ -445,29 +434,8 @@ impl CoelanoxPackager {
         // Compress weights
         let (compressed_weights, compression_type) = self.compress_weights(&weights)?;
         
-        // For serialization, we need to create a copy without Arc
-        // Create weight tensors WITHOUT data (weights are already in compressed_weights)
-        // This saves significant space - weights are stored once, compressed. Use metadata_only
-        // so we don't serialize hundreds of MB of zeros (WeightTensor::new allocates full-size buffer).
-        let weight_tensors_metadata: Vec<WeightTensor> = optimized_ir.shared_weights.as_ref().iter()
-            .map(|wt| {
-                WeightTensor::metadata_only(wt.name.clone(), wt.shape.clone(), wt.data_type.clone())
-            })
-            .collect();
-        
-        // Create a serializable version with weight metadata only (no data duplication)
-        let serializable_ir = SerializedOptimizedIR {
-            target: optimized_ir.target.clone(),
-            optimized_nodes: optimized_ir.optimized_nodes.clone(),
-            intermediate_tensors: optimized_ir.intermediate_tensors.clone(),
-            optimization_metadata: optimized_ir.optimization_metadata.clone(),
-            original_model_name: optimized_ir.original_model_name.clone(),
-            weight_tensors: weight_tensors_metadata,
-        };
-        
-        // Serialize IR for runtime use
-        let ir_data = bincode::serialize(&serializable_ir)
-            .map_err(|e| CoelanoxError::Runtime(format!("Failed to serialize IR: {}", e)))?;
+        // Serialize IR for runtime use (wire format shared with `deserialize_optimized_ir`)
+        let ir_data = coelanox_core::ir::serialize_optimized_ir_for_container(&optimized_ir)?;
         
         // Determine AOT backend selection (when fallback_only, force scalar so runtime uses fallback)
         let backend_metadata = self.determine_backend_selection(
@@ -490,7 +458,18 @@ impl CoelanoxPackager {
         };
         
         // Create manifest with backend metadata first (to calculate its size)
-        let mut manifest = self.create_manifest(&ir, machine_code.len(), backend_metadata)?;
+        let mut manifest = self.create_manifest(
+            &ir,
+            machine_code.len(),
+            backend_metadata,
+            &format,
+            translator.name(),
+            translator.version(),
+            use_demo_translator,
+            fallback_only,
+            target_str,
+            optimization_level,
+        )?;
         
         // Calculate NVMe backing offset (after IR data)
         // Structure: Header + Manifest + Code + Weights (with 4-byte prefix) + IR (with 4-byte prefix) + NVMe (with 8-byte prefix)
@@ -801,19 +780,42 @@ impl CoelanoxPackager {
         Ok(order)
     }
     
-    /// Create manifest from IR
-    fn create_manifest(&self, ir: &UniversalIR, machine_code_size: usize, backend_metadata: Option<BackendMetadata>) -> CoelanoxResult<CoelanoxManifest> {
+    /// Create manifest from IR (records IR semantics version + packaging fingerprint for reproducibility).
+    fn create_manifest(
+        &self,
+        ir: &UniversalIR,
+        machine_code_size: usize,
+        backend_metadata: Option<BackendMetadata>,
+        source_format: &ModelFormat,
+        translator_name: &str,
+        translator_version: &str,
+        use_demo_translator: bool,
+        fallback_only: bool,
+        target_str: &str,
+        optimization_level: OptimizationLevel,
+    ) -> CoelanoxResult<CoelanoxManifest> {
         let mut manifest = CoelanoxManifest::new(
             ir.metadata.name.clone(),
-            coelanox_core::format::ModelFormat::Onnx, // IR has no source_format; default Onnx (translator used)
+            source_format.clone(),
             ir.metadata.input_shapes.iter().map(|s| s.dimensions.clone()).collect(),
             ir.metadata.output_shapes.iter().map(|s| s.dimensions.clone()).collect(),
             machine_code_size,
         );
-        
+
+        manifest.ir_semantics_version = Some(COELANOX_IR_SEMANTICS_VERSION.to_string());
+        manifest.packaging_fingerprint = Some(PackagingFingerprint {
+            translator_name: translator_name.to_string(),
+            translator_version: translator_version.to_string(),
+            use_demo_translator,
+            fallback_only,
+            target_str: target_str.to_string(),
+            optimization: format!("{:?}", optimization_level),
+            packager_crate_version: env!("CARGO_PKG_VERSION").to_string(),
+        });
+
         // Set backend metadata
         manifest.backend_metadata = backend_metadata;
-        
+
         Ok(manifest)
     }
     

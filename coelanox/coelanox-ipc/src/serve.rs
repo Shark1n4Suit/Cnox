@@ -30,7 +30,7 @@
 //! - 4 bytes: `u32` `msg_len`  
 //! - `msg_len` bytes: UTF-8 message (for humans / SDKs).
 
-use coelanox_core::format::CoelanoxManifest;
+use coelanox_core::format::{shape_sets_total_elements, CoelanoxManifest};
 use coelanox_core::{CoelanoxError, CoelanoxResult};
 use coelanox_orchestrator::CoelanoxRuntime;
 use std::io::{self, Read, Write};
@@ -66,8 +66,8 @@ pub fn run_serve_stdio(runtime: &CoelanoxRuntime, opts: &ServeOptions<'_>) -> Co
     );
 
     let container = runtime.get_container_info(opts.container_path)?;
-    let expected_input = tensor_elements(&container.manifest, true);
-    let expected_output = tensor_elements(&container.manifest, false);
+    let expected_input = tensor_elements(&container.manifest, true)?;
+    let expected_output = tensor_elements(&container.manifest, false)?;
 
     eprintln!(
         "COELANOX_SERVE_READY version={} protocol={} input_elements={} output_elements={}",
@@ -157,21 +157,23 @@ pub fn run_serve_stdio(runtime: &CoelanoxRuntime, opts: &ServeOptions<'_>) -> Co
                 write_response_err(&mut stdout, ERR_EXEC, &e.to_string())?;
             }
         }
+        // Materialize audit logs during long-lived serve sessions so operators
+        // can inspect file output without waiting for process shutdown.
+        if let Err(e) = coelanox_orchestrator::audit::flush_now() {
+            warn!("serve: audit flush failed: {}", e);
+        }
     }
 
     Ok(())
 }
 
-fn tensor_elements(m: &CoelanoxManifest, inputs: bool) -> usize {
+fn tensor_elements(m: &CoelanoxManifest, inputs: bool) -> CoelanoxResult<usize> {
     let shapes = if inputs {
         &m.input_shapes
     } else {
         &m.output_shapes
     };
-    shapes
-        .iter()
-        .map(|shape| shape.iter().product::<usize>())
-        .sum()
+    shape_sets_total_elements(shapes)
 }
 
 fn read_u32_le<R: Read>(r: &mut R) -> io::Result<u32> {
@@ -241,4 +243,58 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     s[..end].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coelanox_core::format::{CoelanoxManifest, ModelFormat};
+
+    #[test]
+    fn bytes_to_f32_vec_accepts_aligned_payload() {
+        let v = vec![1.0f32, -2.5f32];
+        let b = f32_vec_to_bytes(&v);
+        assert_eq!(bytes_to_f32_vec(&b).unwrap(), v);
+    }
+
+    #[test]
+    fn bytes_to_f32_vec_rejects_odd_length() {
+        assert!(bytes_to_f32_vec(&[1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn tensor_elements_sums_shapes() {
+        let m = CoelanoxManifest::new(
+            "t".into(),
+            ModelFormat::Onnx,
+            vec![vec![2, 3], vec![1]],
+            vec![vec![4]],
+            0,
+        );
+        assert_eq!(tensor_elements(&m, true).unwrap(), 6 + 1);
+        assert_eq!(tensor_elements(&m, false).unwrap(), 4);
+    }
+
+    #[test]
+    fn write_response_ok_roundtrips_magic_and_length() {
+        let mut buf = Vec::new();
+        write_response_ok(&mut buf, &[1.0f32, 2.0f32]).unwrap();
+        assert_eq!(&buf[0..4], b"CROk");
+        let len = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        assert_eq!(len as usize, 8);
+        let out = bytes_to_f32_vec(&buf[8..]).unwrap();
+        assert_eq!(out, vec![1.0f32, 2.0f32]);
+    }
+
+    #[test]
+    fn write_response_err_includes_code_and_utf8() {
+        let mut buf = Vec::new();
+        write_response_err(&mut buf, 422, "bad shape").unwrap();
+        assert_eq!(&buf[0..4], b"CREr");
+        let code = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        assert_eq!(code, 422);
+        let msg_len = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+        assert_eq!(msg_len, 9);
+        assert_eq!(&buf[12..21], b"bad shape");
+    }
 }

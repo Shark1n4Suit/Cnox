@@ -136,7 +136,8 @@ Produces `secret.bin` (32 bytes, keep private) and `public.bin` (32 bytes, share
 | `--input` | `-i` | `<INPUT>` | — | Input data file (JSON). If omitted, synthetic input is used |
 | `--backend` | `-b` | `<BACKEND>` | `auto` | Backend: `auto`, `cpu`, `gpu`, `npu`, `tpu`. Use `auto` to match benchmark behaviour |
 | `--audit` | — | flag | false | Audit mode: log after each op (op index, type, output size, sample to stderr and optionally to file) |
-| `--audit-output` | — | `<AUDIT_OUTPUT>` | — | When using `--audit`, append audit log lines to this file |
+| `--audit-output` | — | `<AUDIT_OUTPUT>` | — | When using `--audit`, write audit entries to this file |
+| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | **`forget`** (default): clear RAM after each flush; **append** each batch to disk (paths ending in `.json` use **JSONL**: one JSON array per line per request). **`last`**: overwrite file with the last batch only. **`long`**: session-cumulative in RAM; each flush rewrites the full snapshot (legacy; unbounded memory on long `serve`) |
 | `--max-workspace-mb` | — | `<MAX_WORKSPACE_MB>` | — | Max workspace in MB (overrides `COELANOX_MAX_WORKSPACE_MB`). 0 = no cap |
 | `--no-verify` | — | flag | false | Skip integrity verification (dev only; avoid in production) |
 | `--trusted-key` | — | `<PATH>` | — | Path to Ed25519 public key for signature verification. Env: `COELANOX_TRUSTED_PUBLIC_KEY` |
@@ -163,12 +164,15 @@ Loads **one** `.cnox` (with the same verify/signature behaviour as `run`), then 
 |--------|--------|------|---------|-------------|
 | `--backend` | `-b` | `<BACKEND>` | `auto` | Backend used for each inference (e.g. `auto`, `scalar`) |
 | `--audit` | — | flag | false | Same as `run`: per-op audit logging |
-| `--audit-output` | — | `<PATH>` | — | Append audit lines to this file when using `--audit` |
+| `--audit-output` | — | `<PATH>` | — | Audit log file when using `--audit` |
+| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | Same as `run` (`--audit-strategy`) |
 | `--max-workspace-mb` | — | `<N>` | — | Workspace cap (overrides `COELANOX_MAX_WORKSPACE_MB`; `0` = unlimited) |
 | `--no-verify` | — | flag | false | Skip hash verification on load (development only) |
 | `--trusted-key` | — | `<PATH>` | — | Ed25519 public key for signature verification |
 | `--require-signature` | — | flag | false | Error if container is signed but no trusted key is supplied |
 | `--help` | `-h` | — | — | Print help |
+
+With **`--audit`** and **`--audit-output`**, the server **flushes audit to disk after each inference request** (success or failure) so long-lived processes still produce on-disk evidence; parent directories are created if needed. Write failures are logged to stderr. Default **`--audit-strategy forget`** bounds RAM per request and **appends** each batch (use **`long`** only if you need legacy session-cumulative behavior).
 
 **IPC protocol (v1):** Clients send **`CREQ`** (4 bytes) + **`u32` payload length (LE)** + **raw input tensor as `f32` LE** (total element count must match the manifest). Server replies with **`CROk`** + length + output `f32` bytes, or **`CREr`** + error code + message. Send **`CNXT`** (4 bytes) to shut down. Payloads are capped (see `coelanox-ipc` / `serve.rs`). Full details: source file `coelanox/coelanox-ipc/src/serve.rs`.
 
@@ -296,8 +300,8 @@ coelanox
 ├── keygen      (-o output-dir)
 ├── verify      (-f required; -v, --trusted-key, --require-signature)
 ├── info        (-f required; --dump-plan, --list-ops)
-├── run         (-f, -o required; -i, -b, --audit, --audit-output, --max-workspace-mb)
-├── serve       (-f required; -b, --audit, --audit-output, --max-workspace-mb, --no-verify, --trusted-key, --require-signature)
+├── run         (-f, -o required; -i, -b, --audit, --audit-output, --audit-strategy, --max-workspace-mb)
+├── serve       (-f required; -b, --audit, --audit-output, --audit-strategy, --max-workspace-mb, --no-verify, --trusted-key, --require-signature)
 ├── benchmark   (-f required; -i, --loop-iterations, --backend, --output, --max-workspace-mb)
 ├── env         (no args)
 ├── uninstall   (--purge-audit)

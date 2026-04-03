@@ -7,6 +7,9 @@
 //!   **rejected at package time** with actionable text (normalize types and graphs before `coelanox package`).
 //! - **Recent additions:** **`GlobalLpPool`** (p=2, 4D NCHW spatial axes `[2,3]`), binary **`Pow`** (`exp(y*log(max(x,eps)))`), **`Where`**, **`Square`**, **`Clip`**, variadic **`Sum`**, **`Celu`**, **`LpNormalization`** (p=2), `Sign`, `ReduceL1`/`L2`/…, `Selu`, `Mish`;
 //!   `forward_onnx_reduce_attrs` copies `axes` / `keepdims` / `noop_with_empty_axes` onto lowered `ReduceSum` nodes.
+//! - **Shapes:** Node outputs are registered with shapes from ONNX `graph.value_info` / `graph.output` when
+//!   present; otherwise placeholder `[1]`. Exports without shape metadata need ONNX shape inference before export,
+//!   or a future propagation pass in this translator.
 
 #[cfg(feature = "onnx-protobuf")]
 mod impl_ {
@@ -16,7 +19,7 @@ mod impl_ {
     use coelanox_core::plugins::CoelanoxTranslator;
     use coelanox_core::format::ModelFormat;
     use coelanox_core::{CoelanoxError, CoelanoxResult};
-    use rten_onnx::onnx::{ModelProto, DataType as OnnxDataType};
+    use rten_onnx::onnx::{DataType as OnnxDataType, GraphProto, ModelProto, ValueInfoProto};
     use std::collections::HashMap;
     use std::path::Path;
 
@@ -1776,6 +1779,44 @@ mod impl_ {
             Ok(false)
         }
 
+        /// ONNX `ValueInfoProto` → IR shape (matches graph input parsing: unknown dims default to 1).
+        fn shape_from_value_info_proto(v: &ValueInfoProto) -> Option<Shape> {
+            let tt = v.r#type.as_ref()?.tensor_type.as_ref()?;
+            let sproto = tt.shape.as_ref()?;
+            let dims: Vec<usize> = sproto
+                .dim
+                .iter()
+                .map(|d| d.dim_value.unwrap_or(1).max(0) as usize)
+                .collect();
+            Some(Shape::new(if dims.is_empty() {
+                vec![1]
+            } else {
+                dims
+            }))
+        }
+
+        /// Names → shapes from `graph.value_info` and `graph.output` (output wins on duplicate names).
+        fn collect_value_info_shapes(graph: &GraphProto) -> HashMap<String, Shape> {
+            let mut out: HashMap<String, Shape> = HashMap::new();
+            for vi in &graph.value_info {
+                let Some(name) = vi.name.as_deref().filter(|n| !n.is_empty()) else {
+                    continue;
+                };
+                if let Some(sh) = Self::shape_from_value_info_proto(vi) {
+                    out.insert(name.to_string(), sh);
+                }
+            }
+            for vi in &graph.output {
+                let Some(name) = vi.name.as_deref().filter(|n| !n.is_empty()) else {
+                    continue;
+                };
+                if let Some(sh) = Self::shape_from_value_info_proto(vi) {
+                    out.insert(name.to_string(), sh);
+                }
+            }
+            out
+        }
+
         fn build_ir(model: ModelProto, external_weights: Option<&[u8]>) -> CoelanoxResult<UniversalIR> {
             let graph = model
                 .graph
@@ -1864,6 +1905,8 @@ mod impl_ {
                 name_to_id.insert(onnx_name, tid);
             }
 
+            let value_info_shapes = Self::collect_value_info_shapes(graph);
+
             // 3) One intermediate per node output.
             for node in &graph.node {
                 for out_name in &node.output {
@@ -1871,11 +1914,11 @@ mod impl_ {
                     if s.is_empty() || name_to_id.contains_key(&s) {
                         continue;
                     }
-                    let tid = ir.add_intermediate_tensor(
-                        s.clone(),
-                        Shape::new(vec![1]),
-                        DataType::Float32,
-                    );
+                    let out_shape = value_info_shapes
+                        .get(&s)
+                        .cloned()
+                        .unwrap_or_else(|| Shape::new(vec![1]));
+                    let tid = ir.add_intermediate_tensor(s.clone(), out_shape, DataType::Float32);
                     name_to_id.insert(s, tid);
                 }
             }

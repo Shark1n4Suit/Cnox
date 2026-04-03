@@ -1183,14 +1183,14 @@ pub fn build_plan_from_ir(
     fn weight_range_for_node(
         node: &coelanox_core::ir::GraphNode,
         weight_offsets: &[usize],
-    ) -> (u32, u32) {
+    ) -> CoelanoxResult<(u32, u32)> {
         let weight_inputs: Vec<_> = node.input_tensors.iter().filter(|t| t.is_weight()).collect();
         if weight_inputs.is_empty() {
-            return (0, 0);
+            return Ok((0, 0));
         }
         let use_largest = matches!(node.op_type, OpType::Convolution | OpType::MatMul);
-        let (w_off, w_len) = if use_largest {
-            weight_inputs
+        let pair = if use_largest {
+            let candidates: Vec<(u32, u32)> = weight_inputs
                 .iter()
                 .filter_map(|tid| {
                     let idx = tid.index();
@@ -1198,20 +1198,33 @@ pub fn build_plan_from_ir(
                     let end = weight_offsets.get(idx + 1).copied()?;
                     Some((start as u32, (end - start) as u32))
                 })
-                .max_by_key(|&(_, len)| len)
-                .unwrap_or((0, 0))
+                .collect();
+            if candidates.is_empty() {
+                return Err(CoelanoxError::Runtime(format!(
+                    "Plan build: no valid weight slice for op {:?} (weight indices {:?} vs weight_offsets len {})",
+                    node.op_type,
+                    weight_inputs.iter().map(|t| t.index()).collect::<Vec<_>>(),
+                    weight_offsets.len()
+                )));
+            }
+            candidates.into_iter().max_by_key(|&(_, len)| len).unwrap()
         } else {
-            weight_inputs
-                .first()
-                .and_then(|tid| {
-                    let idx = tid.index();
-                    let start = weight_offsets.get(idx).copied()?;
-                    let end = weight_offsets.get(idx + 1).copied()?;
-                    Some((start as u32, (end - start) as u32))
-                })
-                .unwrap_or((0, 0))
+            let tid = weight_inputs[0];
+            let idx = tid.index();
+            let start = weight_offsets.get(idx).copied();
+            let end = weight_offsets.get(idx + 1).copied();
+            match (start, end) {
+                (Some(s), Some(e)) => (s as u32, (e - s) as u32),
+                _ => {
+                    return Err(CoelanoxError::Runtime(format!(
+                        "Plan build: weight tensor index {} out of range for weight_offsets len {}",
+                        idx,
+                        weight_offsets.len()
+                    )));
+                }
+            }
         };
-        (w_off, w_len)
+        Ok(pair)
     }
 
     // Workspace layout: one slot per unique intermediate tensor that is produced.
@@ -1244,7 +1257,7 @@ pub fn build_plan_from_ir(
             });
 
         let (w_off, w_len) = {
-            let from_weights = weight_range_for_node(node, weight_offsets);
+            let from_weights = weight_range_for_node(node, weight_offsets)?;
             if from_weights.1 > 0 {
                 from_weights
             } else if node.op_type == OpType::MatMul || node.op_type == OpType::Gemm {

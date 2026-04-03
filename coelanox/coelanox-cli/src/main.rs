@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use tracing::{info, warn, error};
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::{HardwareTarget, header_audit_required, generate_signing_keypair, is_container_signed}};
 use coelanox_packager::CoelanoxPackager;
-use coelanox_orchestrator::{CoelanoxRuntime, RuntimeConfig};
+use coelanox_orchestrator::{AuditStrategy, CoelanoxRuntime, RuntimeConfig};
 use coelanox_ipc::{run_serve_stdio, ServeOptions};
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -221,6 +221,10 @@ enum Commands {
         /// With --audit, append audit lines to this file
         #[arg(long)]
         audit_output: Option<String>,
+
+        /// Audit retention: `forget` (default) — bounded RAM, append each batch to disk (JSONL for `.json`); `last` — overwrite with last batch only; `long` — session-cumulative in RAM (legacy).
+        #[arg(long, default_value = "forget")]
+        audit_strategy: String,
         
         /// Workspace limit in MB (overrides COELANOX_MAX_WORKSPACE_MB; 0 = unlimited)
         #[arg(long)]
@@ -252,6 +256,10 @@ enum Commands {
         audit: bool,
         #[arg(long)]
         audit_output: Option<String>,
+
+        /// Audit retention: `forget` (default) — bounded RAM, append each batch (JSONL for `.json`); `last` — overwrite with last batch; `long` — session-cumulative in RAM (legacy).
+        #[arg(long, default_value = "forget")]
+        audit_strategy: String,
         #[arg(long)]
         max_workspace_mb: Option<u64>,
         #[arg(long)]
@@ -376,11 +384,13 @@ fn main() -> CoelanoxResult<()> {
         Commands::Info { file, dump_plan, list_ops } => {
             info_command(&file, dump_plan, list_ops)
         }
-        Commands::Run { file, input, output, backend, audit, audit_output, max_workspace_mb, no_verify, trusted_key, require_signature } => {
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
+        Commands::Run { file, input, output, backend, audit, audit_output, audit_strategy, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+            let audit_strategy = parse_audit_strategy(&audit_strategy)?;
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), audit_strategy, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
         }
-        Commands::Serve { file, backend, audit, audit_output, max_workspace_mb, no_verify, trusted_key, require_signature } => {
-            serve_command(&file, &backend, audit, audit_output.as_deref(), max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
+        Commands::Serve { file, backend, audit, audit_output, audit_strategy, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+            let audit_strategy = parse_audit_strategy(&audit_strategy)?;
+            serve_command(&file, &backend, audit, audit_output.as_deref(), audit_strategy, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
         }
         Commands::Benchmark { file, iterations, loop_iterations, backend, output, max_workspace_mb, no_verify, trusted_key, require_signature } => {
             benchmark_command(&file, iterations, loop_iterations, &backend, &output, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
@@ -737,6 +747,11 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
 
 /// Default audit output path when container has audit-required flag and user did not set --audit-output:
 /// coelanox_audit/<container_stem>_<unix_secs>.json in current directory.
+fn parse_audit_strategy(s: &str) -> CoelanoxResult<AuditStrategy> {
+    s.parse()
+        .map_err(|e: String| CoelanoxError::format(&e))
+}
+
 fn default_audit_path(container_file: &str) -> PathBuf {
     let stem = Path::new(container_file)
         .file_stem()
@@ -751,7 +766,7 @@ fn default_audit_path(container_file: &str) -> PathBuf {
     dir.join(format!("{}_{}.json", stem, secs))
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, max_workspace_mb: Option<u64>, no_verify: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, audit_strategy: AuditStrategy, max_workspace_mb: Option<u64>, no_verify: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
     let input_desc = input
         .map(|p| format!("input file {}", p))
         .unwrap_or_else(|| "synthetic input (all ones, manifest-shaped)".to_string());
@@ -799,7 +814,8 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
     let audit_path: Option<PathBuf> = if audit_required_by_container {
         Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
     } else if audit {
-        audit_output.map(PathBuf::from)
+        // Match audit-required behavior: --audit without --audit-output still writes under coelanox_audit/.
+        Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
     } else {
         None
     };
@@ -809,7 +825,12 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
                 info!("Audit logging required by container; writing to {}", p.display());
             }
         }
-        coelanox_orchestrator::audit::set_audit_mode(true, audit_path.as_deref().map(Path::new));
+        if audit && !audit_required_by_container && audit_output.is_none() {
+            if let Some(ref p) = audit_path {
+                info!("Audit logging enabled; writing to {}", p.display());
+            }
+        }
+        coelanox_orchestrator::audit::set_audit_mode(true, audit_path.as_deref().map(Path::new), audit_strategy);
     }
     
     // Load input data
@@ -840,7 +861,7 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
     // Execute inference with backend selection (backend manager chooses execution path)
     let result = runtime.execute_with_backend(file, &input_data, backend);
     if audit || audit_required_by_container {
-        coelanox_orchestrator::audit::set_audit_mode(false, None);
+        coelanox_orchestrator::audit::set_audit_mode(false, None, AuditStrategy::Forget);
     }
     let result = result?;
     
@@ -866,6 +887,7 @@ fn serve_command(
     backend: &str,
     audit: bool,
     audit_output: Option<&str>,
+    audit_strategy: AuditStrategy,
     max_workspace_mb: Option<u64>,
     no_verify: bool,
     trusted_key: Option<&str>,
@@ -914,7 +936,7 @@ fn serve_command(
     let audit_path: Option<PathBuf> = if audit_required_by_container {
         Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
     } else if audit {
-        audit_output.map(PathBuf::from)
+        Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
     } else {
         None
     };
@@ -924,7 +946,12 @@ fn serve_command(
                 info!("Audit logging required by container; writing to {}", p.display());
             }
         }
-        coelanox_orchestrator::audit::set_audit_mode(true, audit_path.as_deref().map(Path::new));
+        if audit && !audit_required_by_container && audit_output.is_none() {
+            if let Some(ref p) = audit_path {
+                info!("Audit logging enabled; writing to {}", p.display());
+            }
+        }
+        coelanox_orchestrator::audit::set_audit_mode(true, audit_path.as_deref().map(Path::new), audit_strategy);
     }
 
     let serve_opts = ServeOptions {
@@ -934,7 +961,7 @@ fn serve_command(
     let result = run_serve_stdio(&runtime, &serve_opts);
 
     if audit || audit_required_by_container {
-        coelanox_orchestrator::audit::set_audit_mode(false, None);
+        coelanox_orchestrator::audit::set_audit_mode(false, None, AuditStrategy::Forget);
     }
 
     result

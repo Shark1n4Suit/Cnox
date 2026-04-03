@@ -192,6 +192,60 @@ pub enum HardwareTarget {
     Custom(String),
 }
 
+/// IR semantics version embedded in packaged containers. Bump when UniversalIR / scalar contract changes incompatibly.
+pub const COELANOX_IR_SEMANTICS_VERSION: &str = "1";
+
+/// Provenance recorded at package time (translator + flags). Helps explain “same model, different behavior.”
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PackagingFingerprint {
+    pub translator_name: String,
+    pub translator_version: String,
+    pub use_demo_translator: bool,
+    pub fallback_only: bool,
+    pub target_str: String,
+    pub optimization: String,
+    pub packager_crate_version: String,
+}
+
+/// Reject load when container declares an IR semantics version newer than this runtime understands.
+/// Element count for one tensor shape (product of dimensions). Errors on overflow.
+pub fn shape_element_count(shape: &[usize]) -> CoelanoxResult<usize> {
+    let mut p = 1usize;
+    for &d in shape {
+        p = p.checked_mul(d).ok_or_else(|| {
+            CoelanoxError::ManifestParse(
+                "Tensor shape dimension product overflow (untrusted or malformed manifest)".to_string(),
+            )
+        })?;
+    }
+    Ok(p)
+}
+
+/// Sum of element counts for every tensor in `shapes` (e.g. manifest input or output list).
+pub fn shape_sets_total_elements(shapes: &[Vec<usize>]) -> CoelanoxResult<usize> {
+    let mut sum = 0usize;
+    for shape in shapes {
+        let n = shape_element_count(shape)?;
+        sum = sum.checked_add(n).ok_or_else(|| {
+            CoelanoxError::ManifestParse(
+                "Total tensor element count overflow (untrusted or malformed manifest)".to_string(),
+            )
+        })?;
+    }
+    Ok(sum)
+}
+
+pub fn validate_ir_semantics_version(manifest: &CoelanoxManifest) -> CoelanoxResult<()> {
+    match &manifest.ir_semantics_version {
+        None => Ok(()),
+        Some(v) if v == COELANOX_IR_SEMANTICS_VERSION => Ok(()),
+        Some(v) => Err(CoelanoxError::Runtime(format!(
+            "IR semantics version mismatch: container has '{}', this runtime supports '{}'. Repackage with a matching toolchain or use a compatible runtime.",
+            v, COELANOX_IR_SEMANTICS_VERSION
+        ))),
+    }
+}
+
 /// Optimization level
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OptimizationLevel {
@@ -415,6 +469,12 @@ pub struct CoelanoxManifest {
     /// Workspace required in elements (f32) for CLF plan execution. Set at package time; runtime can cap via --max-workspace-mb or env.
     #[serde(default)]
     pub workspace_required_elements: Option<u64>,
+    /// UniversalIR semantics contract version this container was built for (`COELANOX_IR_SEMANTICS_VERSION`).
+    #[serde(default)]
+    pub ir_semantics_version: Option<String>,
+    /// Translator + packaging flags at build time.
+    #[serde(default)]
+    pub packaging_fingerprint: Option<PackagingFingerprint>,
 }
 
 impl CoelanoxManifest {
@@ -446,6 +506,8 @@ impl CoelanoxManifest {
             clfmp_size: None,
             execution_plan_size: None,
             workspace_required_elements: None,
+            ir_semantics_version: Some(COELANOX_IR_SEMANTICS_VERSION.to_string()),
+            packaging_fingerprint: None,
         }
     }
     
@@ -463,6 +525,9 @@ impl CoelanoxManifest {
         if self.output_shapes.is_empty() {
             return Err(CoelanoxError::ManifestParse("Output shapes cannot be empty".to_string()));
         }
+
+        let _ = shape_sets_total_elements(&self.input_shapes)?;
+        let _ = shape_sets_total_elements(&self.output_shapes)?;
         
         Ok(())
     }

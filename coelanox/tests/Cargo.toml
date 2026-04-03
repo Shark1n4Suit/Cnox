@@ -47,6 +47,14 @@ path = "test_signing.rs"
 name = "test_translator_sdk"
 path = "test_translator_sdk.rs"
 
+[[test]]
+name = "test_v1_hardening"
+path = "test_v1_hardening.rs"
+
+[[test]]
+name = "test_runtime_semantics_regression"
+path = "test_runtime_semantics_regression.rs"
+
 [dependencies]
 coelanox-packager = { path = "../coelanox-packager" }
 coelanox-core = { path = "../coelanox-core" }
