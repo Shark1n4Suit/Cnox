@@ -262,6 +262,19 @@ fn bert_scalar_e2e_run_benchmark_audit_serve_match() {
     assert!(st.success(), "run --audit exit {:?}", st.code());
     let meta = std::fs::metadata(&audit_out).expect("audit file");
     assert!(meta.len() > 8, "audit JSON should be non-trivial");
+    // JSONL schema v2: first line must be one object with schema 2, run, input, ops.
+    let audit_first = std::fs::read_to_string(&audit_out).expect("read audit");
+    let line1 = audit_first.lines().next().expect("audit JSONL first line");
+    let audit_json: Value = serde_json::from_str(line1).expect("audit line as JSON");
+    assert_eq!(
+        audit_json["schema"].as_u64(),
+        Some(2),
+        "BERT audit first line should be schema v2"
+    );
+    assert!(
+        audit_json.get("run").is_some() && audit_json.get("ops").is_some(),
+        "audit should include run + ops"
+    );
 
     // serve — same synthetic input as CLI run (all ones, manifest-shaped)
     let input: Vec<f32> = vec![1.0f32; expected_in];

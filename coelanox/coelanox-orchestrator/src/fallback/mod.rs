@@ -491,8 +491,8 @@ impl ScalarExecutionBackend {
                 })
                 .collect::<CoelanoxResult<Vec<_>>>()?;
 
-            // Return audit data from workers so we log from the main thread (thread_local audit only sees main thread otherwise)
-            type JobResult = Result<(usize, Vec<f32>, Vec<TensorId>, Option<(OpType, usize, Vec<f32>)>), CoelanoxError>;
+            // Return audit tag from workers so we log from the main thread (full output slice for audit sampling/stats/hash).
+            type JobResult = Result<(usize, Vec<f32>, Vec<TensorId>, Option<OpType>), CoelanoxError>;
             let results: Vec<JobResult> = jobs
                 .into_par_iter()
                 .map(|(node_index, input_a, input_b, weight_range, output_size, op_type, attributes, out_tids)| {
@@ -508,20 +508,15 @@ impl ScalarExecutionBackend {
                         weight_slice,
                         &attributes,
                     )?;
-                    let audit_data = if audit_enabled {
-                        let sample: Vec<f32> = output.iter().take(4).copied().collect();
-                        Some((op_type, output_size, sample))
-                    } else {
-                        None
-                    };
-                    Ok((node_index, output, out_tids, audit_data))
+                    let audit_tag = if audit_enabled { Some(op_type.clone()) } else { None };
+                    Ok((node_index, output, out_tids, audit_tag))
                 })
                 .collect();
 
             for res in results {
-                let (node_index, output, out_tids, audit_data) = res?;
-                if let Some((ref op_type, output_size, ref sample)) = audit_data {
-                    crate::audit::log_after_op(node_index, op_type, output_size, sample);
+                let (node_index, output, out_tids, audit_tag) = res?;
+                if let Some(ref op_type) = audit_tag {
+                    crate::audit::log_after_op(node_index, op_type, output.len(), output.as_slice());
                 }
                 let out_arc = Arc::new(output);
                 for tid in &out_tids {

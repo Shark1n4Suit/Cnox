@@ -6,7 +6,12 @@ use clap::{Parser, Subcommand};
 use tracing::{info, warn, error};
 use coelanox_core::{CoelanoxError, CoelanoxResult, format::{HardwareTarget, header_audit_required, generate_signing_keypair, is_container_signed}};
 use coelanox_packager::CoelanoxPackager;
-use coelanox_orchestrator::{AuditStrategy, CoelanoxRuntime, RuntimeConfig};
+use coelanox_orchestrator::{
+    AuditRunContext, AuditSessionConfig, AuditStrategy, CoelanoxRuntime, RuntimeConfig,
+    MAX_AUDIT_SAMPLE_TOTAL, output_node_indices_from_ir_data, record_input_snapshot, set_audit_mode,
+    set_audit_session,
+};
+use sha2::{Digest, Sha256};
 use coelanox_ipc::{run_serve_stdio, ServeOptions};
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -218,13 +223,29 @@ enum Commands {
         #[arg(long)]
         audit: bool,
         
-        /// With --audit, append audit lines to this file
+        /// Audit log file path when audit is active (`--audit` or container `audit-required` header)
         #[arg(long)]
         audit_output: Option<String>,
 
         /// Audit retention: `forget` (default) — bounded RAM, append each batch to disk (JSONL for `.json`); `last` — overwrite with last batch only; `long` — session-cumulative in RAM (legacy).
         #[arg(long, default_value = "forget")]
         audit_strategy: String,
+
+        /// Audit: leading floats per op output (capped internally).
+        #[arg(long, default_value = "4")]
+        audit_sample: usize,
+        /// Audit: trailing floats per op output (non-overlapping with head when possible).
+        #[arg(long, default_value = "0")]
+        audit_tail: usize,
+        /// Audit: include min/max/mean and NaN/Inf counts per op (full tensor scan up to an internal cap).
+        #[arg(long)]
+        audit_stats: bool,
+        /// Audit: SHA-256 hex over raw `f32` bytes for inputs and each op output (when under internal cap).
+        #[arg(long)]
+        audit_hash: bool,
+        /// Audit: only log ops that produce graph sink outputs (IR-derived).
+        #[arg(long)]
+        audit_final_only: bool,
         
         /// Workspace limit in MB (overrides COELANOX_MAX_WORKSPACE_MB; 0 = unlimited)
         #[arg(long)]
@@ -251,21 +272,41 @@ enum Commands {
         /// Execution backend for each inference request
         #[arg(short, long, default_value = "auto")]
         backend: String,
-        /// Per-operation audit log (same semantics as run)
+        /// Per-operation audit log (same semantics as `run`)
         #[arg(long)]
         audit: bool,
+        /// Audit log file path when audit is active (`--audit` or container `audit-required` header; same as `run`)
         #[arg(long)]
         audit_output: Option<String>,
 
         /// Audit retention: `forget` (default) — bounded RAM, append each batch (JSONL for `.json`); `last` — overwrite with last batch; `long` — session-cumulative in RAM (legacy).
         #[arg(long, default_value = "forget")]
         audit_strategy: String,
+        /// Audit: leading floats per op output (capped internally).
+        #[arg(long, default_value = "4")]
+        audit_sample: usize,
+        /// Audit: trailing floats per op output (non-overlapping with head when possible).
+        #[arg(long, default_value = "0")]
+        audit_tail: usize,
+        /// Audit: include min/max/mean and NaN/Inf counts per op (full tensor scan up to an internal cap).
+        #[arg(long)]
+        audit_stats: bool,
+        /// Audit: SHA-256 hex over raw `f32` bytes for inputs and each op output (when under internal cap).
+        #[arg(long)]
+        audit_hash: bool,
+        /// Audit: only log ops that produce graph sink outputs (IR-derived).
+        #[arg(long)]
+        audit_final_only: bool,
+        /// Workspace limit in MB (overrides COELANOX_MAX_WORKSPACE_MB; 0 = unlimited)
         #[arg(long)]
         max_workspace_mb: Option<u64>,
+        /// Skip hash verification on load (development only)
         #[arg(long)]
         no_verify: bool,
+        /// Trusted Ed25519 public key file (32 bytes). Alternative: COELANOX_TRUSTED_PUBLIC_KEY
         #[arg(long)]
         trusted_key: Option<String>,
+        /// Error if the container is signed but no trusted key is supplied
         #[arg(long)]
         require_signature: bool,
     },
@@ -384,13 +425,13 @@ fn main() -> CoelanoxResult<()> {
         Commands::Info { file, dump_plan, list_ops } => {
             info_command(&file, dump_plan, list_ops)
         }
-        Commands::Run { file, input, output, backend, audit, audit_output, audit_strategy, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+        Commands::Run { file, input, output, backend, audit, audit_output, audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key, require_signature } => {
             let audit_strategy = parse_audit_strategy(&audit_strategy)?;
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), audit_strategy, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
+            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
         }
-        Commands::Serve { file, backend, audit, audit_output, audit_strategy, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+        Commands::Serve { file, backend, audit, audit_output, audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key, require_signature } => {
             let audit_strategy = parse_audit_strategy(&audit_strategy)?;
-            serve_command(&file, &backend, audit, audit_output.as_deref(), audit_strategy, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
+            serve_command(&file, &backend, audit, audit_output.as_deref(), audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
         }
         Commands::Benchmark { file, iterations, loop_iterations, backend, output, max_workspace_mb, no_verify, trusted_key, require_signature } => {
             benchmark_command(&file, iterations, loop_iterations, &backend, &output, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
@@ -766,7 +807,70 @@ fn default_audit_path(container_file: &str) -> PathBuf {
     dir.join(format!("{}_{}.json", stem, secs))
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, audit_strategy: AuditStrategy, max_workspace_mb: Option<u64>, no_verify: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
+/// SHA-256 of file contents (hex), for audit run metadata.
+fn sha256_hex_file(path: &Path) -> CoelanoxResult<String> {
+    use std::io::Read;
+    let mut file = fs::File::open(path).map_err(CoelanoxError::FileSystem)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(CoelanoxError::FileSystem)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect())
+}
+
+fn make_audit_session(
+    strategy: AuditStrategy,
+    sample: usize,
+    tail: usize,
+    stats: bool,
+    hash: bool,
+    final_only: bool,
+    container_path: &str,
+    container_sha256: Option<String>,
+    backend: &str,
+    ir_data: Option<&[u8]>,
+) -> CoelanoxResult<AuditSessionConfig> {
+    let mut output_node_indices = Vec::new();
+    if final_only {
+        if let Some(data) = ir_data {
+            output_node_indices = output_node_indices_from_ir_data(data)?;
+        }
+    }
+    let sample_head = sample.min(MAX_AUDIT_SAMPLE_TOTAL);
+    let sample_tail = tail.min(MAX_AUDIT_SAMPLE_TOTAL);
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let started_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    Ok(AuditSessionConfig {
+        strategy,
+        sample_head,
+        sample_tail,
+        include_stats: stats,
+        include_hash: hash,
+        final_output_only: final_only,
+        output_node_indices,
+        run: Some(AuditRunContext {
+            run_id,
+            started_at_unix_ms,
+            container_path: container_path.to_string(),
+            container_sha256_hex: container_sha256,
+            backend: backend.to_string(),
+        }),
+    })
+}
+
+fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, audit_strategy: AuditStrategy, audit_sample: usize, audit_tail: usize, audit_stats: bool, audit_hash: bool, audit_final_only: bool, max_workspace_mb: Option<u64>, no_verify: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
     let input_desc = input
         .map(|p| format!("input file {}", p))
         .unwrap_or_else(|| "synthetic input (all ones, manifest-shaped)".to_string());
@@ -830,7 +934,20 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
                 info!("Audit logging enabled; writing to {}", p.display());
             }
         }
-        coelanox_orchestrator::audit::set_audit_mode(true, audit_path.as_deref().map(Path::new), audit_strategy);
+        let container_sha = sha256_hex_file(Path::new(file)).ok();
+        let session = make_audit_session(
+            audit_strategy,
+            audit_sample,
+            audit_tail,
+            audit_stats,
+            audit_hash,
+            audit_final_only,
+            file,
+            container_sha,
+            backend,
+            Some(container.ir_data.as_slice()),
+        )?;
+        set_audit_session(true, audit_path.as_deref().map(Path::new), session);
     }
     
     // Load input data
@@ -858,10 +975,11 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
         vec![1.0f32; input_size]
     };
 
+    record_input_snapshot(&input_data);
     // Execute inference with backend selection (backend manager chooses execution path)
     let result = runtime.execute_with_backend(file, &input_data, backend);
     if audit || audit_required_by_container {
-        coelanox_orchestrator::audit::set_audit_mode(false, None, AuditStrategy::Forget);
+        set_audit_mode(false, None, AuditStrategy::Forget);
     }
     let result = result?;
     
@@ -888,6 +1006,11 @@ fn serve_command(
     audit: bool,
     audit_output: Option<&str>,
     audit_strategy: AuditStrategy,
+    audit_sample: usize,
+    audit_tail: usize,
+    audit_stats: bool,
+    audit_hash: bool,
+    audit_final_only: bool,
     max_workspace_mb: Option<u64>,
     no_verify: bool,
     trusted_key: Option<&str>,
@@ -951,7 +1074,20 @@ fn serve_command(
                 info!("Audit logging enabled; writing to {}", p.display());
             }
         }
-        coelanox_orchestrator::audit::set_audit_mode(true, audit_path.as_deref().map(Path::new), audit_strategy);
+        let container_sha = sha256_hex_file(Path::new(file)).ok();
+        let session = make_audit_session(
+            audit_strategy,
+            audit_sample,
+            audit_tail,
+            audit_stats,
+            audit_hash,
+            audit_final_only,
+            file,
+            container_sha,
+            backend,
+            Some(container.ir_data.as_slice()),
+        )?;
+        set_audit_session(true, audit_path.as_deref().map(Path::new), session);
     }
 
     let serve_opts = ServeOptions {
@@ -961,7 +1097,7 @@ fn serve_command(
     let result = run_serve_stdio(&runtime, &serve_opts);
 
     if audit || audit_required_by_container {
-        coelanox_orchestrator::audit::set_audit_mode(false, None, AuditStrategy::Forget);
+        set_audit_mode(false, None, AuditStrategy::Forget);
     }
 
     result

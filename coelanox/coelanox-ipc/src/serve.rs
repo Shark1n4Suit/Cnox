@@ -149,6 +149,7 @@ pub fn run_serve_stdio(runtime: &CoelanoxRuntime, opts: &ServeOptions<'_>) -> Co
             continue;
         }
 
+        coelanox_orchestrator::audit::record_input_snapshot(&input);
         match runtime.execute_with_backend(opts.container_path, &input, opts.backend) {
             Ok(out) => {
                 write_response_ok(&mut stdout, &out)?;

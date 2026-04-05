@@ -2381,6 +2381,32 @@ Items here are non-blocking; consider when touching related code or when package
 - **Scope:** In the runtime audit closure (or audit module), add op_id → name mapping and pass the name to `log_after_op`. Keep mapping in the audit path only so executor hot path has zero change and no performance impact.
 - **Priority:** Optional; look later when touching audit or SIMD logging.
 
+### **Audit mode: richer visibility & structured logs**
+
+- **Goal:** Move beyond a fixed **four-float preview** per op so operators and auditors get **configurable, bounded** visibility; improve **on-disk structure** (versioned schema, run envelope); keep **audit retention strategies** (`forget` / `last` / `long`) orthogonal to “how much of each tensor we record.”
+- **Rationale:**
+  - Today `coelanox_orchestrator::audit` stores `op_index`, `op_type`, `out_len`, and `out_sample` capped at **4** floats (`log_after_op` + scalar fallback `take(4)`). SIMD paths pass a full output slice but it is still truncated in `log_after_op`.
+  - A **default** profile stays small and stable for compliance-style runs; an **extended** profile should be a **strict superset of the head** so the first floats match default on the same deterministic run (cross-profile checks).
+  - **Tensor samples alone** do not prove a business “decision”; pairing them with **run metadata** (container identity, backend, time) and optional **hashes** improves audit defensibility without dumping full tensors.
+- **Scope (implementation areas):** `coelanox-orchestrator/src/audit.rs` (`AuditEntry`, flush JSONL vs plain text), `coelanox-cli` flags, `fallback/mod.rs` (must pass the same sample budget as `log_after_op`), `runtime.rs` audit callbacks, tests (`coelanox-cli` e2e / `serve_ipc_smoke`), and `docs/CLI_REFERENCE.md` when flags ship.
+
+**Suggested phases (rough effort: low → high)**
+
+| Phase | Item | Notes |
+|-------|------|--------|
+| 1 | **Versioned JSON envelope + clearer shape** | e.g. schema version, optional `run` block, `ops` / batch array; consider JSONL header line + body lines for streaming. Update consumers and tests; optional backward-compatible writer. |
+| 2 | **Configurable head length + optional tail** | CLI e.g. `--audit-sample N` with a **hard max**; extended includes default prefix; define short-tensor rules when `len < head+tail`. Align fallback truncation with `audit.rs`. |
+| 3 | **Optional stats + full-buffer hash** | Min/max/mean (or similar), NaN/Inf count; SHA-256 over raw `f32` bytes (`sha2` already in workspace). Guard **O(n) cost** per op with flags or `out_len` caps. |
+| 4 | **Run context** | Timestamp, container path or content hash, backend, relevant CLI flags; emit once per file or per flush batch as agreed. |
+| 5 | **Input snapshot** | Sample or hash of **inputs** at inference start (hook where `input_data` is available per execution path). |
+| 6 | **Per-op timing** | Easiest on SIMD executor loop; scalar fallback needs aggregation from parallel workers. |
+| 7 | **IR / op attributes in audit** | Thread attributes where available; relate to “SIMD audit: op_id → human-readable op name” above. |
+| 8 | **Final-output-only mode** | Richer sample or hash **only** for terminal/output nodes (needs graph/output mapping). |
+
+**Out of scope for this note:** logging full tensors by default (size, sensitivity); unbounded retention without strategy controls.
+
+- **Priority:** Optional; schedule when audit/compliance or operator debugging becomes a focus; implement phase 1–2 first for the best structure/value ratio.
+
 ### **Dictionary-based CLF code section (op_id reuse)**
 
 - **Goal:** Avoid duplicating the same CLF kernel blob for every node in the graph (e.g. many MatMuls in BERT) so the code section size does not grow linearly with node count.

@@ -3,12 +3,26 @@
 //! worker threads in all backend paths can contribute to a single run audit.
 //!
 //! **Strategies** ([`AuditStrategy`]):
-//! - **`forget`** (default): after each flush, clear RAM; `.json` paths use **JSONL** (one JSON array per line per request). Plain paths append text lines per batch.
+//! - **`forget`** (default): after each flush, clear RAM; `.json` paths use **JSONL** (one JSON object per line per batch, schema v2). Plain paths append text blocks per batch.
 //! - **`last`**: overwrite the audit file with **only the last** flushed batch; clears RAM after each flush.
 //! - **`long`**: legacy session mode — entries accumulate in RAM and each flush rewrites the full snapshot (unbounded memory on long-lived `serve`).
+//!
+//! **Session options** ([`AuditSessionConfig`]): sample head/tail sizes, optional stats and SHA-256
+//! over tensor bytes, optional restriction to graph-output nodes, and optional run metadata.
 
+use crate::audit_ir::graph_output_node_indices;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Mutex;
+
+/// Current on-disk JSON line schema for `.json` audit paths.
+pub const AUDIT_SCHEMA_VERSION: u32 = 2;
+
+/// Hard cap for `sample_head` + `sample_tail` (total preview floats per tensor).
+pub const MAX_AUDIT_SAMPLE_TOTAL: usize = 4096;
+
+/// Do not scan more than this many floats for stats or SHA-256 (per tensor); larger tensors log elision.
+pub const MAX_AUDIT_FULL_SCAN_ELEMENTS: usize = 256 * 1024;
 
 /// How audit entries are retained in memory and on disk (see module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -48,20 +62,112 @@ impl std::fmt::Display for AuditStrategy {
     }
 }
 
+/// Metadata attached once per audit session (embedded in each JSONL batch line).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditRunContext {
+    pub run_id: String,
+    pub started_at_unix_ms: u64,
+    pub container_path: String,
+    /// SHA-256 of the container file bytes (hex), when the CLI computed it.
+    pub container_sha256_hex: Option<String>,
+    pub backend: String,
+}
+
+/// Visibility and processing options for an audit session (first enable wins for nested calls).
+#[derive(Debug, Clone)]
+pub struct AuditSessionConfig {
+    pub strategy: AuditStrategy,
+    /// First N floats from each op output (default 4). Capped by [`MAX_AUDIT_SAMPLE_TOTAL`] with tail.
+    pub sample_head: usize,
+    /// Last M floats from each op output (default 0).
+    pub sample_tail: usize,
+    pub include_stats: bool,
+    pub include_hash: bool,
+    /// If true, only ops whose node index is in `output_node_indices` are logged (empty = no filter).
+    pub final_output_only: bool,
+    pub output_node_indices: Vec<usize>,
+    pub run: Option<AuditRunContext>,
+}
+
+impl Default for AuditSessionConfig {
+    fn default() -> Self {
+        Self {
+            strategy: AuditStrategy::Forget,
+            sample_head: 4,
+            sample_tail: 0,
+            include_stats: false,
+            include_hash: false,
+            final_output_only: false,
+            output_node_indices: Vec::new(),
+            run: None,
+        }
+    }
+}
+
+impl AuditSessionConfig {
+    pub fn from_strategy(strategy: AuditStrategy) -> Self {
+        Self {
+            strategy,
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, Clone, Default)]
+pub struct AuditTensorStats {
+    pub min: f32,
+    pub max: f32,
+    pub mean: f32,
+    pub nan_count: usize,
+    pub inf_count: usize,
+}
+
 #[derive(serde::Serialize, Clone)]
-struct AuditEntry {
-    op_index: usize,
-    op_type: String,
-    out_len: usize,
-    out_sample: Vec<f32>,
+pub struct AuditInputSnapshot {
+    pub len: usize,
+    pub sha256_hex: Option<String>,
+    pub sample_head: Vec<f32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sample_tail: Vec<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elided: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct AuditOpEntry {
+    pub op_index: usize,
+    pub op_type: String,
+    pub out_len: usize,
+    pub out_sample_head: Vec<f32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub out_sample_tail: Vec<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats: Option<AuditTensorStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub out_sha256_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_elided: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct AuditBatchV2 {
+    schema: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<AuditRunContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<AuditInputSnapshot>,
+    ops: Vec<AuditOpEntry>,
 }
 
 struct AuditState {
     enabled: bool,
     enable_count: usize,
     log_path: Option<std::path::PathBuf>,
-    entries: Vec<AuditEntry>,
+    entries: Vec<AuditOpEntry>,
     strategy: AuditStrategy,
+    session: AuditSessionConfig,
+    /// Last input recorded via [`record_input_snapshot`] for the next flush batch.
+    pending_input: Option<AuditInputSnapshot>,
 }
 
 static AUDIT_STATE: Mutex<AuditState> = Mutex::new(AuditState {
@@ -70,6 +176,17 @@ static AUDIT_STATE: Mutex<AuditState> = Mutex::new(AuditState {
     log_path: None,
     entries: Vec::new(),
     strategy: AuditStrategy::Forget,
+    session: AuditSessionConfig {
+        strategy: AuditStrategy::Forget,
+        sample_head: 4,
+        sample_tail: 0,
+        include_stats: false,
+        include_hash: false,
+        final_output_only: false,
+        output_node_indices: Vec::new(),
+        run: None,
+    },
+    pending_input: None,
 });
 
 #[inline]
@@ -79,7 +196,206 @@ fn lock_audit_state() -> std::sync::MutexGuard<'static, AuditState> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-fn write_entries_overwrite(path: &Path, entries: &[AuditEntry]) -> std::io::Result<()> {
+fn clamp_sample_sizes(head: usize, tail: usize) -> (usize, usize) {
+    let head = head.min(MAX_AUDIT_SAMPLE_TOTAL);
+    let tail = tail.min(MAX_AUDIT_SAMPLE_TOTAL);
+    let total = head.saturating_add(tail);
+    if total <= MAX_AUDIT_SAMPLE_TOTAL {
+        return (head, tail);
+    }
+    // Prefer head, then give remainder to tail
+    let head = head.min(MAX_AUDIT_SAMPLE_TOTAL);
+    let rest = MAX_AUDIT_SAMPLE_TOTAL.saturating_sub(head);
+    (head, tail.min(rest))
+}
+
+fn take_head_tail(data: &[f32], out_len: usize, head: usize, tail: usize) -> (Vec<f32>, Vec<f32>) {
+    let n = data.len().min(out_len);
+    let slice = &data[..n];
+    let (head, tail_n) = clamp_sample_sizes(head, tail);
+    let head_v: Vec<f32> = slice.iter().take(head).copied().collect();
+    if tail_n == 0 || slice.len() <= head {
+        return (head_v, Vec::new());
+    }
+    // Non-overlapping tail: last `tail_n` elements unless that would overlap head window
+    let tail_start = slice.len().saturating_sub(tail_n);
+    let tail_start = tail_start.max(head);
+    let tail_v: Vec<f32> = slice[tail_start..].to_vec();
+    (head_v, tail_v)
+}
+
+fn compute_stats(data: &[f32]) -> AuditTensorStats {
+    let mut nan_count = 0usize;
+    let mut inf_count = 0usize;
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    let mut min_v = f32::NAN;
+    let mut max_v = f32::NAN;
+    for &x in data {
+        if x.is_nan() {
+            nan_count += 1;
+            continue;
+        }
+        if x.is_infinite() {
+            inf_count += 1;
+        }
+        sum += x as f64;
+        count += 1;
+        if min_v.is_nan() || x < min_v {
+            min_v = x;
+        }
+        if max_v.is_nan() || x > max_v {
+            max_v = x;
+        }
+    }
+    let mean = if count > 0 {
+        (sum / count as f64) as f32
+    } else {
+        f32::NAN
+    };
+    if min_v.is_nan() {
+        min_v = 0.0;
+    }
+    if max_v.is_nan() {
+        max_v = 0.0;
+    }
+    AuditTensorStats {
+        min: min_v,
+        max: max_v,
+        mean,
+        nan_count,
+        inf_count,
+    }
+}
+
+/// Hex encode — simple nibbles (no `hex` crate).
+mod hex {
+    pub fn encode(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            s.push(HEX[(b >> 4) as usize] as char);
+            s.push(HEX[(b & 0xf) as usize] as char);
+        }
+        s
+    }
+}
+
+fn f32_slice_bytes(data: &[f32]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(data.len() * 4);
+    for x in data {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+    v
+}
+
+fn sha256_f32_hex(data: &[f32]) -> String {
+    let bytes = f32_slice_bytes(data);
+    let digest = Sha256::digest(&bytes);
+    hex::encode(&digest)
+}
+
+fn hash_tensor_maybe(data: &[f32], want: bool) -> Option<String> {
+    if !want {
+        return None;
+    }
+    if data.len() > MAX_AUDIT_FULL_SCAN_ELEMENTS {
+        return None;
+    }
+    Some(sha256_f32_hex(data))
+}
+
+fn stats_maybe(data: &[f32], want: bool) -> Option<AuditTensorStats> {
+    if !want {
+        return None;
+    }
+    if data.len() > MAX_AUDIT_FULL_SCAN_ELEMENTS {
+        return None;
+    }
+    Some(compute_stats(data))
+}
+
+fn should_log_node(state: &AuditState, node_index: usize) -> bool {
+    if !state.session.final_output_only {
+        return true;
+    }
+    if state.session.output_node_indices.is_empty() {
+        return false;
+    }
+    state
+        .session
+        .output_node_indices
+        .binary_search(&node_index)
+        .is_ok()
+}
+
+fn build_op_entry(
+    session: &AuditSessionConfig,
+    node_index: usize,
+    op_type: &str,
+    output_len: usize,
+    data: &[f32],
+) -> AuditOpEntry {
+    let (head, tail) = clamp_sample_sizes(session.sample_head, session.sample_tail);
+    let (out_sample_head, out_sample_tail) = take_head_tail(data, output_len, head, tail);
+
+    let mut audit_elided: Option<String> = None;
+    let scan = data.len().min(output_len);
+    let scan_slice = &data[..scan];
+
+    let stats = stats_maybe(scan_slice, session.include_stats);
+    let out_sha256_hex = hash_tensor_maybe(scan_slice, session.include_hash);
+    if session.include_stats && stats.is_none() && scan > MAX_AUDIT_FULL_SCAN_ELEMENTS {
+        audit_elided = Some(format!(
+            "stats_skipped: len {} > max {}",
+            scan, MAX_AUDIT_FULL_SCAN_ELEMENTS
+        ));
+    }
+    if session.include_hash && out_sha256_hex.is_none() && scan > MAX_AUDIT_FULL_SCAN_ELEMENTS {
+        let msg = format!(
+            "hash_skipped: len {} > max {}",
+            scan, MAX_AUDIT_FULL_SCAN_ELEMENTS
+        );
+        audit_elided = Some(match audit_elided {
+            Some(a) => format!("{}; {}", a, msg),
+            None => msg,
+        });
+    }
+
+    AuditOpEntry {
+        op_index: node_index,
+        op_type: op_type.to_string(),
+        out_len: output_len,
+        out_sample_head,
+        out_sample_tail,
+        stats,
+        out_sha256_hex,
+        audit_elided,
+    }
+}
+
+fn build_input_snapshot(session: &AuditSessionConfig, input: &[f32]) -> AuditInputSnapshot {
+    let (head, tail) = clamp_sample_sizes(session.sample_head, session.sample_tail);
+    let (sample_head, sample_tail) = take_head_tail(input, input.len(), head, tail);
+    let sha256_hex = hash_tensor_maybe(input, session.include_hash);
+    let mut elided = None;
+    if input.len() > MAX_AUDIT_FULL_SCAN_ELEMENTS && sha256_hex.is_none() {
+        elided = Some(format!(
+            "input_hash_skipped: len {} > max {}",
+            input.len(),
+            MAX_AUDIT_FULL_SCAN_ELEMENTS
+        ));
+    }
+    AuditInputSnapshot {
+        len: input.len(),
+        sha256_hex,
+        sample_head,
+        sample_tail,
+        elided,
+    }
+}
+
+fn write_entries_overwrite(path: &Path, batch: &AuditBatchV2) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -88,32 +404,57 @@ fn write_entries_overwrite(path: &Path, entries: &[AuditEntry]) -> std::io::Resu
 
     let is_json = path.extension().map_or(false, |e| e == "json");
     if is_json {
-        let s = serde_json::to_string_pretty(entries)
+        let s = serde_json::to_string_pretty(batch)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         std::fs::write(path, s)
     } else {
-        let lines: Vec<String> = entries
-            .iter()
-            .map(|e| {
-                let sample: String = e
-                    .out_sample
-                    .iter()
-                    .map(|v| format!("{:.4}", v))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let suffix = if e.out_len > 4 { "..." } else { "" };
-                format!(
-                    "audit op {} {} out_len={} out_sample=[{}{}]",
-                    e.op_index, e.op_type, e.out_len, sample, suffix
-                )
-            })
-            .collect();
-        std::fs::write(path, lines.join("\n") + "\n")
+        let lines = format_plain_batch(batch);
+        std::fs::write(path, lines)
     }
 }
 
-/// Append one batch: for `.json` paths, one **JSON array** per line (JSONL). For plain paths, append line-oriented audit rows.
-fn append_entries_batch(path: &Path, entries: &[AuditEntry]) -> std::io::Result<()> {
+fn format_plain_batch(batch: &AuditBatchV2) -> String {
+    let mut s = String::new();
+    if let Some(ref run) = batch.run {
+        s.push_str(&format!(
+            "audit schema={} run_id={} started_at_ms={} container={} backend={} container_sha256={}\n",
+            batch.schema,
+            run.run_id,
+            run.started_at_unix_ms,
+            run.container_path,
+            run.backend,
+            run.container_sha256_hex.as_deref().unwrap_or("-")
+        ));
+    }
+    if let Some(ref inp) = batch.input {
+        s.push_str(&format!(
+            "audit input len={} sha256={} head={:?} tail={:?} elided={:?}\n",
+            inp.len,
+            inp.sha256_hex.as_deref().unwrap_or("-"),
+            inp.sample_head,
+            inp.sample_tail,
+            inp.elided
+        ));
+    }
+    for e in &batch.ops {
+        s.push_str(&format!(
+            "audit op {} {} out_len={} head={:?} tail={:?} stats={:?} sha256={} elided={:?}\n",
+            e.op_index,
+            e.op_type,
+            e.out_len,
+            e.out_sample_head,
+            e.out_sample_tail,
+            e.stats,
+            e.out_sha256_hex.as_deref().unwrap_or("-"),
+            e.audit_elided
+        ));
+    }
+    s.push('\n');
+    s
+}
+
+/// Append one batch: for `.json` paths, one **JSON object** per line (JSONL). For plain paths, append a text block.
+fn append_entries_batch(path: &Path, batch: &AuditBatchV2) -> std::io::Result<()> {
     use std::io::Write;
 
     if let Some(parent) = path.parent() {
@@ -129,44 +470,23 @@ fn append_entries_batch(path: &Path, entries: &[AuditEntry]) -> std::io::Result<
         .open(path)?;
 
     if is_json {
-        let line = serde_json::to_string(entries)
+        let line = serde_json::to_string(batch)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         f.write_all(line.as_bytes())?;
         f.write_all(b"\n")?;
     } else {
-        for e in entries {
-            let sample: String = e
-                .out_sample
-                .iter()
-                .map(|v| format!("{:.4}", v))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let suffix = if e.out_len > 4 { "..." } else { "" };
-            let line = format!(
-                "audit op {} {} out_len={} out_sample=[{}{}]\n",
-                e.op_index, e.op_type, e.out_len, sample, suffix
-            );
-            f.write_all(line.as_bytes())?;
-        }
+        f.write_all(format_plain_batch(batch).as_bytes())?;
     }
     Ok(())
 }
 
-fn ordered_entries_for_flush(state: &AuditState) -> Vec<AuditEntry> {
+fn ordered_entries_for_flush(state: &AuditState) -> Vec<AuditOpEntry> {
     match state.strategy {
         AuditStrategy::Long => state.entries.clone(),
         AuditStrategy::Forget | AuditStrategy::Last => {
-            let mut sorted: Vec<&AuditEntry> = state.entries.iter().collect();
+            let mut sorted: Vec<&AuditOpEntry> = state.entries.iter().collect();
             sorted.sort_by_key(|e| e.op_index);
-            sorted
-                .into_iter()
-                .map(|e| AuditEntry {
-                    op_index: e.op_index,
-                    op_type: e.op_type.clone(),
-                    out_len: e.out_len,
-                    out_sample: e.out_sample.clone(),
-                })
-                .collect()
+            sorted.iter().map(|e| (*e).clone()).collect()
         }
     }
 }
@@ -175,37 +495,47 @@ fn flush_locked(state: &mut AuditState) -> std::io::Result<()> {
     let Some(path) = state.log_path.as_deref() else {
         return Ok(());
     };
-    if state.entries.is_empty() {
+    if state.entries.is_empty() && state.pending_input.is_none() {
         return Ok(());
     }
 
     let ordered = ordered_entries_for_flush(state);
+    let input = state.pending_input.take();
+    let batch = AuditBatchV2 {
+        schema: AUDIT_SCHEMA_VERSION,
+        run: state.session.run.clone(),
+        input,
+        ops: ordered,
+    };
 
     match state.strategy {
         AuditStrategy::Forget => {
-            append_entries_batch(path, &ordered)?;
+            append_entries_batch(path, &batch)?;
             state.entries.clear();
         }
         AuditStrategy::Last => {
-            write_entries_overwrite(path, &ordered)?;
+            write_entries_overwrite(path, &batch)?;
             state.entries.clear();
         }
         AuditStrategy::Long => {
-            write_entries_overwrite(path, &ordered)?;
+            write_entries_overwrite(path, &batch)?;
         }
     }
     Ok(())
 }
 
-/// Enable or disable audit mode. Optionally set a file path to write logs.
-/// `strategy` applies on the first `enabled=true` in a session (nested enables reuse it).
-pub fn set_audit_mode(enabled: bool, log_path: Option<&Path>, strategy: AuditStrategy) {
+/// Enable or disable audit with full session options. On first `enabled=true`, stores path and config.
+pub fn set_audit_session(enabled: bool, log_path: Option<&Path>, config: AuditSessionConfig) {
     let mut state = lock_audit_state();
     if enabled {
         if state.enable_count == 0 {
             state.entries.clear();
+            state.pending_input = None;
             state.log_path = log_path.map(|p| p.to_path_buf());
-            state.strategy = strategy;
+            state.strategy = config.strategy;
+            let mut config = config;
+            config.output_node_indices.sort_unstable();
+            state.session = config;
         } else if let Some(p) = log_path {
             let requested = p.to_path_buf();
             if state.log_path.as_ref() != Some(&requested) {
@@ -233,13 +563,21 @@ pub fn set_audit_mode(enabled: bool, log_path: Option<&Path>, strategy: AuditStr
             }
             state.log_path = None;
             state.entries.clear();
+            state.pending_input = None;
         }
     }
 }
 
+/// Enable or disable audit mode (legacy: default session options except strategy).
+pub fn set_audit_mode(enabled: bool, log_path: Option<&Path>, strategy: AuditStrategy) {
+    set_audit_session(
+        enabled,
+        log_path,
+        AuditSessionConfig::from_strategy(strategy),
+    );
+}
+
 /// Flush current buffered audit entries immediately to the configured audit path.
-/// This is useful for long-lived `serve` sessions where callers need on-disk
-/// evidence during process lifetime, not only on shutdown.
 pub fn flush_now() -> std::io::Result<()> {
     let mut state = lock_audit_state();
     if !state.enabled {
@@ -253,28 +591,44 @@ pub fn is_enabled() -> bool {
     lock_audit_state().enabled
 }
 
-/// Log one op: node index, op type, output size, and output sample. Buffered until flush/disable.
-/// Called by the scalar fallback after each node.
+/// Record input tensor snapshot for the next flush (call once per inference before ops run).
+pub fn record_input_snapshot(input: &[f32]) {
+    let mut state = lock_audit_state();
+    if !state.enabled {
+        return;
+    }
+    let snap = build_input_snapshot(&state.session, input);
+    state.pending_input = Some(snap);
+}
+
+/// Resolve graph-output node indices from container IR (for `--audit-final-only`).
+pub fn output_node_indices_from_ir_data(ir_data: &[u8]) -> coelanox_core::CoelanoxResult<Vec<usize>> {
+    let ir = coelanox_core::ir::deserialize_optimized_ir(ir_data)?;
+    Ok(graph_output_node_indices(&ir))
+}
+
+/// Log one op: node index, op type, output size, and **full** output buffer (or representative slice).
 pub fn log_after_op(
     node_index: usize,
     op_type: &impl std::fmt::Debug,
     output_len: usize,
-    output_sample: &[f32],
+    output_data: &[f32],
 ) {
     let mut state = lock_audit_state();
     if !state.enabled {
         return;
     }
-    let sample: Vec<f32> = output_sample.iter().take(4).copied().collect();
-    let entry = AuditEntry {
-        op_index: node_index,
-        op_type: format!("{:?}", op_type),
-        out_len: output_len,
-        out_sample: sample,
-    };
+    if !should_log_node(&state, node_index) {
+        return;
+    }
+    let op_type_str = format!("{:?}", op_type);
+    let entry = build_op_entry(&state.session, node_index, &op_type_str, output_len, output_data);
     tracing::info!(
-        "audit op {} {} out_len={} out_sample=[{:?}]",
-        entry.op_index, entry.op_type, entry.out_len, entry.out_sample
+        "audit op {} {} out_len={} head={:?}",
+        entry.op_index,
+        entry.op_type,
+        entry.out_len,
+        entry.out_sample_head
     );
     state.entries.push(entry);
 }
@@ -285,7 +639,6 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    /// Global audit state is process-wide; serialize tests that toggle it.
     static AUDIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_audit() {
@@ -304,6 +657,7 @@ mod tests {
         log_after_op(0, &"Add", 4, &[1.0, 2.0, 3.0, 4.0]);
         flush_now().expect("flush");
         let s = std::fs::read_to_string(&path).expect("read audit");
+        assert!(s.contains("\"schema\":2"));
         assert!(s.contains("Add"));
         assert!(s.lines().count() >= 1);
         set_audit_mode(false, None, AuditStrategy::Forget);
@@ -369,7 +723,7 @@ mod tests {
         log_after_op(1, &"Mul", 2, &[3.0, 4.0]);
         flush_now().expect("flush");
         let s = std::fs::read_to_string(&path).expect("read audit");
-        assert!(s.contains("audit op"));
+        assert!(s.contains("audit"));
         assert!(s.contains("Mul"));
         set_audit_mode(false, None, AuditStrategy::Forget);
     }
@@ -407,12 +761,27 @@ mod tests {
         let p1 = dir.path().join("one.log");
         let p2 = dir.path().join("two.log");
         set_audit_mode(true, Some(&p1), AuditStrategy::Forget);
-        set_audit_mode(true, Some(&p2), AuditStrategy::Forget); // ignored while session active
+        set_audit_mode(true, Some(&p2), AuditStrategy::Forget);
         log_after_op(0, &"Relu", 1, &[1.0]);
-        set_audit_mode(false, None, AuditStrategy::Forget); // still enabled due to nested count
+        set_audit_mode(false, None, AuditStrategy::Forget);
         assert!(flush_now().is_ok());
-        set_audit_mode(false, None, AuditStrategy::Forget); // final disable flushes + clears
+        set_audit_mode(false, None, AuditStrategy::Forget);
         assert!(std::fs::metadata(&p1).is_ok());
         assert!(std::fs::metadata(&p2).is_err());
+    }
+
+    #[test]
+    fn extended_head_matches_default_prefix() {
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let mut cfg = AuditSessionConfig::default();
+        cfg.sample_head = 8;
+        let e = build_op_entry(&cfg, 0, "T", data.len(), &data);
+        assert_eq!(e.out_sample_head.len(), 8);
+        assert_eq!(e.out_sample_head[0], 0.0);
+
+        let mut cfg2 = AuditSessionConfig::default();
+        cfg2.sample_head = 4;
+        let e2 = build_op_entry(&cfg2, 0, "T", data.len(), &data);
+        assert_eq!(e.out_sample_head[..4], e2.out_sample_head[..]);
     }
 }

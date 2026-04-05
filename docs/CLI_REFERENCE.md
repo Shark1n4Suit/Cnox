@@ -41,6 +41,7 @@ Complete reference for all commands and options.
 | `--auto` | — | flag | false | Auto-detect hardware and select backends. Mutually exclusive with `--target` and `--fat` |
 | `--backend-add` | — | `<BACKEND_ADD>` | — | Add additional backends, comma-separated: e.g. `amd,intel,qualcomm` |
 | `--fallback-only` | — | flag | false | Package without backend code (scalar fallback only at runtime; for benchmarking) |
+| `--audit-required` | — | flag | false | Set a **container header flag** so every `run` / `serve` **must** emit audit logs (compliance). If the user does not pass `--audit-output`, the runtime writes under `./coelanox_audit/` (default path pattern); audit visibility options still apply when audit is active |
 | `--max-workspace` | — | `<MAX_WORKSPACE>` | — | Max dynamic memory (workspace + scratch) in MB; build fails if model needs more (e.g. 64, 1024) |
 | `--signing-key` | — | `<PATH>` | — | Path to Ed25519 secret key (32 raw bytes) to sign container. Env: `COELANOX_SIGNING_KEY` |
 | `--help` | `-h` | — | — | Print help |
@@ -135,14 +136,21 @@ Produces `secret.bin` (32 bytes, keep private) and `public.bin` (32 bytes, share
 |--------|--------|------|---------|-------------|
 | `--input` | `-i` | `<INPUT>` | — | Input data file (JSON). If omitted, synthetic input is used |
 | `--backend` | `-b` | `<BACKEND>` | `auto` | Backend: `auto`, `cpu`, `gpu`, `npu`, `tpu`. Use `auto` to match benchmark behaviour |
-| `--audit` | — | flag | false | Audit mode: log after each op (op index, type, output size, sample to stderr and optionally to file) |
-| `--audit-output` | — | `<AUDIT_OUTPUT>` | — | When using `--audit`, write audit entries to this file |
-| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | **`forget`** (default): clear RAM after each flush; **append** each batch to disk (paths ending in `.json` use **JSONL**: one JSON array per line per request). **`last`**: overwrite file with the last batch only. **`long`**: session-cumulative in RAM; each flush rewrites the full snapshot (legacy; unbounded memory on long `serve`) |
+| `--audit` | — | flag | false | Audit mode: after each op, log to stderr and optionally to file (structured batch; see below) |
+| `--audit-output` | — | `<AUDIT_OUTPUT>` | — | When using `--audit`, write audit batches to this file |
+| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | **`forget`** (default): clear RAM after each flush; **append** each batch to disk (paths ending in `.json` use **JSONL**: one **JSON object per line**, schema version **2** — `run`, optional `input`, and `ops[]`). **`last`**: overwrite file with the last batch only. **`long`**: session-cumulative in RAM; each flush rewrites the full snapshot (legacy; unbounded memory on long `serve`) |
+| `--audit-sample` | — | `<N>` | `4` | Number of **leading** floats to record per op output (combined with `--audit-tail`, capped internally) |
+| `--audit-tail` | — | `<M>` | `0` | Number of **trailing** floats per op output (non-overlapping with the head when the tensor is long enough) |
+| `--audit-stats` | — | flag | false | Include min / max / mean and NaN / Inf counts per tensor (full scan only up to an internal element cap per tensor) |
+| `--audit-hash` | — | flag | false | Include SHA-256 (hex) over raw little-endian **`f32`** bytes for the **input snapshot** and each op output (same cap as stats; large tensors may omit hash with an elision note) |
+| `--audit-final-only` | — | flag | false | Only log ops whose outputs are **graph sinks** in the IR (intermediate tensors not consumed as inputs elsewhere). If the IR yields no sinks, op lines may be empty while run/input metadata still appear |
 | `--max-workspace-mb` | — | `<MAX_WORKSPACE_MB>` | — | Max workspace in MB (overrides `COELANOX_MAX_WORKSPACE_MB`). 0 = no cap |
 | `--no-verify` | — | flag | false | Skip integrity verification (dev only; avoid in production) |
 | `--trusted-key` | — | `<PATH>` | — | Path to Ed25519 public key for signature verification. Env: `COELANOX_TRUSTED_PUBLIC_KEY` |
 | `--require-signature` | — | flag | false | Fail if container is signed but no trusted key provided |
 | `--help` | `-h` | — | — | Print help |
+
+**Audit required by container:** If the `.cnox` was packaged with **`package --audit-required`**, **`run`** and **`serve`** turn on audit logging **even when `--audit` is omitted** (header flag). Output path: **`--audit-output`** if set, otherwise the default under **`./coelanox_audit/`** (see runtime messages at startup).
 
 ---
 
@@ -163,16 +171,21 @@ Loads **one** `.cnox` (with the same verify/signature behaviour as `run`), then 
 | Option | Short | Type | Default | Description |
 |--------|--------|------|---------|-------------|
 | `--backend` | `-b` | `<BACKEND>` | `auto` | Backend used for each inference (e.g. `auto`, `scalar`) |
-| `--audit` | — | flag | false | Same as `run`: per-op audit logging |
+| `--audit` | — | flag | false | Same as `run`: structured audit batches (stderr + optional file) |
 | `--audit-output` | — | `<PATH>` | — | Audit log file when using `--audit` |
-| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | Same as `run` (`--audit-strategy`) |
+| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | Same as `run` (JSONL schema v2 for `.json` paths) |
+| `--audit-sample` | — | `<N>` | `4` | Same as `run` |
+| `--audit-tail` | — | `<M>` | `0` | Same as `run` |
+| `--audit-stats` | — | flag | false | Same as `run` |
+| `--audit-hash` | — | flag | false | Same as `run` |
+| `--audit-final-only` | — | flag | false | Same as `run` |
 | `--max-workspace-mb` | — | `<N>` | — | Workspace cap (overrides `COELANOX_MAX_WORKSPACE_MB`; `0` = unlimited) |
 | `--no-verify` | — | flag | false | Skip hash verification on load (development only) |
 | `--trusted-key` | — | `<PATH>` | — | Ed25519 public key for signature verification |
 | `--require-signature` | — | flag | false | Error if container is signed but no trusted key is supplied |
 | `--help` | `-h` | — | — | Print help |
 
-With **`--audit`** and **`--audit-output`**, the server **flushes audit to disk after each inference request** (success or failure) so long-lived processes still produce on-disk evidence; parent directories are created if needed. Write failures are logged to stderr. Default **`--audit-strategy forget`** bounds RAM per request and **appends** each batch (use **`long`** only if you need legacy session-cumulative behavior).
+Containers built with **`package --audit-required`** enforce audit the same way as **`run`** (see note under §6 **`run`**). With **`--audit`** and **`--audit-output`**, the server **flushes audit to disk after each inference request** (success or failure) so long-lived processes still produce on-disk evidence; parent directories are created if needed. Write failures are logged to stderr. Default **`--audit-strategy forget`** bounds RAM per request and **appends** each batch (use **`long`** only if you need legacy session-cumulative behavior). **`serve` accepts the same audit visibility flags as `run`** (`--audit-sample`, `--audit-tail`, `--audit-stats`, `--audit-hash`, `--audit-final-only`): session metadata (container path, backend, container file hash, run id) is set at process start, while the **input** block in each JSONL line reflects the **payload of that `CREQ`** (recorded immediately before executing that request).
 
 **IPC protocol (v1):** Clients send **`CREQ`** (4 bytes) + **`u32` payload length (LE)** + **raw input tensor as `f32` LE** (total element count must match the manifest). Server replies with **`CROk`** + length + output `f32` bytes, or **`CREr`** + error code + message. Send **`CNXT`** (4 bytes) to shut down. Payloads are capped (see `coelanox-ipc` / `serve.rs`). Full details: source file `coelanox/coelanox-ipc/src/serve.rs`.
 
@@ -295,13 +308,13 @@ There are two modes:
 coelanox
 ├── -h, --help
 ├── -V, --version
-├── package     (-i, -o required; -m, -t, --use-demo-translator, --fat, --auto, --backend-add, --fallback-only, --max-workspace, …)
+├── package     (-i, -o required; -m, -t, --use-demo-translator, --fat, --auto, --backend-add, --fallback-only, --audit-required, --max-workspace, …)
 ├── validate    (-f required)
 ├── keygen      (-o output-dir)
 ├── verify      (-f required; -v, --trusted-key, --require-signature)
 ├── info        (-f required; --dump-plan, --list-ops)
-├── run         (-f, -o required; -i, -b, --audit, --audit-output, --audit-strategy, --max-workspace-mb)
-├── serve       (-f required; -b, --audit, --audit-output, --audit-strategy, --max-workspace-mb, --no-verify, --trusted-key, --require-signature)
+├── run         (-f, -o required; -i, -b, --audit, --audit-output, --audit-strategy, --audit-sample, --audit-tail, --audit-stats, --audit-hash, --audit-final-only, --max-workspace-mb)
+├── serve       (-f required; -b, --audit, --audit-output, --audit-strategy, --audit-sample, --audit-tail, --audit-stats, --audit-hash, --audit-final-only, --max-workspace-mb, --no-verify, --trusted-key, --require-signature)
 ├── benchmark   (-f required; -i, --loop-iterations, --backend, --output, --max-workspace-mb)
 ├── env         (no args)
 ├── uninstall   (--purge-audit)
