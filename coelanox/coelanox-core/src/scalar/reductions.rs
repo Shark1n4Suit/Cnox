@@ -3,10 +3,10 @@
 //! Pure Rust scalar implementations with parallel reduction for large buffers
 //! (same pattern as MatMul: use Rayon when beneficial).
 
-use crate::CoelanoxResult;
-use std::collections::HashMap;
 use crate::ir::Attribute;
+use crate::CoelanoxResult;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 const PAR_THRESHOLD: usize = 64 * 1024;
 
@@ -51,7 +51,10 @@ pub fn reduce_max(
 ) -> CoelanoxResult<()> {
     if !output.is_empty() && !input.is_empty() {
         output[0] = if input.len() >= PAR_THRESHOLD {
-            input.par_iter().fold(|| f32::NEG_INFINITY, |a, &b| a.max(b)).reduce(|| f32::NEG_INFINITY, |a, b| a.max(b))
+            input
+                .par_iter()
+                .fold(|| f32::NEG_INFINITY, |a, &b| a.max(b))
+                .reduce(|| f32::NEG_INFINITY, |a, b| a.max(b))
         } else {
             input.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b))
         };
@@ -67,7 +70,10 @@ pub fn reduce_min(
 ) -> CoelanoxResult<()> {
     if !output.is_empty() && !input.is_empty() {
         output[0] = if input.len() >= PAR_THRESHOLD {
-            input.par_iter().fold(|| f32::INFINITY, |a, &b| a.min(b)).reduce(|| f32::INFINITY, |a, b| a.min(b))
+            input
+                .par_iter()
+                .fold(|| f32::INFINITY, |a, &b| a.min(b))
+                .reduce(|| f32::INFINITY, |a, b| a.min(b))
         } else {
             input.iter().fold(f32::INFINITY, |a, &b| a.min(b))
         };
@@ -83,11 +89,13 @@ pub fn reduce_prod(
 ) -> CoelanoxResult<()> {
     if !output.is_empty() && !input.is_empty() {
         output[0] = if input.len() >= PAR_THRESHOLD {
-            input.par_iter().fold(|| 1.0f32, |a, &b| a * b).reduce(|| 1.0f32, |a, b| a * b)
+            input
+                .par_iter()
+                .fold(|| 1.0f32, |a, &b| a * b)
+                .reduce(|| 1.0f32, |a, b| a * b)
         } else {
             input.iter().product()
         };
     }
     Ok(())
 }
-

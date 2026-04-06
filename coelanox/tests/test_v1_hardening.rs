@@ -1,9 +1,10 @@
 //! v1 hardening: IR semantics version gate + scalar determinism smoke.
 
-use coelanox_core::format::{
-    validate_ir_semantics_version, CoelanoxManifest, COELANOX_IR_SEMANTICS_VERSION, PackagingFingerprint,
-};
 use coelanox_core::format::ModelFormat;
+use coelanox_core::format::{
+    validate_ir_semantics_version, CoelanoxManifest, PackagingFingerprint,
+    COELANOX_IR_SEMANTICS_VERSION,
+};
 use coelanox_core::ir::{Attribute, OpType};
 use coelanox_core::scalar::execute_scalar_op;
 use std::collections::HashMap;

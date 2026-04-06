@@ -11,9 +11,7 @@ use std::sync::Mutex;
 use coelanox_clf::{ClfKind, ClfReaderFromBytes};
 use coelanox_core::format::CoelanoxContainer;
 use coelanox_core::{
-    memory_hal::{
-        MemoryCapabilities, MemoryHAL, MemoryRegion, MemoryTier, RegionOptions,
-    },
+    memory_hal::{MemoryCapabilities, MemoryHAL, MemoryRegion, MemoryTier, RegionOptions},
     optimization::MaxShapeMetadata,
     CoelanoxError, CoelanoxResult,
 };
@@ -68,9 +66,9 @@ impl Drop for BootstrapRegion {
 
 #[cfg(target_os = "linux")]
 fn bootstrap_alloc(size: usize) -> CoelanoxResult<(*mut u8, usize)> {
-    use libc::{mmap, MAP_PRIVATE, MAP_ANONYMOUS, PROT_READ, PROT_WRITE, PROT_EXEC};
+    use libc::{mmap, MAP_ANONYMOUS, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE};
     let page_size = 4096;
-    let aligned = ((size + page_size - 1) / page_size) * page_size;
+    let aligned = size.div_ceil(page_size) * page_size;
     let result = unsafe {
         mmap(
             std::ptr::null_mut(),
@@ -82,7 +80,9 @@ fn bootstrap_alloc(size: usize) -> CoelanoxResult<(*mut u8, usize)> {
         )
     };
     if result == libc::MAP_FAILED {
-        return Err(CoelanoxError::Runtime("bootstrap mmap failed for CLFMM".to_string()));
+        return Err(CoelanoxError::Runtime(
+            "bootstrap mmap failed for CLFMM".to_string(),
+        ));
     }
     Ok((result as *mut u8, aligned))
 }
@@ -94,21 +94,34 @@ fn bootstrap_alloc(size: usize) -> CoelanoxResult<(*mut u8, usize)> {
     };
     let page_size = 4096;
     let aligned = ((size + page_size - 1) / page_size) * page_size;
-    let result = unsafe { VirtualAlloc(std::ptr::null_mut(), aligned, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE) };
+    let result = unsafe {
+        VirtualAlloc(
+            std::ptr::null_mut(),
+            aligned,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
+    };
     if result.is_null() {
-        return Err(CoelanoxError::Runtime("bootstrap VirtualAlloc failed for CLFMM".to_string()));
+        return Err(CoelanoxError::Runtime(
+            "bootstrap VirtualAlloc failed for CLFMM".to_string(),
+        ));
     }
     Ok((result as *mut u8, aligned))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn bootstrap_alloc(_size: usize) -> CoelanoxResult<(*mut u8, usize)> {
-    Err(CoelanoxError::Runtime("ContainerClfmmBackend requires Linux or Windows for bootstrap".to_string()))
+    Err(CoelanoxError::Runtime(
+        "ContainerClfmmBackend requires Linux or Windows for bootstrap".to_string(),
+    ))
 }
 
 fn bootstrap_free(ptr: *mut u8, size: usize) {
     #[cfg(target_os = "linux")]
-    unsafe { libc::munmap(ptr as *mut std::ffi::c_void, size); }
+    unsafe {
+        libc::munmap(ptr as *mut std::ffi::c_void, size);
+    }
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::System::Memory::{VirtualFree, MEM_RELEASE};
@@ -134,12 +147,19 @@ impl ContainerClfmmBackend {
         let alloc_blob = reader
             .get_blob(OP_ID_ALLOC)
             .map_err(|e| CoelanoxError::Runtime(format!("CLFMM get_blob(alloc) failed: {}", e)))?
-            .ok_or_else(|| CoelanoxError::Runtime(format!("CLFMM missing op_id {} (allocate)", OP_ID_ALLOC)))?;
+            .ok_or_else(|| {
+                CoelanoxError::Runtime(format!("CLFMM missing op_id {} (allocate)", OP_ID_ALLOC))
+            })?;
 
         let dealloc_blob = reader
             .get_blob(OP_ID_DEALLOC)
             .map_err(|e| CoelanoxError::Runtime(format!("CLFMM get_blob(dealloc) failed: {}", e)))?
-            .ok_or_else(|| CoelanoxError::Runtime(format!("CLFMM missing op_id {} (deallocate)", OP_ID_DEALLOC)))?;
+            .ok_or_else(|| {
+                CoelanoxError::Runtime(format!(
+                    "CLFMM missing op_id {} (deallocate)",
+                    OP_ID_DEALLOC
+                ))
+            })?;
 
         let move_blob = reader.get_blob(OP_ID_MOVE).ok().flatten();
 
@@ -153,22 +173,35 @@ impl ContainerClfmmBackend {
 
         let mut offset = 0usize;
         unsafe {
-            std::ptr::copy_nonoverlapping(alloc_blob.as_ptr(), ptr.add(offset), alloc_blob.len().min(chunk));
+            std::ptr::copy_nonoverlapping(
+                alloc_blob.as_ptr(),
+                ptr.add(offset),
+                alloc_blob.len().min(chunk),
+            );
         }
-        let alloc_fn: AllocFn = unsafe { std::mem::transmute(ptr.add(offset)) };
+        let alloc_fn: AllocFn = unsafe { std::mem::transmute::<*mut u8, AllocFn>(ptr.add(offset)) };
         offset += chunk;
 
         unsafe {
-            std::ptr::copy_nonoverlapping(dealloc_blob.as_ptr(), ptr.add(offset), dealloc_blob.len().min(chunk));
+            std::ptr::copy_nonoverlapping(
+                dealloc_blob.as_ptr(),
+                ptr.add(offset),
+                dealloc_blob.len().min(chunk),
+            );
         }
-        let dealloc_fn: DeallocFn = unsafe { std::mem::transmute(ptr.add(offset)) };
+        let dealloc_fn: DeallocFn =
+            unsafe { std::mem::transmute::<*mut u8, DeallocFn>(ptr.add(offset)) };
         offset += chunk;
 
         let move_fn = if let Some(ref blob) = move_blob {
             unsafe {
-                std::ptr::copy_nonoverlapping(blob.as_ptr(), ptr.add(offset), blob.len().min(chunk));
+                std::ptr::copy_nonoverlapping(
+                    blob.as_ptr(),
+                    ptr.add(offset),
+                    blob.len().min(chunk),
+                );
             }
-            Some(unsafe { std::mem::transmute(ptr.add(offset)) })
+            Some(unsafe { std::mem::transmute::<*mut u8, MoveFn>(ptr.add(offset)) })
         } else {
             None
         };
@@ -204,13 +237,18 @@ impl MemoryHAL for ContainerClfmmBackend {
         let alloc_fn = self.alloc_fn.lock().unwrap().ok_or_else(|| {
             CoelanoxError::Runtime("ContainerClfmmBackend alloc fn not loaded".to_string())
         })?;
-        let aligned_size = ((size + alignment - 1) / alignment) * alignment;
+        let aligned_size = size.div_ceil(alignment) * alignment;
         let ptr = unsafe { alloc_fn(aligned_size) };
         if ptr.is_null() {
-            return Err(CoelanoxError::Runtime("CLFMM allocate returned null".to_string()));
+            return Err(CoelanoxError::Runtime(
+                "CLFMM allocate returned null".to_string(),
+            ));
         }
         debug!("ContainerClfmmBackend allocated {} bytes", aligned_size);
-        Ok(Box::new(ClfmmRegion { ptr, size: aligned_size }))
+        Ok(Box::new(ClfmmRegion {
+            ptr,
+            size: aligned_size,
+        }))
     }
 
     fn deallocate_region(&self, region: Box<dyn MemoryRegion>) -> CoelanoxResult<()> {
@@ -219,7 +257,9 @@ impl MemoryHAL for ContainerClfmmBackend {
         })?;
         let ptr = region.as_ptr();
         let size = region.size();
-        unsafe { dealloc_fn(ptr, size); }
+        unsafe {
+            dealloc_fn(ptr, size);
+        }
         debug!("ContainerClfmmBackend deallocated {} bytes", size);
         Ok(())
     }
@@ -235,12 +275,18 @@ impl MemoryHAL for ContainerClfmmBackend {
             unsafe {
                 move_fn(src.as_ptr(), dst.as_ptr(), s);
             }
-            debug!("ContainerClfmmBackend move_memory {} bytes via CLFMM blob", s);
+            debug!(
+                "ContainerClfmmBackend move_memory {} bytes via CLFMM blob",
+                s
+            );
         } else {
             unsafe {
                 std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_ptr(), s);
             }
-            debug!("ContainerClfmmBackend move_memory {} bytes via memcpy fallback", s);
+            debug!(
+                "ContainerClfmmBackend move_memory {} bytes via memcpy fallback",
+                s
+            );
         }
         Ok(())
     }

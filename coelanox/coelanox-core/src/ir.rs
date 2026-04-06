@@ -6,16 +6,16 @@
 //! API (`add_node`, `add_node_input`, `add_weight_tensor_with_data`, etc.)
 //! to construct the graph.
 
-use std::collections::{HashMap, HashSet};
+use crate::{format::HardwareTarget, CoelanoxError, CoelanoxResult};
 use serde::{Deserialize, Serialize};
-use crate::{CoelanoxError, CoelanoxResult, format::HardwareTarget};
+use std::collections::{HashMap, HashSet};
 
 /// Unique identifier for nodes in the computation graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub usize);
 
 /// Tensor type classification for future-proofing
-/// 
+///
 /// Uses 3 bits to support up to 8 tensor types:
 /// - Current: Weight, Intermediate
 /// - Future: Input, Output, Constant, Quantum, Neuromorphic, Reserved
@@ -56,7 +56,7 @@ impl TensorType {
             _ => unreachable!(),
         }
     }
-    
+
     /// Get the 3-bit value for this type
     #[inline]
     pub fn to_bits(self) -> u8 {
@@ -65,11 +65,11 @@ impl TensorType {
 }
 
 /// Unique identifier for tensors (both static and dynamic)
-/// 
+///
 /// The TensorId encodes both the tensor type and index using bit-packing:
 /// - Bits 0-2: Tensor type (3 bits, supports 8 types)
 /// - Bits 3-63: Index into the respective Vec (2^61 tensors per type)
-/// 
+///
 /// This future-proof design allows for quantum, neuromorphic, and other
 /// emerging tensor types while maintaining O(1) lookups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -81,37 +81,37 @@ impl TensorId {
     pub fn weight(index: usize) -> Self {
         Self((index << 3) | (TensorType::Weight as usize))
     }
-    
+
     /// Create an intermediate tensor ID
     #[inline]
     pub fn intermediate(index: usize) -> Self {
         Self((index << 3) | (TensorType::Intermediate as usize))
     }
-    
+
     /// Create a tensor ID with a specific type and index
     #[inline]
     pub fn new(tensor_type: TensorType, index: usize) -> Self {
         Self((index << 3) | (tensor_type.to_bits() as usize))
     }
-    
+
     /// Get the tensor type
     #[inline]
     pub fn tensor_type(&self) -> TensorType {
         TensorType::from_bits((self.0 & 0b111) as u8)
     }
-    
+
     /// Check if this is a weight tensor
     #[inline]
     pub fn is_weight(&self) -> bool {
         self.tensor_type() == TensorType::Weight
     }
-    
+
     /// Check if this is an intermediate tensor
     #[inline]
     pub fn is_intermediate(&self) -> bool {
         self.tensor_type() == TensorType::Intermediate
     }
-    
+
     /// Get the index into the respective Vec
     #[inline]
     pub fn index(&self) -> usize {
@@ -168,12 +168,12 @@ impl Shape {
     pub fn new(dimensions: Vec<usize>) -> Self {
         Self { dimensions }
     }
-    
+
     /// Get the total number of elements
     pub fn total_elements(&self) -> usize {
         self.dimensions.iter().product()
     }
-    
+
     /// Get the number of dimensions
     pub fn rank(&self) -> usize {
         self.dimensions.len()
@@ -181,7 +181,7 @@ impl Shape {
 }
 
 /// Primitive operation types supported by the Universal IR
-/// 
+///
 /// This enum contains only primitive operations that can be directly executed
 /// on hardware. Complex layers should be decomposed into subgraphs of these primitives.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,7 +191,7 @@ pub enum OpType {
     Subtract,
     Multiply,
     Divide,
-    
+
     // Element-wise operations
     Relu,
     Sigmoid,
@@ -200,7 +200,7 @@ pub enum OpType {
     LogSoftmax,
     Gelu,
     Swish,
-    
+
     // Mathematical primitives (for RMSNorm, RoPE, etc.)
     Sqrt,
     /// Element-wise absolute value (|x|); prefer over sqrt(x²) for cost and clarity.
@@ -210,7 +210,7 @@ pub enum OpType {
     Sin,
     Exp,
     Log,
-    
+
     // Neural network primitives
     Convolution,
     MaxPool,
@@ -220,7 +220,7 @@ pub enum OpType {
     BatchNorm,
     LayerNorm,
     Dropout,
-    
+
     // Tensor manipulation
     Reshape,
     Transpose,
@@ -230,22 +230,22 @@ pub enum OpType {
     Slice,
     Gather,
     Scatter,
-    
+
     // Matrix operations
     MatMul,
     Gemm, // Generalized matrix multiplication
-    
+
     // Reduction operations
     ReduceSum,
     ReduceMean,
     ReduceMax,
     ReduceMin,
     ReduceProd,
-    
+
     // Broadcasting operations
     Broadcast,
     Expand,
-    
+
     // Comparison operations
     Equal,
     NotEqual,
@@ -253,16 +253,16 @@ pub enum OpType {
     GreaterEqual,
     Less,
     LessEqual,
-    
+
     // Element-wise min/max (for Clip and general use)
     Min,
     Max,
-    
+
     // Logical operations
     And,
     Or,
     Not,
-    
+
     // Custom primitive operation
     Custom(String),
 }
@@ -294,7 +294,7 @@ impl Attribute {
             _ => None,
         }
     }
-    
+
     /// Get float value if this is a Float variant
     pub fn as_float(&self) -> Option<f32> {
         match self {
@@ -302,7 +302,7 @@ impl Attribute {
             _ => None,
         }
     }
-    
+
     /// Get boolean value if this is a Bool variant
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -310,7 +310,7 @@ impl Attribute {
             _ => None,
         }
     }
-    
+
     /// Get string value if this is a String variant
     pub fn as_string(&self) -> Option<&String> {
         match self {
@@ -357,22 +357,22 @@ impl ModelMetadata {
             metadata: HashMap::new(),
         }
     }
-    
+
     /// Add input shape
     pub fn add_input_shape(&mut self, shape: Shape) {
         self.input_shapes.push(shape);
     }
-    
+
     /// Add output shape
     pub fn add_output_shape(&mut self, shape: Shape) {
         self.output_shapes.push(shape);
     }
-    
+
     /// Set data type
     pub fn set_data_type(&mut self, data_type: DataType) {
         self.data_type = data_type;
     }
-    
+
     /// Add metadata
     pub fn add_metadata(&mut self, key: String, value: String) {
         self.metadata.insert(key, value);
@@ -405,17 +405,17 @@ impl GraphNode {
             attributes: HashMap::new(),
         }
     }
-    
+
     /// Add input tensor ID
     pub fn add_input_tensor(&mut self, tensor_id: TensorId) {
         self.input_tensors.push(tensor_id);
     }
-    
+
     /// Add output tensor ID
     pub fn add_output_tensor(&mut self, tensor_id: TensorId) {
         self.output_tensors.push(tensor_id);
     }
-    
+
     /// Add attribute
     pub fn add_attribute(&mut self, key: String, value: Attribute) {
         self.attributes.insert(key, value);
@@ -423,7 +423,7 @@ impl GraphNode {
 }
 
 /// Static weight tensor (model parameters)
-/// 
+///
 /// These are the learned parameters of the model that are stored
 /// as raw data and loaded at inference time.
 /// The TensorId is implicit in the Vec position for O(1) lookups.
@@ -472,12 +472,12 @@ impl WeightTensor {
             data,
         }
     }
-    
+
     /// Get tensor size in bytes
     pub fn size(&self) -> usize {
         self.data.len()
     }
-    
+
     /// Get number of elements
     pub fn elements(&self) -> usize {
         self.shape.total_elements()
@@ -485,7 +485,7 @@ impl WeightTensor {
 }
 
 /// Dynamic intermediate tensor (computation results)
-/// 
+///
 /// These represent the intermediate values flowing through the computation
 /// graph. They don't contain data, only metadata about shape and type.
 /// The TensorId is implicit in the Vec position for O(1) lookups.
@@ -508,12 +508,12 @@ impl IntermediateTensor {
             data_type,
         }
     }
-    
+
     /// Get number of elements
     pub fn elements(&self) -> usize {
         self.shape.total_elements()
     }
-    
+
     /// Get size in bytes (for memory allocation)
     pub fn size_bytes(&self) -> usize {
         self.elements() * self.data_type.size()
@@ -554,7 +554,7 @@ impl OptimizationHint {
             parameters: HashMap::new(),
         }
     }
-    
+
     /// Add parameter
     pub fn add_parameter(&mut self, key: String, value: Attribute) {
         self.parameters.insert(key, value);
@@ -562,7 +562,7 @@ impl OptimizationHint {
 }
 
 /// Optimized IR for specific hardware
-/// 
+///
 /// This is a standalone result of optimization, not a wrapper around the original IR.
 /// It contains only the optimized operations and metadata needed for code generation.
 /// Uses the same high-performance ID-based architecture as UniversalIR.
@@ -595,7 +595,7 @@ impl OptimizedIR {
             shared_weights: std::sync::Arc::new(original_ir.weight_tensors.clone()),
         }
     }
-    
+
     /// Create optimized IR from components (for advanced use cases)
     pub fn from_components(
         target: HardwareTarget,
@@ -613,7 +613,7 @@ impl OptimizedIR {
             shared_weights,
         }
     }
-    
+
     /// Create OptimizedIR from deserialized data (reconstructs Arc)
     pub fn from_deserialized(
         target: HardwareTarget,
@@ -632,27 +632,27 @@ impl OptimizedIR {
             shared_weights: std::sync::Arc::new(weight_tensors),
         }
     }
-    
+
     /// Add optimized graph node
     pub fn add_optimized_node(&mut self, node: GraphNode) {
         self.optimized_nodes.push(node);
     }
-    
+
     /// Add intermediate tensor created during optimization
     pub fn add_intermediate_tensor(&mut self, tensor: IntermediateTensor) {
         self.intermediate_tensors.push(tensor);
     }
-    
+
     /// Add optimization metadata
     pub fn add_optimization_metadata(&mut self, key: String, value: String) {
         self.optimization_metadata.insert(key, value);
     }
-    
+
     /// Get optimized node by ID (O(1) lookup)
     pub fn get_optimized_node(&self, node_id: NodeId) -> Option<&GraphNode> {
         self.optimized_nodes.get(node_id.0)
     }
-    
+
     /// Get intermediate tensor by ID (O(1) lookup)
     pub fn get_intermediate_tensor(&self, tensor_id: TensorId) -> Option<&IntermediateTensor> {
         if tensor_id.is_intermediate() {
@@ -661,7 +661,7 @@ impl OptimizedIR {
             None
         }
     }
-    
+
     /// Get shared weight tensor by ID (O(1) lookup)
     pub fn get_shared_weight(&self, tensor_id: TensorId) -> Option<&WeightTensor> {
         if tensor_id.is_weight() {
@@ -670,7 +670,7 @@ impl OptimizedIR {
             None
         }
     }
-    
+
     /// Get any tensor by ID (weight or intermediate)
     pub fn get_tensor(&self, tensor_id: TensorId) -> Option<TensorRef<'_>> {
         if let Some(tensor) = self.get_shared_weight(tensor_id) {
@@ -681,17 +681,17 @@ impl OptimizedIR {
         }
         None
     }
-    
+
     /// Get number of optimized nodes
     pub fn node_count(&self) -> usize {
         self.optimized_nodes.len()
     }
-    
+
     /// Get number of intermediate tensors
     pub fn intermediate_tensor_count(&self) -> usize {
         self.intermediate_tensors.len()
     }
-    
+
     /// Get number of shared weight tensors
     pub fn weight_tensor_count(&self) -> usize {
         self.shared_weights.len()
@@ -728,9 +728,8 @@ pub fn serialize_optimized_ir_for_container(ir: &OptimizedIR) -> CoelanoxResult<
         original_model_name: ir.original_model_name.clone(),
         weight_tensors,
     };
-    bincode::serialize(&s).map_err(|e| {
-        CoelanoxError::Runtime(format!("Failed to serialize IR: {}", e))
-    })
+    bincode::serialize(&s)
+        .map_err(|e| CoelanoxError::Runtime(format!("Failed to serialize IR: {}", e)))
 }
 
 /// Deserialize container IR bytes into OptimizedIR (for runtime warm cache).
@@ -748,29 +747,29 @@ pub fn deserialize_optimized_ir(ir_data: &[u8]) -> CoelanoxResult<OptimizedIR> {
 }
 
 /// Universal IR - the main intermediate representation with proper graph structure
-/// 
+///
 /// This IR uses an arena-based approach with efficient index-based lookups
 /// and clear separation between static weights and dynamic intermediate tensors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniversalIR {
     /// Model metadata
     pub metadata: ModelMetadata,
-    
+
     /// Graph nodes (operations) - arena-based storage
     pub nodes: Vec<GraphNode>,
-    
+
     /// Static weight tensors (model parameters)
     pub weight_tensors: Vec<WeightTensor>,
-    
+
     /// Dynamic intermediate tensors (computation results)
     pub intermediate_tensors: Vec<IntermediateTensor>,
-    
+
     /// Optimization hints
     pub optimization_hints: Vec<OptimizationHint>,
-    
+
     /// Topological order of nodes for execution
     pub topological_order: Vec<NodeId>,
-    
+
     /// Next available node ID for efficient allocation
     next_node_id: usize,
 }
@@ -788,51 +787,67 @@ impl UniversalIR {
             next_node_id: 0,
         }
     }
-    
+
     /// Add a graph node (operation)
     pub fn add_node(&mut self, op_type: OpType) -> NodeId {
         let node_id = NodeId(self.next_node_id);
-        
+
         let node = GraphNode::new(node_id, op_type);
         self.nodes.push(node);
-        
+
         self.next_node_id += 1;
-        
+
         node_id
     }
-    
+
     /// Add a weight tensor
-    pub fn add_weight_tensor(&mut self, name: String, shape: Shape, data_type: DataType) -> TensorId {
+    pub fn add_weight_tensor(
+        &mut self,
+        name: String,
+        shape: Shape,
+        data_type: DataType,
+    ) -> TensorId {
         let index = self.weight_tensors.len();
         let tensor_id = TensorId::weight(index);
         let tensor = WeightTensor::new(name, shape, data_type);
         self.weight_tensors.push(tensor);
         tensor_id
     }
-    
+
     /// Add a weight tensor with data
-    pub fn add_weight_tensor_with_data(&mut self, name: String, shape: Shape, data_type: DataType, data: Vec<u8>) -> TensorId {
+    pub fn add_weight_tensor_with_data(
+        &mut self,
+        name: String,
+        shape: Shape,
+        data_type: DataType,
+        data: Vec<u8>,
+    ) -> TensorId {
         let index = self.weight_tensors.len();
         let tensor_id = TensorId::weight(index);
         let tensor = WeightTensor::with_data(name, shape, data_type, data);
         self.weight_tensors.push(tensor);
         tensor_id
     }
-    
+
     /// Add an intermediate tensor
-    pub fn add_intermediate_tensor(&mut self, name: String, shape: Shape, data_type: DataType) -> TensorId {
+    pub fn add_intermediate_tensor(
+        &mut self,
+        name: String,
+        shape: Shape,
+        data_type: DataType,
+    ) -> TensorId {
         let index = self.intermediate_tensors.len();
         let tensor_id = TensorId::intermediate(index);
         let tensor = IntermediateTensor::new(name, shape, data_type);
         self.intermediate_tensors.push(tensor);
         tensor_id
     }
-    
+
     /// Add an optimization hint
     pub fn add_optimization_hint(&mut self, hint: OptimizationHint) {
         self.optimization_hints.push(hint);
     }
-    
+
     /// Compute and store topological order for execution
     pub fn compute_topological_order(&mut self) -> CoelanoxResult<()> {
         self.topological_order = self.topological_sort()?;
@@ -849,11 +864,10 @@ impl UniversalIR {
         let order = std::mem::take(&mut self.topological_order);
         let mut new_nodes = Vec::with_capacity(self.nodes.len());
         for (new_index, &node_id) in order.iter().enumerate() {
-            let mut node = self
-                .nodes
-                .get(node_id.0)
-                .cloned()
-                .ok_or_else(|| CoelanoxError::format("NodeId out of range in topological order"))?;
+            let mut node =
+                self.nodes.get(node_id.0).cloned().ok_or_else(|| {
+                    CoelanoxError::format("NodeId out of range in topological order")
+                })?;
             node.id = NodeId(new_index);
             new_nodes.push(node);
         }
@@ -866,12 +880,12 @@ impl UniversalIR {
     pub fn get_node(&self, node_id: NodeId) -> Option<&GraphNode> {
         self.nodes.get(node_id.0)
     }
-    
+
     /// Get node by ID (mutable)
     pub fn get_node_mut(&mut self, node_id: NodeId) -> Option<&mut GraphNode> {
         self.nodes.get_mut(node_id.0)
     }
-    
+
     /// Get weight tensor by ID (O(1) lookup)
     pub fn get_weight_tensor(&self, tensor_id: TensorId) -> Option<&WeightTensor> {
         if tensor_id.is_weight() {
@@ -880,7 +894,7 @@ impl UniversalIR {
             None
         }
     }
-    
+
     /// Get intermediate tensor by ID (O(1) lookup)
     pub fn get_intermediate_tensor(&self, tensor_id: TensorId) -> Option<&IntermediateTensor> {
         if tensor_id.is_intermediate() {
@@ -889,7 +903,7 @@ impl UniversalIR {
             None
         }
     }
-    
+
     /// Get any tensor by ID (weight or intermediate)
     pub fn get_tensor(&self, tensor_id: TensorId) -> Option<TensorRef<'_>> {
         if let Some(tensor) = self.get_weight_tensor(tensor_id) {
@@ -900,7 +914,7 @@ impl UniversalIR {
         }
         None
     }
-    
+
     /// Get tensor by name
     pub fn get_tensor_by_name(&self, name: &str) -> Option<(TensorId, TensorRef<'_>)> {
         // Check weight tensors first
@@ -910,7 +924,7 @@ impl UniversalIR {
                 return Some((tensor_id, TensorRef::Weight(tensor)));
             }
         }
-        
+
         // Check intermediate tensors
         for (index, tensor) in self.intermediate_tensors.iter().enumerate() {
             if tensor.name == name {
@@ -918,79 +932,93 @@ impl UniversalIR {
                 return Some((tensor_id, TensorRef::Intermediate(tensor)));
             }
         }
-        
+
         None
     }
-    
+
     /// Validate the IR
     pub fn validate(&self) -> CoelanoxResult<()> {
         // Validate metadata
         if self.metadata.name.is_empty() {
             return Err(CoelanoxError::format("Model name cannot be empty"));
         }
-        
+
         // Validate nodes
         for (i, node) in self.nodes.iter().enumerate() {
             if node.input_tensors.is_empty() && node.output_tensors.is_empty() {
-                return Err(CoelanoxError::format(format!("Node {} has no inputs or outputs", i)));
+                return Err(CoelanoxError::format(format!(
+                    "Node {} has no inputs or outputs",
+                    i
+                )));
             }
         }
-        
+
         // Validate weight tensors
         for tensor in &self.weight_tensors {
             if tensor.name.is_empty() {
                 return Err(CoelanoxError::format("Weight tensor name cannot be empty"));
             }
-            
+
             if tensor.shape.dimensions.is_empty() {
-                return Err(CoelanoxError::format(format!("Weight tensor {} has empty shape", tensor.name)));
+                return Err(CoelanoxError::format(format!(
+                    "Weight tensor {} has empty shape",
+                    tensor.name
+                )));
             }
         }
-        
+
         // Validate intermediate tensors
         for tensor in &self.intermediate_tensors {
             if tensor.name.is_empty() {
-                return Err(CoelanoxError::format("Intermediate tensor name cannot be empty"));
+                return Err(CoelanoxError::format(
+                    "Intermediate tensor name cannot be empty",
+                ));
             }
-            
+
             if tensor.shape.dimensions.is_empty() {
-                return Err(CoelanoxError::format(format!("Intermediate tensor {} has empty shape", tensor.name)));
+                return Err(CoelanoxError::format(format!(
+                    "Intermediate tensor {} has empty shape",
+                    tensor.name
+                )));
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Get total size of all weight tensors
     pub fn total_weight_size(&self) -> usize {
         self.weight_tensors.iter().map(|t| t.size()).sum()
     }
-    
+
     /// Get total memory requirement for intermediate tensors
     pub fn total_intermediate_memory(&self) -> usize {
-        self.intermediate_tensors.iter().map(|t| t.size_bytes()).sum()
+        self.intermediate_tensors
+            .iter()
+            .map(|t| t.size_bytes())
+            .sum()
     }
-    
+
     /// Get number of nodes
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
-    
+
     /// Get number of weight tensors
     pub fn weight_tensor_count(&self) -> usize {
         self.weight_tensors.len()
     }
-    
+
     /// Get number of intermediate tensors
     pub fn intermediate_tensor_count(&self) -> usize {
         self.intermediate_tensors.len()
     }
-    
+
     /// Get total number of tensors
     pub fn total_tensor_count(&self) -> usize {
         self.weight_tensor_count() + self.intermediate_tensor_count()
     }
-    
+
     /// Get all nodes that produce a given tensor
     pub fn get_producer_nodes(&self, tensor_id: TensorId) -> Vec<NodeId> {
         self.nodes
@@ -999,7 +1027,7 @@ impl UniversalIR {
             .map(|node| node.id)
             .collect()
     }
-    
+
     /// Get all nodes that consume a given tensor
     pub fn get_consumer_nodes(&self, tensor_id: TensorId) -> Vec<NodeId> {
         self.nodes
@@ -1008,78 +1036,90 @@ impl UniversalIR {
             .map(|node| node.id)
             .collect()
     }
-    
+
     /// Get all input tensors for a node
     pub fn get_node_inputs(&self, node_id: NodeId) -> Option<Vec<TensorId>> {
-        self.get_node(node_id).map(|node| node.input_tensors.clone())
+        self.get_node(node_id)
+            .map(|node| node.input_tensors.clone())
     }
-    
+
     /// Get all output tensors for a node
     pub fn get_node_outputs(&self, node_id: NodeId) -> Option<Vec<TensorId>> {
-        self.get_node(node_id).map(|node| node.output_tensors.clone())
+        self.get_node(node_id)
+            .map(|node| node.output_tensors.clone())
     }
-    
+
     /// Connect a tensor output from one node to input of another node
-    pub fn connect_nodes(&mut self, producer_node: NodeId, output_idx: usize, consumer_node: NodeId, input_idx: usize) -> CoelanoxResult<()> {
+    pub fn connect_nodes(
+        &mut self,
+        producer_node: NodeId,
+        output_idx: usize,
+        consumer_node: NodeId,
+        input_idx: usize,
+    ) -> CoelanoxResult<()> {
         // Get the tensor ID from producer first
         let tensor_id = {
-            let producer = self.get_node(producer_node)
+            let producer = self
+                .get_node(producer_node)
                 .ok_or_else(|| CoelanoxError::format("Producer node not found"))?;
-            
+
             if output_idx >= producer.output_tensors.len() {
                 return Err(CoelanoxError::format("Output index out of bounds"));
             }
-            
+
             producer.output_tensors[output_idx]
         };
-        
+
         // Now update the consumer
-        let consumer = self.get_node_mut(consumer_node)
+        let consumer = self
+            .get_node_mut(consumer_node)
             .ok_or_else(|| CoelanoxError::format("Consumer node not found"))?;
-        
+
         if input_idx >= consumer.input_tensors.len() {
             return Err(CoelanoxError::format("Input index out of bounds"));
         }
-        
+
         consumer.input_tensors[input_idx] = tensor_id;
-        
+
         Ok(())
     }
-    
+
     /// Add input tensor to a node
     pub fn add_node_input(&mut self, node_id: NodeId, tensor_id: TensorId) -> CoelanoxResult<()> {
-        let node = self.get_node_mut(node_id)
+        let node = self
+            .get_node_mut(node_id)
             .ok_or_else(|| CoelanoxError::format("Node not found"))?;
-        
+
         node.add_input_tensor(tensor_id);
         Ok(())
     }
-    
+
     /// Add output tensor to a node
     pub fn add_node_output(&mut self, node_id: NodeId, tensor_id: TensorId) -> CoelanoxResult<()> {
-        let node = self.get_node_mut(node_id)
+        let node = self
+            .get_node_mut(node_id)
             .ok_or_else(|| CoelanoxError::format("Node not found"))?;
-        
+
         node.add_output_tensor(tensor_id);
         Ok(())
     }
-    
+
     /// Get topological order of nodes (for execution order)
     pub fn topological_sort(&self) -> CoelanoxResult<Vec<NodeId>> {
         let mut visited = std::collections::HashSet::new();
         let mut temp_visited = std::collections::HashSet::new();
         let mut result = Vec::new();
-        
+
         for node in &self.nodes {
             if !visited.contains(&node.id) {
                 self.dfs_topological(node.id, &mut visited, &mut temp_visited, &mut result)?;
             }
         }
-        
+
         result.reverse();
         Ok(result)
     }
-    
+
     /// Depth-first search for topological sorting
     fn dfs_topological(
         &self,
@@ -1091,13 +1131,13 @@ impl UniversalIR {
         if temp_visited.contains(&node_id) {
             return Err(CoelanoxError::format("Cycle detected in computation graph"));
         }
-        
+
         if visited.contains(&node_id) {
             return Ok(());
         }
-        
+
         temp_visited.insert(node_id);
-        
+
         // Visit all input tensors' producer nodes first
         if let Some(node) = self.get_node(node_id) {
             for tensor_id in &node.input_tensors {
@@ -1106,14 +1146,14 @@ impl UniversalIR {
                 }
             }
         }
-        
+
         temp_visited.remove(&node_id);
         visited.insert(node_id);
         result.push(node_id);
-        
+
         Ok(())
     }
-    
+
     /// Get all leaf nodes (nodes whose outputs are not consumed by any node in the graph).
     pub fn get_leaf_nodes(&self) -> Vec<NodeId> {
         let consumed: HashSet<TensorId> = self
@@ -1125,10 +1165,7 @@ impl UniversalIR {
             .iter()
             .filter(|node| {
                 node.output_tensors.is_empty()
-                    || node
-                        .output_tensors
-                        .iter()
-                        .all(|t| !consumed.contains(t))
+                    || node.output_tensors.iter().all(|t| !consumed.contains(t))
             })
             .map(|node| node.id)
             .collect()
@@ -1151,12 +1188,12 @@ impl UniversalIR {
             .map(|node| node.id)
             .collect()
     }
-    
+
     /// Check if the graph is acyclic
     pub fn is_acyclic(&self) -> bool {
         self.topological_sort().is_ok()
     }
-    
+
     /// Get graph statistics
     pub fn get_graph_stats(&self) -> GraphStats {
         GraphStats {
@@ -1168,19 +1205,20 @@ impl UniversalIR {
             is_acyclic: self.is_acyclic(),
         }
     }
-    
+
     /// Get all nodes that produce a specific tensor
     pub fn get_producer_node(&self, tensor_id: TensorId) -> Option<&GraphNode> {
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .find(|node| node.output_tensors.contains(&tensor_id))
     }
-    
+
     /// Check if a node has only one consumer (useful for fusion)
     pub fn has_single_consumer(&self, node: &GraphNode) -> bool {
         if node.output_tensors.is_empty() {
             return false;
         }
-        
+
         // Get all consumers of this node's outputs
         let mut consumers = std::collections::HashSet::new();
         for output_tensor in &node.output_tensors {
@@ -1189,49 +1227,55 @@ impl UniversalIR {
                 consumers.insert(consumer_id);
             }
         }
-        
+
         // Must have exactly one consumer
         consumers.len() == 1
     }
-    
+
     /// Check if two nodes can be fused (node1 -> node2 with single consumer)
     pub fn can_fuse_nodes(&self, node1: &GraphNode, node2: &GraphNode) -> bool {
         // Basic validation
         if node1.id == node2.id {
             return false; // Can't fuse a node with itself
         }
-        
+
         // Check if node1's outputs are inputs to node2
-        let has_direct_connection = node1.output_tensors.iter()
+        let has_direct_connection = node1
+            .output_tensors
+            .iter()
             .any(|output_tensor| node2.input_tensors.contains(output_tensor));
-            
+
         if !has_direct_connection {
             return false;
         }
-        
+
         // Check if node1 has only one consumer (node2)
         if !self.has_single_consumer(node1) {
             return false;
         }
-        
+
         // Additional validation: ensure node2 is actually the single consumer
-        let consumers: Vec<_> = node1.output_tensors.iter()
+        let consumers: Vec<_> = node1
+            .output_tensors
+            .iter()
             .flat_map(|tensor_id| self.get_consumer_nodes(*tensor_id))
             .collect();
-            
+
         if consumers.len() != 1 || consumers[0] != node2.id {
             return false;
         }
-        
+
         // Check data type compatibility (basic validation)
         if let Some(output_tensor) = node1.output_tensors.first() {
-            if let Some(input_tensor) = node2.input_tensors.iter()
-                .find(|tensor_id| node1.output_tensors.contains(tensor_id)) {
-                
+            if let Some(input_tensor) = node2
+                .input_tensors
+                .iter()
+                .find(|tensor_id| node1.output_tensors.contains(tensor_id))
+            {
                 // Get tensor references to check data types
                 if let (Some(output_ref), Some(input_ref)) = (
                     self.get_tensor(*output_tensor),
-                    self.get_tensor(*input_tensor)
+                    self.get_tensor(*input_tensor),
                 ) {
                     let output_dtype = match output_ref {
                         TensorRef::Weight(tensor) => &tensor.data_type,
@@ -1241,7 +1285,7 @@ impl UniversalIR {
                         TensorRef::Weight(tensor) => &tensor.data_type,
                         TensorRef::Intermediate(tensor) => &tensor.data_type,
                     };
-                    
+
                     // Allow fusion when data types are compatible (same or convertible)
                     match (output_dtype, input_dtype) {
                         (DataType::Float32, DataType::Float32) => true,
@@ -1273,24 +1317,31 @@ impl UniversalIR {
             false // No output tensors
         }
     }
-    
+
     /// Get the next node in topological order (useful for simple fusion patterns)
     pub fn get_next_node(&self, current_node: &GraphNode) -> Option<&GraphNode> {
         // Find current node's position in topological order
-        let current_pos = self.topological_order.iter()
+        let current_pos = self
+            .topological_order
+            .iter()
             .position(|&node_id| node_id == current_node.id)?;
-            
+
         // Get next node ID
         let next_node_id = self.topological_order.get(current_pos + 1)?;
-        
+
         // Return the actual node
         self.nodes.get(next_node_id.0)
     }
-    
+
     /// Infer the output shape of a fused operation based on its inputs
-    pub fn infer_fused_output_shape(&self, fused_op_type: &str, input_tensors: &[TensorId]) -> Option<Shape> {
+    pub fn infer_fused_output_shape(
+        &self,
+        fused_op_type: &str,
+        input_tensors: &[TensorId],
+    ) -> Option<Shape> {
         // Get input shapes
-        let input_shapes: Vec<&Shape> = input_tensors.iter()
+        let input_shapes: Vec<&Shape> = input_tensors
+            .iter()
             .filter_map(|tensor_id| {
                 if let Some(tensor_ref) = self.get_tensor(*tensor_id) {
                     match tensor_ref {
@@ -1302,21 +1353,19 @@ impl UniversalIR {
                 }
             })
             .collect();
-            
+
         if input_shapes.is_empty() {
             return None;
         }
-        
+
         match fused_op_type {
             "ConvReLU" => {
                 // ConvReLU output shape is same as convolution output
                 // For convolution: output_shape = (input_shape - kernel_size + 2*padding) / stride + 1
                 // Simplified: assume same shape; full conv output would need kernel/stride/padding from attributes
-                if let Some(conv_input_shape) = input_shapes.first() {
-                    Some((*conv_input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|conv_input_shape| (*conv_input_shape).clone())
             }
             "MatMulAdd" => {
                 // MatMulAdd: if A is [m, k] and B is [k, n], output is [m, n]
@@ -1332,69 +1381,53 @@ impl UniversalIR {
             }
             "AddReLU" => {
                 // AddReLU output shape is same as input shape
-                if let Some(input_shape) = input_shapes.first() {
-                    Some((*input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|input_shape| (*input_shape).clone())
             }
             "ConvBatchNormReLU" => {
                 // ConvBatchNormReLU output shape is same as convolution output
                 // BatchNorm and ReLU don't change shape
-                if let Some(conv_input_shape) = input_shapes.first() {
-                    Some((*conv_input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|conv_input_shape| (*conv_input_shape).clone())
             }
             "EdgeConvReLU" => {
                 // EdgeConvReLU output shape is same as convolution output
                 // Edge quantization doesn't change shape, just data type
-                if let Some(conv_input_shape) = input_shapes.first() {
-                    Some((*conv_input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|conv_input_shape| (*conv_input_shape).clone())
             }
             "LayerNorm" => {
                 // LayerNorm typically preserves input shape
-                if let Some(input_shape) = input_shapes.first() {
-                    Some((*input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|input_shape| (*input_shape).clone())
             }
             "Gelu" => {
                 // GELU activation preserves input shape
-                if let Some(input_shape) = input_shapes.first() {
-                    Some((*input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|input_shape| (*input_shape).clone())
             }
             "Sigmoid" => {
                 // Sigmoid activation preserves input shape
-                if let Some(input_shape) = input_shapes.first() {
-                    Some((*input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|input_shape| (*input_shape).clone())
             }
             "Tanh" => {
                 // Tanh activation preserves input shape
-                if let Some(input_shape) = input_shapes.first() {
-                    Some((*input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|input_shape| (*input_shape).clone())
             }
             _ => {
                 // Default: use first input shape
-                if let Some(input_shape) = input_shapes.first() {
-                    Some((*input_shape).clone())
-                } else {
-                    None
-                }
+                input_shapes
+                    .first()
+                    .map(|input_shape| (*input_shape).clone())
             }
         }
     }
@@ -1425,62 +1458,62 @@ mod tests {
     #[test]
     fn test_simple_graph_construction() {
         let mut ir = UniversalIR::new("test_model".to_string());
-        
+
         // Add input tensor
         let input_tensor = ir.add_intermediate_tensor(
             "input".to_string(),
             Shape::new(vec![1, 784]), // 28x28 image flattened
             DataType::Float32,
         );
-        
+
         // Add weight tensors
         let weight1 = ir.add_weight_tensor(
             "weight1".to_string(),
             Shape::new(vec![784, 128]),
             DataType::Float32,
         );
-        
+
         let bias1 = ir.add_weight_tensor(
             "bias1".to_string(),
             Shape::new(vec![128]),
             DataType::Float32,
         );
-        
+
         // Add intermediate tensors
         let hidden = ir.add_intermediate_tensor(
             "hidden".to_string(),
             Shape::new(vec![1, 128]),
             DataType::Float32,
         );
-        
+
         let output = ir.add_intermediate_tensor(
             "output".to_string(),
             Shape::new(vec![1, 10]),
             DataType::Float32,
         );
-        
+
         // Add operations
         let matmul_node = ir.add_node(OpType::MatMul);
         let add_node = ir.add_node(OpType::Add);
         let relu_node = ir.add_node(OpType::Relu);
-        
+
         // Connect the graph
         ir.add_node_input(matmul_node, input_tensor).unwrap();
         ir.add_node_input(matmul_node, weight1).unwrap();
         ir.add_node_output(matmul_node, hidden).unwrap();
-        
+
         ir.add_node_input(add_node, hidden).unwrap();
         ir.add_node_input(add_node, bias1).unwrap();
         ir.add_node_output(add_node, hidden).unwrap(); // Reuse hidden tensor (in-place operation)
-        
+
         ir.add_node_input(relu_node, hidden).unwrap();
         ir.add_node_output(relu_node, output).unwrap(); // Output to final tensor
-        
+
         // Validate the IR
         if let Err(e) = ir.validate() {
             panic!("Validation failed: {:?}", e);
         }
-        
+
         // Check graph properties
         let stats = ir.get_graph_stats();
         assert_eq!(stats.node_count, 3);
@@ -1489,7 +1522,7 @@ mod tests {
         // Graph may have cycles (in-place ops); this test creates one, so we skip topological_sort.
         // let execution_order = ir.topological_sort().unwrap();
         // assert_eq!(execution_order.len(), 3);
-        
+
         // Test tensor lookups by ID (O(1) lookup)
         let tensor_ref = ir.get_tensor(input_tensor).unwrap();
         match tensor_ref {
@@ -1499,48 +1532,51 @@ mod tests {
             }
             _ => panic!("Expected intermediate tensor"),
         }
-        
+
         // Test tensor type detection
         assert!(input_tensor.is_intermediate());
         assert!(weight1.is_weight());
     }
-    
+
     #[test]
     fn test_graph_traversal() {
         let mut ir = UniversalIR::new("traversal_test".to_string());
-        
+
         // Create a simple linear graph: A -> B -> C
-        let tensor_a = ir.add_intermediate_tensor("A".to_string(), Shape::new(vec![1]), DataType::Float32);
-        let tensor_b = ir.add_intermediate_tensor("B".to_string(), Shape::new(vec![1]), DataType::Float32);
-        let tensor_c = ir.add_intermediate_tensor("C".to_string(), Shape::new(vec![1]), DataType::Float32);
-        
+        let tensor_a =
+            ir.add_intermediate_tensor("A".to_string(), Shape::new(vec![1]), DataType::Float32);
+        let tensor_b =
+            ir.add_intermediate_tensor("B".to_string(), Shape::new(vec![1]), DataType::Float32);
+        let tensor_c =
+            ir.add_intermediate_tensor("C".to_string(), Shape::new(vec![1]), DataType::Float32);
+
         let node_a = ir.add_node(OpType::Relu);
         let node_b = ir.add_node(OpType::Relu);
-        
+
         ir.add_node_input(node_a, tensor_a).unwrap();
         ir.add_node_output(node_a, tensor_b).unwrap();
-        
+
         ir.add_node_input(node_b, tensor_b).unwrap();
         ir.add_node_output(node_b, tensor_c).unwrap();
-        
+
         // Test producer/consumer relationships
         let producers_of_b = ir.get_producer_nodes(tensor_b);
         assert_eq!(producers_of_b.len(), 1);
         assert_eq!(producers_of_b[0], node_a);
-        
+
         let consumers_of_b = ir.get_consumer_nodes(tensor_b);
         assert_eq!(consumers_of_b.len(), 1);
         assert_eq!(consumers_of_b[0], node_b);
-        
+
         // Test root and leaf nodes
         let root_nodes = ir.get_root_nodes();
         assert_eq!(root_nodes.len(), 1);
         assert_eq!(root_nodes[0], node_a);
-        
+
         let leaf_nodes = ir.get_leaf_nodes();
         assert_eq!(leaf_nodes.len(), 1);
         assert_eq!(leaf_nodes[0], node_b);
-        
+
         // Test O(1) tensor lookups
         let tensor_b_ref = ir.get_tensor(tensor_b).unwrap();
         match tensor_b_ref {
@@ -1551,55 +1587,77 @@ mod tests {
             _ => panic!("Expected intermediate tensor"),
         }
     }
-    
+
     #[test]
     fn test_optimized_ir_high_performance() {
         // Create original IR
         let mut original_ir = UniversalIR::new("test_model".to_string());
-        
+
         // Add tensors and nodes
-        let input_tensor = original_ir.add_intermediate_tensor("input".to_string(), Shape::new(vec![1, 784]), DataType::Float32);
-        let weight = original_ir.add_weight_tensor("weight".to_string(), Shape::new(vec![784, 128]), DataType::Float32);
-        let output_tensor = original_ir.add_intermediate_tensor("output".to_string(), Shape::new(vec![1, 128]), DataType::Float32);
-        
+        let input_tensor = original_ir.add_intermediate_tensor(
+            "input".to_string(),
+            Shape::new(vec![1, 784]),
+            DataType::Float32,
+        );
+        let weight = original_ir.add_weight_tensor(
+            "weight".to_string(),
+            Shape::new(vec![784, 128]),
+            DataType::Float32,
+        );
+        let output_tensor = original_ir.add_intermediate_tensor(
+            "output".to_string(),
+            Shape::new(vec![1, 128]),
+            DataType::Float32,
+        );
+
         let matmul_node = original_ir.add_node(OpType::MatMul);
-        original_ir.add_node_input(matmul_node, input_tensor).unwrap();
+        original_ir
+            .add_node_input(matmul_node, input_tensor)
+            .unwrap();
         original_ir.add_node_input(matmul_node, weight).unwrap();
-        original_ir.add_node_output(matmul_node, output_tensor).unwrap();
-        
+        original_ir
+            .add_node_output(matmul_node, output_tensor)
+            .unwrap();
+
         // Create optimized IR using high-performance architecture
         let target = crate::format::HardwareTarget::Cpu;
         let mut optimized_ir = OptimizedIR::new(&original_ir, target.clone());
-        
+
         // Add optimized nodes (simulating optimization that reorders/fuses operations)
         let optimized_node = GraphNode::new(NodeId(0), OpType::Gemm); // Fused MatMul+Bias
         optimized_ir.add_optimized_node(optimized_node);
-        
+
         // Add new intermediate tensor created during optimization
-        let fused_tensor = IntermediateTensor::new("fused_output".to_string(), Shape::new(vec![1, 128]), DataType::Float32);
+        let fused_tensor = IntermediateTensor::new(
+            "fused_output".to_string(),
+            Shape::new(vec![1, 128]),
+            DataType::Float32,
+        );
         optimized_ir.add_intermediate_tensor(fused_tensor);
-        
+
         // Test high-performance O(1) lookups
         let node_ref = optimized_ir.get_optimized_node(NodeId(0)).unwrap();
         assert_eq!(node_ref.op_type, OpType::Gemm);
-        
+
         // Test tensor lookups
-        let tensor_ref = optimized_ir.get_intermediate_tensor(TensorId::intermediate(0)).unwrap();
+        let tensor_ref = optimized_ir
+            .get_intermediate_tensor(TensorId::intermediate(0))
+            .unwrap();
         assert_eq!(tensor_ref.name, "fused_output");
-        
+
         // Test shared weight access
         let weight_ref = optimized_ir.get_shared_weight(TensorId::weight(0)).unwrap();
         assert_eq!(weight_ref.name, "weight");
-        
+
         // Test statistics
         assert_eq!(optimized_ir.node_count(), 1);
         assert_eq!(optimized_ir.intermediate_tensor_count(), 1);
         assert_eq!(optimized_ir.weight_tensor_count(), 1);
-        
+
         // Test optimized nodes (fused MatMul+Bias -> Gemm)
         assert_eq!(optimized_ir.optimized_nodes.len(), 1);
         assert_eq!(optimized_ir.optimized_nodes[0].op_type, OpType::Gemm);
-        
+
         // Verify memory efficiency - shared weights should be the same Arc
         let optimized_ir2 = OptimizedIR::new(&UniversalIR::new("test2".to_string()), target);
         // Both should have different Arc instances (different models)
@@ -1614,7 +1672,7 @@ mod tests {
     /// was lost would cause scalar matmul to infer (1, in_len, out_len) and run ~2500x slower.
     #[test]
     fn test_dimensions_attribute_roundtrip() {
-        use crate::ir::{GraphNode, NodeId, OpType, TensorId, Attribute};
+        use crate::ir::{Attribute, GraphNode, NodeId, OpType, TensorId};
         let mut node = GraphNode::new(NodeId(0), OpType::MatMul);
         node.add_input_tensor(TensorId::intermediate(0));
         node.add_input_tensor(TensorId::weight(0));

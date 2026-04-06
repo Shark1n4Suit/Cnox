@@ -9,9 +9,9 @@
 
 use coelanox_core::format::HardwareTarget;
 use coelanox_core::{CoelanoxError, CoelanoxResult};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 
 /// Backend kind: CLF (sealed kernel pack). CLF reader is implemented separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +72,12 @@ pub struct DiscoveryResult {
     pub total_scanned: usize,
 }
 
+impl Default for DiscoveryResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DiscoveryResult {
     pub fn new() -> Self {
         Self {
@@ -80,11 +86,11 @@ impl DiscoveryResult {
             total_scanned: 0,
         }
     }
-    
+
     pub fn success_count(&self) -> usize {
         self.discovered.len()
     }
-    
+
     pub fn failure_count(&self) -> usize {
         self.failures.len()
     }
@@ -117,7 +123,7 @@ impl BackendManager {
             discovered_backends: HashMap::new(),
         }
     }
-    
+
     /// Discover CLF backends from search paths
     ///
     /// Scans the provided search paths for .clfc (and legacy .clf) files.
@@ -127,31 +133,33 @@ impl BackendManager {
     ///
     /// # Returns
     /// * `Ok(DiscoveryResult)` with detailed information about discovered and failed backends
-    pub fn discover_backends(&mut self, search_paths: &[PathBuf]) -> CoelanoxResult<DiscoveryResult> {
+    pub fn discover_backends(
+        &mut self,
+        search_paths: &[PathBuf],
+    ) -> CoelanoxResult<DiscoveryResult> {
         let mut result = DiscoveryResult::new();
-        
+
         for search_path in search_paths {
             // Handle path existence and permission errors
             if !search_path.exists() {
-                result.failures.push((
-                    search_path.clone(),
-                    "Path does not exist".to_string()
-                ));
+                result
+                    .failures
+                    .push((search_path.clone(), "Path does not exist".to_string()));
                 continue;
             }
-            
+
             // Handle directory read errors
             let entries = match std::fs::read_dir(search_path) {
                 Ok(e) => e,
                 Err(e) => {
                     result.failures.push((
                         search_path.clone(),
-                        format!("Failed to read directory: {}", e)
+                        format!("Failed to read directory: {}", e),
                     ));
                     continue;
                 }
             };
-            
+
             for entry in entries {
                 result.total_scanned += 1;
                 let entry = match entry {
@@ -159,12 +167,12 @@ impl BackendManager {
                     Err(e) => {
                         result.failures.push((
                             search_path.clone(),
-                            format!("Failed to read directory entry: {}", e)
+                            format!("Failed to read directory entry: {}", e),
                         ));
                         continue;
                     }
                 };
-                
+
                 let path = entry.path();
 
                 if Self::is_clf_file(&path) {
@@ -178,19 +186,18 @@ impl BackendManager {
                             self.register_backend(backend_info);
                         }
                         Err(e) => {
-                            result.failures.push((
-                                path.clone(),
-                                format!("Failed to load CLF backend: {}", e)
-                            ));
+                            result
+                                .failures
+                                .push((path.clone(), format!("Failed to load CLF backend: {}", e)));
                         }
                     }
                 }
             }
         }
-        
+
         Ok(result)
     }
-    
+
     /// Check if a file is a CLF (Coelanox Library File). Accepts .clfc (compute) and .clf (legacy).
     fn is_clf_file(path: &Path) -> bool {
         path.extension()
@@ -215,12 +222,12 @@ impl BackendManager {
             .map(|e| e.to_string_lossy().to_lowercase() == "clfc")
             .unwrap_or(false)
     }
-    
+
     /// Register a .clfc (or legacy .clf) file as a backend. Reads CLF header to set supported_targets from target field.
     fn load_clf_backend(&self, path: &Path) -> CoelanoxResult<BackendInfo> {
         if !path.exists() {
             return Err(CoelanoxError::BackendLibraryNotFound(
-                path.display().to_string()
+                path.display().to_string(),
             ));
         }
         let name = path
@@ -256,33 +263,33 @@ impl BackendManager {
     }
 
     /// Register a discovered backend
-    /// 
+    ///
     /// # Arguments
     /// * `info` - Backend information to register
     pub fn register_backend(&mut self, info: BackendInfo) {
         self.discovered_backends.insert(info.name.clone(), info);
     }
-    
+
     /// Get backend information by name
-    /// 
+    ///
     /// # Arguments
     /// * `name` - Backend name
-    /// 
+    ///
     /// # Returns
     /// * `Some(&BackendInfo)` if backend is found
     /// * `None` if backend is not registered
     pub fn get_backend(&self, name: &str) -> Option<&BackendInfo> {
         self.discovered_backends.get(name)
     }
-    
+
     /// List all discovered backends
-    /// 
+    ///
     /// # Returns
     /// * Vector of references to all registered backend information
     pub fn list_backends(&self) -> Vec<&BackendInfo> {
         self.discovered_backends.values().collect()
     }
-    
+
     /// CLF subdirectory names under the single root (compute, memory, protection, extensions).
     const CLF_SUBDIRS: &[&str] = &["clfc", "clfmm", "clfmp", "clfe"];
 
@@ -333,20 +340,21 @@ impl BackendManager {
 
         paths
     }
-    
+
     /// Check if a backend is available for a hardware target
-    /// 
+    ///
     /// # Arguments
     /// * `target` - Hardware target to check
-    /// 
+    ///
     /// # Returns
     /// * `Some(&BackendInfo)` if a backend supporting the target is found
     /// * `None` if no backend supports the target
     pub fn find_backend_for_target(&self, target: &HardwareTarget) -> Option<&BackendInfo> {
-        self.discovered_backends.values()
+        self.discovered_backends
+            .values()
             .find(|info| info.supported_targets.contains(target))
     }
-    
+
     /// Validate that a backend exists and is available
     pub fn validate_backend(&self, name: &str) -> CoelanoxResult<()> {
         if !self.discovered_backends.contains_key(name) {
@@ -354,7 +362,7 @@ impl BackendManager {
         }
         Ok(())
     }
-    
+
     /// Validate multiple backends exist
     pub fn validate_backends(&self, names: &[String]) -> CoelanoxResult<Vec<String>> {
         let mut missing = Vec::new();
@@ -363,36 +371,38 @@ impl BackendManager {
                 missing.push(name.clone());
             }
         }
-        
+
         if !missing.is_empty() {
-            return Err(CoelanoxError::BackendNotFound(
-                format!("Missing backends: {}", missing.join(", "))
-            ));
+            return Err(CoelanoxError::BackendNotFound(format!(
+                "Missing backends: {}",
+                missing.join(", ")
+            )));
         }
-        
+
         Ok(Vec::new())
     }
-    
+
     /// Select backend using fallback strategy (package-time only; runtime uses ExecutionBackend registry)
     pub fn select_backend_with_fallback(
         &self,
         strategy: &BackendSelectionStrategy,
     ) -> CoelanoxResult<&BackendInfo> {
         match strategy {
-            BackendSelectionStrategy::PrimaryOnly(name) => {
-                self.get_backend(name)
-                    .ok_or_else(|| CoelanoxError::BackendNotFound(name.clone()))
-            }
+            BackendSelectionStrategy::PrimaryOnly(name) => self
+                .get_backend(name)
+                .ok_or_else(|| CoelanoxError::BackendNotFound(name.clone())),
             BackendSelectionStrategy::PrimaryWithFallback { primary, fallback } => {
                 // Try primary first
                 if let Some(backend) = self.get_backend(primary) {
                     Ok(backend)
                 } else {
                     // Fallback to scalar
-                    self.get_backend(fallback)
-                        .ok_or_else(|| CoelanoxError::BackendRoutingFailed(
-                            format!("Neither {} nor {} available", primary, fallback)
+                    self.get_backend(fallback).ok_or_else(|| {
+                        CoelanoxError::BackendRoutingFailed(format!(
+                            "Neither {} nor {} available",
+                            primary, fallback
                         ))
+                    })
                 }
             }
             BackendSelectionStrategy::TryAll(names) => {
@@ -401,9 +411,10 @@ impl BackendManager {
                         return Ok(backend);
                     }
                 }
-                Err(CoelanoxError::BackendRoutingFailed(
-                    format!("None of the requested backends available: {}", names.join(", "))
-                ))
+                Err(CoelanoxError::BackendRoutingFailed(format!(
+                    "None of the requested backends available: {}",
+                    names.join(", ")
+                )))
             }
         }
     }
@@ -414,4 +425,3 @@ impl Default for BackendManager {
         Self::new()
     }
 }
-

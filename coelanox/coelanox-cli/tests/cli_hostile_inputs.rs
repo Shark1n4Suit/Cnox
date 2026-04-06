@@ -7,8 +7,7 @@ use std::fs;
 use std::process::Command;
 
 fn coelanox_bin() -> &'static str {
-    option_env!("CARGO_BIN_EXE_coelanox")
-        .expect("run with `cargo test -p coelanox-cli` so CARGO_BIN_EXE_coelanox is set")
+    env!("CARGO_BIN_EXE_coelanox")
 }
 
 #[test]

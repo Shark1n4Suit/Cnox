@@ -5,9 +5,9 @@
 //! formats (ONNX, BERT, etc.) to UniversalIR. Implement [`CoelanoxTranslator`] to
 //! add support for new model formats.
 
-use std::path::Path;
-use crate::{CoelanoxError, CoelanoxResult, format::ModelFormat};
 use crate::ir::UniversalIR;
+use crate::{format::ModelFormat, CoelanoxError, CoelanoxResult};
+use std::path::Path;
 
 /// Coelanox translator trait (compiler frontend).
 ///
@@ -45,8 +45,9 @@ pub trait CoelanoxTranslator: Send + Sync + 'static {
                 "External weights file is not supported by this translator",
             ));
         }
-        let data = std::fs::read(input_path)
-            .map_err(|e| CoelanoxError::format(&format!("Failed to read {}: {}", input_path.display(), e)))?;
+        let data = std::fs::read(input_path).map_err(|e| {
+            CoelanoxError::format(format!("Failed to read {}: {}", input_path.display(), e))
+        })?;
         self.translate(&data)
     }
 

@@ -50,15 +50,8 @@ fn scalar_add_correctness() {
     let a = [1.0f32, 2.0f32, -3.0f32];
     let b = [3.0f32, 4.0f32, 1.0f32];
     let mut out = [0.0f32; 3];
-    execute_scalar_op(
-        &OpType::Add,
-        &a,
-        Some(&b),
-        &mut out,
-        None,
-        &empty_attrs(),
-    )
-    .expect("Add should succeed");
+    execute_scalar_op(&OpType::Add, &a, Some(&b), &mut out, None, &empty_attrs())
+        .expect("Add should succeed");
     assert_slice_eq(&out, &[4.0, 6.0, -2.0], "Add");
 }
 
@@ -130,8 +123,15 @@ fn scalar_relu_correctness() {
 fn scalar_sigmoid_correctness() {
     let input = [0.0f32];
     let mut out = [0.0f32; 1];
-    execute_scalar_op(&OpType::Sigmoid, &input, None, &mut out, None, &empty_attrs())
-        .expect("Sigmoid should succeed");
+    execute_scalar_op(
+        &OpType::Sigmoid,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Sigmoid should succeed");
     assert_float_eq(out[0], 0.5, "Sigmoid(0)");
 }
 
@@ -149,8 +149,15 @@ fn scalar_tanh_correctness() {
 fn scalar_softmax_correctness() {
     let input = [1.0f32, 1.0f32, 1.0f32];
     let mut out = [0.0f32; 3];
-    execute_scalar_op(&OpType::Softmax, &input, None, &mut out, None, &empty_attrs())
-        .expect("Softmax should succeed");
+    execute_scalar_op(
+        &OpType::Softmax,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Softmax should succeed");
     let third = 1.0 / 3.0;
     assert_slice_eq(&out, &[third, third, third], "Softmax");
 }
@@ -161,11 +168,18 @@ fn scalar_log_softmax_correctness() {
     // For [0,0,0]: max=0, sum=3, log_sum=ln(3), output = 0 - ln(3) = -ln(3)
     let input = [0.0f32, 0.0f32, 0.0f32];
     let mut out = [0.0f32; 3];
-    execute_scalar_op(&OpType::LogSoftmax, &input, None, &mut out, None, &empty_attrs())
-        .expect("LogSoftmax should succeed");
+    execute_scalar_op(
+        &OpType::LogSoftmax,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("LogSoftmax should succeed");
     let expected = -(3.0f32.ln());
-    for i in 0..3 {
-        assert_float_eq(out[i], expected, &format!("LogSoftmax[{}]", i));
+    for (i, &v) in out.iter().enumerate() {
+        assert_float_eq(v, expected, &format!("LogSoftmax[{}]", i));
     }
 }
 
@@ -225,10 +239,24 @@ fn scalar_cos_sin_correctness() {
     let input = [0.0f32, std::f32::consts::FRAC_PI_2];
     let mut out_cos = [0.0f32; 2];
     let mut out_sin = [0.0f32; 2];
-    execute_scalar_op(&OpType::Cos, &input, None, &mut out_cos, None, &empty_attrs())
-        .expect("Cos should succeed");
-    execute_scalar_op(&OpType::Sin, &input, None, &mut out_sin, None, &empty_attrs())
-        .expect("Sin should succeed");
+    execute_scalar_op(
+        &OpType::Cos,
+        &input,
+        None,
+        &mut out_cos,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Cos should succeed");
+    execute_scalar_op(
+        &OpType::Sin,
+        &input,
+        None,
+        &mut out_sin,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Sin should succeed");
     assert_float_eq(out_cos[0], 1.0, "Cos(0)");
     assert_float_eq(out_cos[1], 0.0, "Cos(π/2)");
     assert_float_eq(out_sin[0], 0.0, "Sin(0)");
@@ -239,15 +267,29 @@ fn scalar_cos_sin_correctness() {
 fn scalar_exp_log_correctness() {
     let input_exp = [0.0f32, 1.0f32];
     let mut out_exp = [0.0f32; 2];
-    execute_scalar_op(&OpType::Exp, &input_exp, None, &mut out_exp, None, &empty_attrs())
-        .expect("Exp should succeed");
+    execute_scalar_op(
+        &OpType::Exp,
+        &input_exp,
+        None,
+        &mut out_exp,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Exp should succeed");
     assert_float_eq(out_exp[0], 1.0, "Exp(0)");
     assert_float_eq(out_exp[1], std::f32::consts::E, "Exp(1)");
 
     let input_log = [1.0f32, std::f32::consts::E];
     let mut out_log = [0.0f32; 2];
-    execute_scalar_op(&OpType::Log, &input_log, None, &mut out_log, None, &empty_attrs())
-        .expect("Log should succeed");
+    execute_scalar_op(
+        &OpType::Log,
+        &input_log,
+        None,
+        &mut out_log,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Log should succeed");
     assert_float_eq(out_log[0], 0.0, "Log(1)");
     assert_float_eq(out_log[1], 1.0, "Log(e)");
 }
@@ -258,8 +300,15 @@ fn scalar_exp_log_correctness() {
 fn scalar_reduce_sum_correctness() {
     let input = [1.0f32, 2.0f32, 3.0f32];
     let mut out = [0.0f32; 1];
-    execute_scalar_op(&OpType::ReduceSum, &input, None, &mut out, None, &empty_attrs())
-        .expect("ReduceSum should succeed");
+    execute_scalar_op(
+        &OpType::ReduceSum,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("ReduceSum should succeed");
     assert_float_eq(out[0], 6.0, "ReduceSum");
 }
 
@@ -267,8 +316,15 @@ fn scalar_reduce_sum_correctness() {
 fn scalar_reduce_mean_correctness() {
     let input = [2.0f32, 4.0f32, 6.0f32];
     let mut out = [0.0f32; 1];
-    execute_scalar_op(&OpType::ReduceMean, &input, None, &mut out, None, &empty_attrs())
-        .expect("ReduceMean should succeed");
+    execute_scalar_op(
+        &OpType::ReduceMean,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("ReduceMean should succeed");
     assert_float_eq(out[0], 4.0, "ReduceMean");
 }
 
@@ -277,10 +333,24 @@ fn scalar_reduce_max_min_correctness() {
     let input = [1.0f32, 5.0f32, 3.0f32, -2.0f32];
     let mut out_max = [0.0f32; 1];
     let mut out_min = [0.0f32; 1];
-    execute_scalar_op(&OpType::ReduceMax, &input, None, &mut out_max, None, &empty_attrs())
-        .expect("ReduceMax should succeed");
-    execute_scalar_op(&OpType::ReduceMin, &input, None, &mut out_min, None, &empty_attrs())
-        .expect("ReduceMin should succeed");
+    execute_scalar_op(
+        &OpType::ReduceMax,
+        &input,
+        None,
+        &mut out_max,
+        None,
+        &empty_attrs(),
+    )
+    .expect("ReduceMax should succeed");
+    execute_scalar_op(
+        &OpType::ReduceMin,
+        &input,
+        None,
+        &mut out_min,
+        None,
+        &empty_attrs(),
+    )
+    .expect("ReduceMin should succeed");
     assert_float_eq(out_max[0], 5.0, "ReduceMax");
     assert_float_eq(out_min[0], -2.0, "ReduceMin");
 }
@@ -289,8 +359,15 @@ fn scalar_reduce_max_min_correctness() {
 fn scalar_reduce_prod_correctness() {
     let input = [2.0f32, 3.0f32, 4.0f32];
     let mut out = [0.0f32; 1];
-    execute_scalar_op(&OpType::ReduceProd, &input, None, &mut out, None, &empty_attrs())
-        .expect("ReduceProd should succeed");
+    execute_scalar_op(
+        &OpType::ReduceProd,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("ReduceProd should succeed");
     assert_float_eq(out[0], 24.0, "ReduceProd");
 }
 
@@ -302,10 +379,24 @@ fn scalar_equal_not_equal_correctness() {
     let b = [1.0f32, 2.1f32, 3.0f32];
     let mut out_eq = [0.0f32; 3];
     let mut out_ne = [0.0f32; 3];
-    execute_scalar_op(&OpType::Equal, &a, Some(&b), &mut out_eq, None, &empty_attrs())
-        .expect("Equal should succeed");
-    execute_scalar_op(&OpType::NotEqual, &a, Some(&b), &mut out_ne, None, &empty_attrs())
-        .expect("NotEqual should succeed");
+    execute_scalar_op(
+        &OpType::Equal,
+        &a,
+        Some(&b),
+        &mut out_eq,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Equal should succeed");
+    execute_scalar_op(
+        &OpType::NotEqual,
+        &a,
+        Some(&b),
+        &mut out_ne,
+        None,
+        &empty_attrs(),
+    )
+    .expect("NotEqual should succeed");
     assert_slice_eq(&out_eq, &[1.0, 0.0, 1.0], "Equal");
     assert_slice_eq(&out_ne, &[0.0, 1.0, 0.0], "NotEqual");
 }
@@ -318,14 +409,42 @@ fn scalar_greater_less_correctness() {
     let mut out_ge = [0.0f32; 3];
     let mut out_lt = [0.0f32; 3];
     let mut out_le = [0.0f32; 3];
-    execute_scalar_op(&OpType::Greater, &a, Some(&b), &mut out_gt, None, &empty_attrs())
-        .expect("Greater should succeed");
-    execute_scalar_op(&OpType::GreaterEqual, &a, Some(&b), &mut out_ge, None, &empty_attrs())
-        .expect("GreaterEqual should succeed");
-    execute_scalar_op(&OpType::Less, &a, Some(&b), &mut out_lt, None, &empty_attrs())
-        .expect("Less should succeed");
-    execute_scalar_op(&OpType::LessEqual, &a, Some(&b), &mut out_le, None, &empty_attrs())
-        .expect("LessEqual should succeed");
+    execute_scalar_op(
+        &OpType::Greater,
+        &a,
+        Some(&b),
+        &mut out_gt,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Greater should succeed");
+    execute_scalar_op(
+        &OpType::GreaterEqual,
+        &a,
+        Some(&b),
+        &mut out_ge,
+        None,
+        &empty_attrs(),
+    )
+    .expect("GreaterEqual should succeed");
+    execute_scalar_op(
+        &OpType::Less,
+        &a,
+        Some(&b),
+        &mut out_lt,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Less should succeed");
+    execute_scalar_op(
+        &OpType::LessEqual,
+        &a,
+        Some(&b),
+        &mut out_le,
+        None,
+        &empty_attrs(),
+    )
+    .expect("LessEqual should succeed");
     assert_slice_eq(&out_gt, &[1.0, 0.0, 0.0], "Greater");
     assert_slice_eq(&out_ge, &[1.0, 0.0, 1.0], "GreaterEqual");
     assert_slice_eq(&out_lt, &[0.0, 1.0, 0.0], "Less");
@@ -340,8 +459,15 @@ fn scalar_and_or_not_correctness() {
     let b = [1.0f32, 1.0f32, 0.0f32];
     let mut out_and = [0.0f32; 3];
     let mut out_or = [0.0f32; 3];
-    execute_scalar_op(&OpType::And, &a, Some(&b), &mut out_and, None, &empty_attrs())
-        .expect("And should succeed");
+    execute_scalar_op(
+        &OpType::And,
+        &a,
+        Some(&b),
+        &mut out_and,
+        None,
+        &empty_attrs(),
+    )
+    .expect("And should succeed");
     execute_scalar_op(&OpType::Or, &a, Some(&b), &mut out_or, None, &empty_attrs())
         .expect("Or should succeed");
     assert_slice_eq(&out_and, &[1.0, 0.0, 0.0], "And");
@@ -349,8 +475,15 @@ fn scalar_and_or_not_correctness() {
 
     let input_not = [0.0f32, 1.0f32, -1.0f32];
     let mut out_not = [0.0f32; 3];
-    execute_scalar_op(&OpType::Not, &input_not, None, &mut out_not, None, &empty_attrs())
-        .expect("Not should succeed");
+    execute_scalar_op(
+        &OpType::Not,
+        &input_not,
+        None,
+        &mut out_not,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Not should succeed");
     assert_slice_eq(&out_not, &[1.0, 0.0, 0.0], "Not");
 }
 
@@ -362,10 +495,24 @@ fn scalar_maxpool_avgpool_correctness() {
     let input = [1.0f32, 2.0f32, 3.0f32, 4.0f32];
     let mut out_max = [0.0f32; 2];
     let mut out_avg = [0.0f32; 2];
-    execute_scalar_op(&OpType::MaxPool, &input, None, &mut out_max, None, &empty_attrs())
-        .expect("MaxPool should succeed");
-    execute_scalar_op(&OpType::AvgPool, &input, None, &mut out_avg, None, &empty_attrs())
-        .expect("AvgPool should succeed");
+    execute_scalar_op(
+        &OpType::MaxPool,
+        &input,
+        None,
+        &mut out_max,
+        None,
+        &empty_attrs(),
+    )
+    .expect("MaxPool should succeed");
+    execute_scalar_op(
+        &OpType::AvgPool,
+        &input,
+        None,
+        &mut out_avg,
+        None,
+        &empty_attrs(),
+    )
+    .expect("AvgPool should succeed");
     assert_slice_eq(&out_max, &[2.0, 4.0], "MaxPool");
     assert_slice_eq(&out_avg, &[1.5, 3.5], "AvgPool");
 }
@@ -375,10 +522,24 @@ fn scalar_global_maxpool_avgpool_correctness() {
     let input = [1.0f32, 5.0f32, 3.0f32];
     let mut out_max = [0.0f32; 1];
     let mut out_avg = [0.0f32; 1];
-    execute_scalar_op(&OpType::GlobalMaxPool, &input, None, &mut out_max, None, &empty_attrs())
-        .expect("GlobalMaxPool should succeed");
-    execute_scalar_op(&OpType::GlobalAvgPool, &input, None, &mut out_avg, None, &empty_attrs())
-        .expect("GlobalAvgPool should succeed");
+    execute_scalar_op(
+        &OpType::GlobalMaxPool,
+        &input,
+        None,
+        &mut out_max,
+        None,
+        &empty_attrs(),
+    )
+    .expect("GlobalMaxPool should succeed");
+    execute_scalar_op(
+        &OpType::GlobalAvgPool,
+        &input,
+        None,
+        &mut out_avg,
+        None,
+        &empty_attrs(),
+    )
+    .expect("GlobalAvgPool should succeed");
     assert_float_eq(out_max[0], 5.0, "GlobalMaxPool");
     assert_float_eq(out_avg[0], 3.0, "GlobalAvgPool"); // (1+5+3)/3
 }
@@ -430,10 +591,7 @@ fn scalar_layernorm_correctness() {
     let weights = [1.0f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 0.0f32]; // gamma=[1,1,1], beta=[0,0,0]
     let mut out = [0.0f32; 3];
     let mut attrs = empty_attrs();
-    attrs.insert(
-        "normalized_shape".to_string(),
-        Attribute::IntArray(vec![3]),
-    );
+    attrs.insert("normalized_shape".to_string(), Attribute::IntArray(vec![3]));
     execute_scalar_op(
         &OpType::LayerNorm,
         &input,
@@ -517,8 +675,15 @@ fn scalar_convolution_correctness() {
 fn scalar_reshape_correctness() {
     let input = [1.0f32, 2.0f32, 3.0f32];
     let mut out = [0.0f32; 3];
-    execute_scalar_op(&OpType::Reshape, &input, None, &mut out, None, &empty_attrs())
-        .expect("Reshape should succeed");
+    execute_scalar_op(
+        &OpType::Reshape,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Reshape should succeed");
     assert_slice_eq(&out, &[1.0, 2.0, 3.0], "Reshape");
 }
 
@@ -539,8 +704,15 @@ fn scalar_transpose_correctness() {
 fn scalar_permute_correctness() {
     let input = [1.0f32, 2.0f32, 3.0f32];
     let mut out = [0.0f32; 3];
-    execute_scalar_op(&OpType::Permute, &input, None, &mut out, None, &empty_attrs())
-        .expect("Permute should succeed");
+    execute_scalar_op(
+        &OpType::Permute,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Permute should succeed");
     assert_slice_eq(&out, &[1.0, 2.0, 3.0], "Permute");
 }
 
@@ -558,12 +730,26 @@ fn scalar_broadcast_expand_correctness() {
     // broadcast: output[i] = input[i % input.len()]
     let input = [1.0f32, 2.0f32];
     let mut out = [0.0f32; 4];
-    execute_scalar_op(&OpType::Broadcast, &input, None, &mut out, None, &empty_attrs())
-        .expect("Broadcast should succeed");
+    execute_scalar_op(
+        &OpType::Broadcast,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Broadcast should succeed");
     assert_slice_eq(&out, &[1.0, 2.0, 1.0, 2.0], "Broadcast");
     out = [0.0f32; 4];
-    execute_scalar_op(&OpType::Expand, &input, None, &mut out, None, &empty_attrs())
-        .expect("Expand should succeed");
+    execute_scalar_op(
+        &OpType::Expand,
+        &input,
+        None,
+        &mut out,
+        None,
+        &empty_attrs(),
+    )
+    .expect("Expand should succeed");
     assert_slice_eq(&out, &[1.0, 2.0, 1.0, 2.0], "Expand");
 }
 

@@ -2,17 +2,17 @@
 //!
 //! Manages translators that convert model formats to UniversalIR.
 
+use coelanox_core::format::ModelFormat;
+use coelanox_core::ir::UniversalIR;
+use coelanox_core::plugins::CoelanoxTranslator;
+use coelanox_core::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
 use std::path::Path;
-use coelanox_core::{CoelanoxError, CoelanoxResult};
-use coelanox_core::format::ModelFormat;
-use coelanox_core::plugins::CoelanoxTranslator;
-use coelanox_core::ir::UniversalIR;
 
-#[cfg(feature = "translator-onnx")]
-use crate::translators::OnnxTranslator;
 #[cfg(feature = "translator-bert")]
 use crate::translators::BertTranslator;
+#[cfg(feature = "translator-onnx")]
+use crate::translators::OnnxTranslator;
 #[cfg(feature = "translator-resnet")]
 use crate::translators::ResNetTinyMnistTranslator;
 
@@ -74,7 +74,10 @@ impl PluginManager {
         use_demo_translator: Option<bool>,
     ) -> Option<&dyn CoelanoxTranslator> {
         println!("🔍 Searching for plugin supporting format: {:?}", format);
-        println!("📋 Available plugins: {:?}", self.plugins.keys().collect::<Vec<_>>());
+        println!(
+            "📋 Available plugins: {:?}",
+            self.plugins.keys().collect::<Vec<_>>()
+        );
 
         let prefer_demo = use_demo_translator.unwrap_or(false);
 
@@ -125,11 +128,18 @@ impl PluginManager {
         self.plugins.get(name).map(|p| p.as_ref())
     }
 
-    pub fn translate_from_path(&self, input_path: &Path, format: ModelFormat) -> CoelanoxResult<UniversalIR> {
+    pub fn translate_from_path(
+        &self,
+        input_path: &Path,
+        format: ModelFormat,
+    ) -> CoelanoxResult<UniversalIR> {
         if let Some(plugin) = self.find_plugin(format.clone()) {
             plugin.translate_from_path(input_path)
         } else {
-            Err(CoelanoxError::format(&format!("No plugin found for format: {:?}", format)))
+            Err(CoelanoxError::format(format!(
+                "No plugin found for format: {:?}",
+                format
+            )))
         }
     }
 
@@ -170,7 +180,9 @@ impl PluginManager {
     }
 
     pub fn supports_format(&self, format: ModelFormat) -> bool {
-        self.plugins.values().any(|p| p.supports_format(format.clone()))
+        self.plugins
+            .values()
+            .any(|p| p.supports_format(format.clone()))
     }
 
     pub fn get_stats(&self) -> PluginStats {

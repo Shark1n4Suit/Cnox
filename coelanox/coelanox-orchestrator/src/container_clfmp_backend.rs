@@ -64,9 +64,9 @@ impl Drop for BootstrapRegion {
 
 #[cfg(target_os = "linux")]
 fn bootstrap_alloc(size: usize) -> CoelanoxResult<(*mut u8, usize)> {
-    use libc::{mmap, MAP_PRIVATE, MAP_ANONYMOUS, PROT_READ, PROT_WRITE, PROT_EXEC};
+    use libc::{mmap, MAP_ANONYMOUS, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE};
     let page_size = 4096;
-    let aligned = ((size + page_size - 1) / page_size) * page_size;
+    let aligned = size.div_ceil(page_size) * page_size;
     let result = unsafe {
         mmap(
             std::ptr::null_mut(),
@@ -139,12 +139,15 @@ impl ContainerClfmpBackend {
             _ => return Ok(None),
         };
 
-        let reader = ClfReaderFromBytes::open(clfmp_data.as_slice(), Some(ClfKind::MemoryProtection))
-            .map_err(|e| CoelanoxError::Runtime(format!("CLFMP parse failed: {}", e)))?;
+        let reader =
+            ClfReaderFromBytes::open(clfmp_data.as_slice(), Some(ClfKind::MemoryProtection))
+                .map_err(|e| CoelanoxError::Runtime(format!("CLFMP parse failed: {}", e)))?;
 
         let configure_blob = reader
             .get_blob(OP_ID_CONFIGURE)
-            .map_err(|e| CoelanoxError::Runtime(format!("CLFMP get_blob(configure) failed: {}", e)))?
+            .map_err(|e| {
+                CoelanoxError::Runtime(format!("CLFMP get_blob(configure) failed: {}", e))
+            })?
             .ok_or_else(|| {
                 CoelanoxError::Runtime(format!(
                     "CLFMP missing op_id {} (configure_region)",
@@ -224,7 +227,10 @@ impl ProtectionHAL for ContainerClfmpBackend {
         unsafe {
             configure_fn(ptr, size, flags);
         }
-        debug!("ContainerClfmpBackend configured region {} bytes with flags {:b}", size, flags);
+        debug!(
+            "ContainerClfmpBackend configured region {} bytes with flags {:b}",
+            size, flags
+        );
         Ok(())
     }
 

@@ -3,14 +3,16 @@
 
 mod common;
 
-use common::{f32_payload, minimal_relu_container, read_ipc_frame, read_ipc_ok_only, wait_serve_ready, IpcFrame};
+use common::{
+    f32_payload, minimal_relu_container, read_ipc_frame, read_ipc_ok_only, wait_serve_ready,
+    IpcFrame,
+};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 fn spawn_serve(path: &str) -> std::process::Child {
-    let bin = option_env!("CARGO_BIN_EXE_coelanox")
-        .expect("run with `cargo test -p coelanox-cli` so CARGO_BIN_EXE_coelanox is set");
+    let bin = env!("CARGO_BIN_EXE_coelanox");
     Command::new(bin)
         .args(["serve", "-f", path, "-b", "scalar", "--no-verify"])
         .stdin(Stdio::piped())
@@ -26,7 +28,10 @@ fn serve_ipc_unknown_magic_returns_cre_400() {
     let path = cnox.path().to_str().unwrap().to_owned();
 
     let mut child = spawn_serve(&path);
-    wait_serve_ready(child.stderr.take().expect("stderr"), Duration::from_secs(10));
+    wait_serve_ready(
+        child.stderr.take().expect("stderr"),
+        Duration::from_secs(10),
+    );
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
@@ -56,7 +61,10 @@ fn serve_ipc_wrong_element_count_returns_cre_422() {
     let path = cnox.path().to_str().unwrap().to_owned();
 
     let mut child = spawn_serve(&path);
-    wait_serve_ready(child.stderr.take().expect("stderr"), Duration::from_secs(10));
+    wait_serve_ready(
+        child.stderr.take().expect("stderr"),
+        Duration::from_secs(10),
+    );
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
@@ -89,7 +97,10 @@ fn serve_ipc_odd_payload_length_returns_cre_400() {
     let path = cnox.path().to_str().unwrap().to_owned();
 
     let mut child = spawn_serve(&path);
-    wait_serve_ready(child.stderr.take().expect("stderr"), Duration::from_secs(10));
+    wait_serve_ready(
+        child.stderr.take().expect("stderr"),
+        Duration::from_secs(10),
+    );
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
@@ -123,7 +134,10 @@ fn serve_ipc_two_sequential_creq_same_session_both_crok() {
     let path = cnox.path().to_str().unwrap().to_owned();
 
     let mut child = spawn_serve(&path);
-    wait_serve_ready(child.stderr.take().expect("stderr"), Duration::from_secs(10));
+    wait_serve_ready(
+        child.stderr.take().expect("stderr"),
+        Duration::from_secs(10),
+    );
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
@@ -153,7 +167,10 @@ fn serve_ipc_stdin_close_without_cnxt_exits_cleanly() {
     let path = cnox.path().to_str().unwrap().to_owned();
 
     let mut child = spawn_serve(&path);
-    wait_serve_ready(child.stderr.take().expect("stderr"), Duration::from_secs(10));
+    wait_serve_ready(
+        child.stderr.take().expect("stderr"),
+        Duration::from_secs(10),
+    );
 
     // Drop stdin → EOF; serve loop exits without CNXT.
     drop(child.stdin.take());

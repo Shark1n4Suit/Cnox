@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 /// COELANOX AI Operation Parameters
-/// 
+///
 /// Contains all the information needed to instantiate an AI operation
 #[derive(Debug, Clone)]
 pub struct CoelanoxAiOperationParams {
@@ -37,7 +37,7 @@ pub enum CoelanoxAttribute {
 }
 
 /// COELANOX Optimization Hints
-/// 
+///
 /// These hints help backend translators optimize operations for specific hardware
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoelanoxOptimizationHint {
@@ -60,7 +60,7 @@ pub enum CoelanoxOptimizationHint {
 }
 
 /// COELANOX AI Operation Metadata
-/// 
+///
 /// Contains metadata about an AI operation for optimization and debugging
 #[derive(Debug, Clone)]
 pub struct CoelanoxAiOperationMetadata {
@@ -112,7 +112,9 @@ pub enum CoelanoxHardwareType {
 
 // Helper function to get optimization hints for OpType
 // This can be used by backend translators to get hints for operations
-pub fn get_optimization_hints_for_op_type(op_type: &coelanox_core::ir::OpType) -> Vec<CoelanoxOptimizationHint> {
+pub fn get_optimization_hints_for_op_type(
+    op_type: &coelanox_core::ir::OpType,
+) -> Vec<CoelanoxOptimizationHint> {
     use coelanox_core::ir::OpType;
     match op_type {
         OpType::Add | OpType::Subtract | OpType::Multiply | OpType::Divide => vec![
@@ -132,7 +134,12 @@ pub fn get_optimization_hints_for_op_type(op_type: &coelanox_core::ir::OpType) -
             CoelanoxOptimizationHint::NpuOptimized,
             CoelanoxOptimizationHint::CacheFriendly,
         ],
-        OpType::Relu | OpType::Sigmoid | OpType::Tanh | OpType::Softmax | OpType::Gelu | OpType::Swish => vec![
+        OpType::Relu
+        | OpType::Sigmoid
+        | OpType::Tanh
+        | OpType::Softmax
+        | OpType::Gelu
+        | OpType::Swish => vec![
             CoelanoxOptimizationHint::Vectorizable,
             CoelanoxOptimizationHint::MemoryEfficient,
             CoelanoxOptimizationHint::NeuralEngineOptimized,
@@ -142,8 +149,6 @@ pub fn get_optimization_hints_for_op_type(op_type: &coelanox_core::ir::OpType) -
             CoelanoxOptimizationHint::Parallelizable,
             CoelanoxOptimizationHint::NeuralEngineOptimized,
         ],
-        _ => vec![
-            CoelanoxOptimizationHint::Parallelizable,
-        ],
+        _ => vec![CoelanoxOptimizationHint::Parallelizable],
     }
 }

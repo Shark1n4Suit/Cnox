@@ -8,7 +8,7 @@ use crate::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
 
 /// Execute matrix multiplication: output = input @ weights
-/// 
+///
 /// # Arguments
 /// * `input` - Input matrix data (flattened)
 /// * `output` - Output matrix buffer (must be pre-allocated)
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 ///   * `input_cols` - Number of columns in input matrix
 ///   * `weight_rows` - Number of rows in weight matrix (must equal input_cols)
 ///   * `weight_cols` - Number of columns in weight matrix
-/// 
+///
 /// # Returns
 /// * `Ok(())` if operation succeeds
 /// * `Err(CoelanoxError)` if operation fails
@@ -29,11 +29,12 @@ pub fn matmul(
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     // Infer dimensions from sizes: input (M,K), weights (K,N) -> output (M,N)
-    let dims = attributes.get("dimensions")
-        .and_then(|a| match a {
-            crate::ir::Attribute::IntArray(d) => Some(d.iter().map(|&x| x as usize).collect::<Vec<_>>()),
-            _ => None,
-        });
+    let dims = attributes.get("dimensions").and_then(|a| match a {
+        crate::ir::Attribute::IntArray(d) => {
+            Some(d.iter().map(|&x| x as usize).collect::<Vec<_>>())
+        }
+        _ => None,
+    });
     let (m, k, n) = if let Some(d) = dims {
         if d.len() >= 4 {
             (d[0], d[1], d[3])
@@ -47,9 +48,7 @@ pub fn matmul(
         let in_len = input.len();
         let w_len = weights.len();
         let out_len = output.len();
-        if in_len == 0 || w_len == 0 || out_len == 0 {
-            (1, in_len, out_len)
-        } else if in_len * w_len % out_len != 0 {
+        if in_len == 0 || w_len == 0 || out_len == 0 || !(in_len * w_len).is_multiple_of(out_len) {
             (1, in_len, out_len)
         } else {
             let k_sq = in_len * w_len / out_len;
@@ -60,7 +59,7 @@ pub fn matmul(
                 if k_try == 0 {
                     continue;
                 }
-                if in_len % k_try != 0 || w_len % k_try != 0 {
+                if !in_len.is_multiple_of(k_try) || !w_len.is_multiple_of(k_try) {
                     continue;
                 }
                 let m = in_len / k_try;
@@ -131,7 +130,7 @@ pub fn matmul(
 }
 
 /// Execute general matrix multiplication: output = alpha * (input @ weights) + beta * output
-/// 
+///
 /// # Attributes
 /// * `alpha` - Scaling factor for matrix product (default: 1.0)
 /// * `beta` - Scaling factor for output (default: 0.0)
@@ -142,11 +141,19 @@ pub fn gemm(
     weights: &[f32],
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    let alpha = attributes.get("alpha")
-        .and_then(|a| match a { crate::ir::Attribute::Float(f) => Some(*f), _ => None })
+    let alpha = attributes
+        .get("alpha")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Float(f) => Some(*f),
+            _ => None,
+        })
         .unwrap_or(1.0);
-    let _beta = attributes.get("beta")
-        .and_then(|a| match a { crate::ir::Attribute::Float(f) => Some(*f), _ => None })
+    let _beta = attributes
+        .get("beta")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Float(f) => Some(*f),
+            _ => None,
+        })
         .unwrap_or(0.0);
     matmul(input, output, weights, attributes)?;
     for x in output.iter_mut() {
@@ -156,18 +163,22 @@ pub fn gemm(
 }
 
 /// Helper: parse IntArray attribute as vec of usize (e.g. [kernel_h, kernel_w]).
-fn int_array_2(attributes: &HashMap<String, Attribute>, key: &str, default: (usize, usize)) -> (usize, usize) {
+fn int_array_2(
+    attributes: &HashMap<String, Attribute>,
+    key: &str,
+    default: (usize, usize),
+) -> (usize, usize) {
     match attributes.get(key) {
-        Some(crate::ir::Attribute::IntArray(a)) if a.len() >= 2 => {
-            (a[0] as usize, a[1] as usize)
-        }
+        Some(crate::ir::Attribute::IntArray(a)) if a.len() >= 2 => (a[0] as usize, a[1] as usize),
         Some(crate::ir::Attribute::Int(i)) => (*i as usize, *i as usize),
         _ => default,
     }
 }
 
 /// Helper: parse optional input_shape [N,C,H,W] from attributes.
-fn input_shape_nchw(attributes: &HashMap<String, Attribute>) -> Option<(usize, usize, usize, usize)> {
+fn input_shape_nchw(
+    attributes: &HashMap<String, Attribute>,
+) -> Option<(usize, usize, usize, usize)> {
     let a = attributes.get("input_shape").and_then(|x| match x {
         crate::ir::Attribute::IntArray(v) if v.len() >= 4 => Some(v),
         _ => None,
@@ -176,6 +187,7 @@ fn input_shape_nchw(attributes: &HashMap<String, Attribute>) -> Option<(usize, u
 }
 
 /// 2D NCHW convolution via im2col + sgemm (same fast path as MatMul). Uses matrixmultiply for the heavy work.
+#[allow(clippy::too_many_arguments)]
 fn conv2d_nchw_im2col(
     input: &[f32],
     output: &mut [f32],
@@ -204,10 +216,14 @@ fn conv2d_nchw_im2col(
         )));
     }
     if input.len() < n * c_in * h * w {
-        return Err(CoelanoxError::Internal("Conv2d: input too small".to_string()));
+        return Err(CoelanoxError::Internal(
+            "Conv2d: input too small".to_string(),
+        ));
     }
     if output.len() < n * c_out * h_out * w_out {
-        return Err(CoelanoxError::Internal("Conv2d: output too small".to_string()));
+        return Err(CoelanoxError::Internal(
+            "Conv2d: output too small".to_string(),
+        ));
     }
     // im2col buffer: (M, K) row-major. Each row = one output spatial position, flattened patch.
     let mut im2col = vec![0.0f32; m * k];
@@ -274,13 +290,18 @@ fn conv2d_nchw_im2col(
         let ho = spatial / w_out;
         let wo = spatial % w_out;
         for c in 0..c_out {
-            output[ni * c_out * h_out * w_out + c * h_out * w_out + ho * w_out + wo] = gemm_out[m * c_out + c];
+            output[ni * c_out * h_out * w_out + c * h_out * w_out + ho * w_out + wo] =
+                gemm_out[m * c_out + c];
         }
     }
     Ok(())
 }
 
+type Nchw4 = (usize, usize, usize, usize);
+type Conv2dShapePair = (Nchw4, (usize, usize, usize));
+
 /// Infer (n, c_in, h, w) and (c_out, h_out, w_out) from lengths and kernel/stride/pad when input_shape is missing.
+#[allow(clippy::too_many_arguments)]
 fn infer_conv2d_shapes(
     in_len: usize,
     out_len: usize,
@@ -291,26 +312,26 @@ fn infer_conv2d_shapes(
     stride_w: usize,
     pad_h: usize,
     pad_w: usize,
-) -> Option<((usize, usize, usize, usize), (usize, usize, usize))> {
+) -> Option<Conv2dShapePair> {
     if k_h == 0 || k_w == 0 {
         return None;
     }
     let k_prod = k_h * k_w;
-    if w_len % k_prod != 0 {
+    if !w_len.is_multiple_of(k_prod) {
         return None;
     }
     let c_out_c_in = w_len / k_prod;
     // Try each c_out that divides out_len (out_len = n * c_out * h_out * w_out, n=1).
     for c_out in 1..=out_len {
-        if out_len % c_out != 0 {
+        if !out_len.is_multiple_of(c_out) {
             continue;
         }
         let hw_out = out_len / c_out;
-        if c_out_c_in % c_out != 0 {
+        if !c_out_c_in.is_multiple_of(c_out) {
             continue;
         }
         let c_in = c_out_c_in / c_out;
-        if in_len % c_in != 0 {
+        if !in_len.is_multiple_of(c_in) {
             continue;
         }
         let hw_in = in_len / c_in;
@@ -330,9 +351,9 @@ fn infer_conv2d_shapes(
 }
 
 /// Execute convolution operation: output = conv(input, weights)
-/// 
+///
 /// Supports 2D NCHW via im2col + sgemm (fast, like MatMul). Falls back to 1D for legacy or when shapes cannot be inferred.
-/// 
+///
 /// # Attributes
 ///   * `kernel_size` - Int or IntArray [k_h, k_w] (default 3)
 ///   * `stride` - Int or IntArray [s_h, s_w] (default 1)
@@ -367,25 +388,20 @@ pub fn convolution(
         } else {
             (1, 0, 0, 0, 0)
         };
-        if n > 0 && c_in > 0 && h > 0 && w > 0 && c_out > 0
+        if n > 0
+            && c_in > 0
+            && h > 0
+            && w > 0
+            && c_out > 0
             && in_len >= n * c_in * h * w
-            && out_len >= n * c_out * ((h + 2 * pad_h).saturating_sub(k_h) / stride_h + 1) * ((w + 2 * pad_w).saturating_sub(k_w) / stride_w + 1)
+            && out_len
+                >= n * c_out
+                    * ((h + 2 * pad_h).saturating_sub(k_h) / stride_h + 1)
+                    * ((w + 2 * pad_w).saturating_sub(k_w) / stride_w + 1)
             && w_len >= c_out * c_in * k_h * k_w
         {
             return conv2d_nchw_im2col(
-                input,
-                output,
-                weights,
-                n,
-                c_in,
-                h,
-                w,
-                c_out,
-                k_h,
-                k_w,
-                stride_h,
-                stride_w,
-                pad_h,
+                input, output, weights, n, c_in, h, w, c_out, k_h, k_w, stride_h, stride_w, pad_h,
                 pad_w,
             );
         }
@@ -393,14 +409,20 @@ pub fn convolution(
 
     // Fallback: 1D conv (legacy behavior for non-2D or when inference fails).
     let kernel_size = k_h.max(k_w).min(weights.len());
-    let len = in_len.saturating_sub(kernel_size).saturating_add(1).min(output.len());
+    let len = in_len
+        .saturating_sub(kernel_size)
+        .saturating_add(1)
+        .min(output.len());
     if kernel_size == 0 {
         output[..len].fill(0.0);
         return Ok(());
     }
     for (i, win) in input.windows(kernel_size).enumerate().take(len) {
-        output[i] = win.iter().zip(weights[..kernel_size].iter()).map(|(a, b)| a * b).sum();
+        output[i] = win
+            .iter()
+            .zip(weights[..kernel_size].iter())
+            .map(|(a, b)| a * b)
+            .sum();
     }
     Ok(())
 }
-

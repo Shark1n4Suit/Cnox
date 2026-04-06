@@ -1,12 +1,12 @@
 //! Utility functions for COELANOX
-//! 
+//!
 //! This module provides utility functions for file operations, security validation,
 //! and environment detection.
 
 use crate::{CoelanoxError, CoelanoxResult};
-use std::path::Path;
-use std::collections::HashMap;
 use std::arch::asm;
+use std::collections::HashMap;
+use std::path::Path;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// System environment information
@@ -81,14 +81,14 @@ impl SystemEnvironment {
         // One sysinfo refresh for CPU brand + total RAM (Windows needs this for correct model/RAM).
         let (sysinfo_brand, ram_bytes) = Self::sysinfo_cpu_brand_and_ram_bytes();
         let cpu_model = sysinfo_brand
-            .or_else(|| Self::cpu_model_linux_proc())
+            .or_else(Self::cpu_model_linux_proc)
             .unwrap_or_else(|| "Unknown".to_string());
         let memory_gb = Self::memory_gb_from_ram_bytes(ram_bytes);
         let cpu_cores = Self::detect_cpu_cores()?;
         let gpu_info = Self::detect_gpu()?;
         let simd_capabilities = Self::detect_simd_capabilities()?;
         let capabilities = Self::detect_capabilities()?;
-        
+
         Ok(Self {
             os,
             architecture,
@@ -101,7 +101,7 @@ impl SystemEnvironment {
             capabilities,
         })
     }
-    
+
     /// Detect operating system
     fn detect_os() -> CoelanoxResult<String> {
         #[cfg(target_os = "linux")]
@@ -117,46 +117,46 @@ impl SystemEnvironment {
             }
             Ok("Linux".to_string())
         }
-        
+
         #[cfg(target_os = "windows")]
         {
             Ok("Windows".to_string())
         }
-        
+
         #[cfg(target_os = "macos")]
         {
             Ok("macOS".to_string())
         }
-        
+
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
             Ok("Unknown".to_string())
         }
     }
-    
+
     /// Detect CPU architecture
     fn detect_architecture() -> CoelanoxResult<String> {
         #[cfg(target_arch = "x86_64")]
         {
             Ok("x86_64".to_string())
         }
-        
+
         #[cfg(target_arch = "aarch64")]
         {
             Ok("aarch64".to_string())
         }
-        
+
         #[cfg(target_arch = "arm")]
         {
             Ok("arm".to_string())
         }
-        
+
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
         {
             Ok("unknown".to_string())
         }
     }
-    
+
     /// Detect CPU vendor (x86: stable `__cpuid(0)` — avoids broken inline asm on some targets).
     fn detect_cpu_vendor() -> CoelanoxResult<String> {
         #[cfg(target_arch = "x86_64")]
@@ -171,7 +171,7 @@ impl SystemEnvironment {
             };
             Ok(vendor)
         }
-        
+
         #[cfg(target_arch = "aarch64")]
         {
             // For ARM, try to read from /proc/cpuinfo
@@ -185,13 +185,13 @@ impl SystemEnvironment {
             }
             Ok("ARM".to_string())
         }
-        
+
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             Ok("Unknown".to_string())
         }
     }
-    
+
     /// Single refresh: CPU brand string and total RAM in bytes (sysinfo).
     fn sysinfo_cpu_brand_and_ram_bytes() -> (Option<String>, u64) {
         let mut sys = System::new();
@@ -245,22 +245,18 @@ impl SystemEnvironment {
         let content = std::fs::read_to_string("/proc/meminfo").ok()?;
         for line in content.lines() {
             if line.starts_with("MemTotal:") {
-                let kb = line
-                    .split_whitespace()
-                    .nth(1)?
-                    .parse::<usize>()
-                    .ok()?;
+                let kb = line.split_whitespace().nth(1)?.parse::<usize>().ok()?;
                 return Some(kb / 1024 / 1024);
             }
         }
         None
     }
-    
+
     /// Detect number of CPU cores
     fn detect_cpu_cores() -> CoelanoxResult<usize> {
         Ok(num_cpus::get())
     }
-    
+
     /// Detect GPU information
     fn detect_gpu() -> CoelanoxResult<Option<GpuInfo>> {
         #[cfg(target_os = "linux")]
@@ -269,8 +265,8 @@ impl SystemEnvironment {
             if let Ok(output) = std::process::Command::new("nvidia-smi")
                 .arg("--query-gpu=name,memory.total,driver_version")
                 .arg("--format=csv,noheader,nounits")
-                .output() {
-                
+                .output()
+            {
                 if output.status.success() {
                     let output_str = String::from_utf8_lossy(&output.stdout);
                     if let Some(line) = output_str.lines().next() {
@@ -279,7 +275,7 @@ impl SystemEnvironment {
                             let model = parts[0].trim();
                             let memory_mb = parts[1].trim().parse::<usize>().unwrap_or(0);
                             let driver = parts[2].trim();
-                            
+
                             return Ok(Some(GpuInfo {
                                 vendor: "NVIDIA".to_string(),
                                 model: model.to_string(),
@@ -291,11 +287,13 @@ impl SystemEnvironment {
                     }
                 }
             }
-            
+
             // Try to detect AMD GPU
-            if let Ok(_) = std::process::Command::new("rocm-smi")
+            if std::process::Command::new("rocm-smi")
                 .arg("--showproductname")
-                .output() {
+                .output()
+                .is_ok()
+            {
                 return Ok(Some(GpuInfo {
                     vendor: "AMD".to_string(),
                     model: "AMD GPU".to_string(),
@@ -305,14 +303,14 @@ impl SystemEnvironment {
                 }));
             }
         }
-        
+
         Ok(None)
     }
-    
+
     /// Detect SIMD capabilities
     fn detect_simd_capabilities() -> CoelanoxResult<Vec<SimdCapability>> {
         let mut capabilities = Vec::new();
-        
+
         #[cfg(target_arch = "x86_64")]
         {
             // Use CPUID to detect SIMD capabilities
@@ -329,17 +327,29 @@ impl SystemEnvironment {
                      out("edx") edx,
                      options(nomem, preserves_flags));
                 let _ = eax;
-                
+
                 // Check EDX register flags (SSE, SSE2, etc.)
-                if (edx >> 25) & 1 != 0 { capabilities.push(SimdCapability::SSE); }
-                if (edx >> 26) & 1 != 0 { capabilities.push(SimdCapability::SSE2); }
-                
+                if (edx >> 25) & 1 != 0 {
+                    capabilities.push(SimdCapability::SSE);
+                }
+                if (edx >> 26) & 1 != 0 {
+                    capabilities.push(SimdCapability::SSE2);
+                }
+
                 // Check ECX register flags (SSE3, SSE4, AVX, etc.)
-                if (ecx >> 0) & 1 != 0 { capabilities.push(SimdCapability::SSE3); }
-                if (ecx >> 19) & 1 != 0 { capabilities.push(SimdCapability::SSE41); }
-                if (ecx >> 20) & 1 != 0 { capabilities.push(SimdCapability::SSE42); }
-                if (ecx >> 28) & 1 != 0 { capabilities.push(SimdCapability::AVX); }
-                
+                if ecx & 1 != 0 {
+                    capabilities.push(SimdCapability::SSE3);
+                }
+                if (ecx >> 19) & 1 != 0 {
+                    capabilities.push(SimdCapability::SSE41);
+                }
+                if (ecx >> 20) & 1 != 0 {
+                    capabilities.push(SimdCapability::SSE42);
+                }
+                if (ecx >> 28) & 1 != 0 {
+                    capabilities.push(SimdCapability::AVX);
+                }
+
                 // Check for AVX2 (CPUID function 7, sub-leaf 0)
                 // Note: rbx is reserved by LLVM, so we use r10 and move the value
                 let mut eax7 = 7u32;
@@ -357,45 +367,52 @@ impl SystemEnvironment {
 
                 let _ = (eax7, _ecx7, _edx7);
                 let ebx7 = (r10_result & 0xFFFFFFFF) as u32;
-                if (ebx7 >> 5) & 1 != 0 { capabilities.push(SimdCapability::AVX2); }
-                if (ebx7 >> 16) & 1 != 0 { capabilities.push(SimdCapability::AVX512); }
+                if (ebx7 >> 5) & 1 != 0 {
+                    capabilities.push(SimdCapability::AVX2);
+                }
+                if (ebx7 >> 16) & 1 != 0 {
+                    capabilities.push(SimdCapability::AVX512);
+                }
             }
         }
-        
+
         #[cfg(target_arch = "aarch64")]
         {
             // ARM NEON is always available on aarch64
             capabilities.push(SimdCapability::NEON);
-            
+
             // Check for SVE (would need more sophisticated detection)
             capabilities.push(SimdCapability::SVE);
         }
-        
+
         Ok(capabilities)
     }
-    
+
     /// Detect system capabilities
     fn detect_capabilities() -> CoelanoxResult<HashMap<String, bool>> {
         let mut capabilities = HashMap::new();
-        
+
         // Check for CUDA
         capabilities.insert("cuda".to_string(), std::env::var("CUDA_PATH").is_ok());
-        
+
         // Check for OpenCL
         capabilities.insert("opencl".to_string(), std::env::var("OPENCL_PATH").is_ok());
-        
+
         // Check for Vulkan
         capabilities.insert("vulkan".to_string(), std::env::var("VULKAN_SDK").is_ok());
-        
+
         // Check for TensorRT
-        capabilities.insert("tensorrt".to_string(), std::env::var("TENSORRT_PATH").is_ok());
-        
+        capabilities.insert(
+            "tensorrt".to_string(),
+            std::env::var("TENSORRT_PATH").is_ok(),
+        );
+
         // Check for oneDNN
         capabilities.insert("onednn".to_string(), std::env::var("DNNLROOT").is_ok());
-        
+
         Ok(capabilities)
     }
-    
+
     /// Get recommended hardware target
     pub fn recommended_target(&self) -> crate::format::HardwareTarget {
         if self.gpu_info.is_some() {
@@ -404,7 +421,7 @@ impl SystemEnvironment {
             crate::format::HardwareTarget::Cpu
         }
     }
-    
+
     /// Get optimization level based on environment
     pub fn recommended_optimization(&self) -> crate::format::OptimizationLevel {
         if self.cpu_cores >= 8 && self.simd_capabilities.contains(&SimdCapability::AVX2) {
@@ -415,7 +432,7 @@ impl SystemEnvironment {
             crate::format::OptimizationLevel::Basic
         }
     }
-    
+
     /// Check if environment supports specific feature
     pub fn supports_feature(&self, feature: &str) -> bool {
         match feature {
@@ -435,10 +452,10 @@ pub fn validate_file_permissions(path: &Path) -> CoelanoxResult<()> {
     if !path.exists() {
         return Err(CoelanoxError::FileSystem(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "File not found"
+            "File not found",
         )));
     }
-    
+
     Ok(())
 }
 
@@ -446,14 +463,18 @@ pub fn validate_file_permissions(path: &Path) -> CoelanoxResult<()> {
 pub fn validate_path(path: &Path) -> CoelanoxResult<()> {
     // Check for path traversal attempts
     let path_str = path.to_string_lossy();
-    
+
     if path_str.contains("..") {
-        return Err(CoelanoxError::PathTraversal("Path traversal detected".to_string()));
+        return Err(CoelanoxError::PathTraversal(
+            "Path traversal detected".to_string(),
+        ));
     }
-    
+
     if path_str.contains("//") {
-        return Err(CoelanoxError::PathTraversal("Invalid path format".to_string()));
+        return Err(CoelanoxError::PathTraversal(
+            "Invalid path format".to_string(),
+        ));
     }
-    
+
     Ok(())
 }

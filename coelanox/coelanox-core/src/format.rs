@@ -1,16 +1,17 @@
 //! COELANOX container format
-//! 
+//!
 //! This module defines the COELANOX container format structure, including headers,
 //! manifests, and validation. COELANOX is a hybrid container/format that combines
 //! container encapsulation with optimized binary representation.
 
-use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
-use std::path::Path;
-use sha2::{Sha256, Digest};
+use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
-use crate::{CoelanoxError, CoelanoxResult, COELANOX_MAGIC};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::str::FromStr;
 
 /// COELANOX binary format constants
 pub const COELANOX_BINARY_VERSION: u32 = 0x00010000; // Version 1.0.0
@@ -68,7 +69,12 @@ impl CoelanoxHeader {
     }
 
     /// Create a new COELANOX header with the given flags (e.g. COELANOX_FLAG_AUDIT_REQUIRED).
-    pub fn new_with_flags(container_size: u64, manifest_offset: u64, code_offset: u64, flags: u32) -> Self {
+    pub fn new_with_flags(
+        container_size: u64,
+        manifest_offset: u64,
+        code_offset: u64,
+        flags: u32,
+    ) -> Self {
         Self {
             magic: COELANOX_MAGIC,
             version: COELANOX_BINARY_VERSION,
@@ -80,33 +86,38 @@ impl CoelanoxHeader {
             reserved: [0; 8],
         }
     }
-    
+
     /// Validate the header
     pub fn validate(&self) -> CoelanoxResult<()> {
         if self.magic != COELANOX_MAGIC {
             return Err(CoelanoxError::InvalidMagic);
         }
-        
+
         if self.version == 0 {
-            return Err(CoelanoxError::UnsupportedVersion("Version cannot be zero".to_string()));
+            return Err(CoelanoxError::UnsupportedVersion(
+                "Version cannot be zero".to_string(),
+            ));
         }
-        
+
         if self.container_size == 0 {
-            return Err(CoelanoxError::PayloadValidation("Container size cannot be zero".to_string()));
+            return Err(CoelanoxError::PayloadValidation(
+                "Container size cannot be zero".to_string(),
+            ));
         }
-        
+
         Ok(())
     }
-    
+
     /// Get version string
     pub fn version_string(&self) -> String {
-        format!("{}.{}.{}", 
+        format!(
+            "{}.{}.{}",
             (self.version >> 16) & 0xFF,
             (self.version >> 8) & 0xFF,
             self.version & 0xFF
         )
     }
-    
+
     /// Write header to binary stream
     pub fn write_binary<W: Write>(&self, writer: &mut W) -> CoelanoxResult<()> {
         writer.write_all(&self.magic)?;
@@ -119,38 +130,38 @@ impl CoelanoxHeader {
         writer.write_all(&self.reserved)?;
         Ok(())
     }
-    
+
     /// Read header from binary stream
     pub fn read_binary<R: Read>(reader: &mut R) -> CoelanoxResult<Self> {
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
-        
+
         let mut version_bytes = [0u8; 4];
         reader.read_exact(&mut version_bytes)?;
         let version = u32::from_le_bytes(version_bytes);
-        
+
         let mut flags_bytes = [0u8; 4];
         reader.read_exact(&mut flags_bytes)?;
         let flags = u32::from_le_bytes(flags_bytes);
-        
+
         let mut container_size_bytes = [0u8; 8];
         reader.read_exact(&mut container_size_bytes)?;
         let container_size = u64::from_le_bytes(container_size_bytes);
-        
+
         let mut manifest_offset_bytes = [0u8; 8];
         reader.read_exact(&mut manifest_offset_bytes)?;
         let manifest_offset = u64::from_le_bytes(manifest_offset_bytes);
-        
+
         let mut code_offset_bytes = [0u8; 8];
         reader.read_exact(&mut code_offset_bytes)?;
         let code_offset = u64::from_le_bytes(code_offset_bytes);
-        
+
         let mut security_hash = [0u8; 32];
         reader.read_exact(&mut security_hash)?;
-        
+
         let mut reserved = [0u8; 8];
         reader.read_exact(&mut reserved)?;
-        
+
         Ok(Self {
             magic,
             version,
@@ -214,7 +225,8 @@ pub fn shape_element_count(shape: &[usize]) -> CoelanoxResult<usize> {
     for &d in shape {
         p = p.checked_mul(d).ok_or_else(|| {
             CoelanoxError::ManifestParse(
-                "Tensor shape dimension product overflow (untrusted or malformed manifest)".to_string(),
+                "Tensor shape dimension product overflow (untrusted or malformed manifest)"
+                    .to_string(),
             )
         })?;
     }
@@ -331,7 +343,7 @@ pub enum BackendSelectionMode {
 }
 
 /// Backend metadata for AOT binary selection
-/// 
+///
 /// This metadata stores information about which backends were selected at package time
 /// and how they are mapped to device IDs for runtime selection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,11 +363,11 @@ impl BackendMetadata {
     pub fn new_slim(primary: String, additional: Vec<String>) -> Self {
         let mut device_id_mapping = std::collections::HashMap::new();
         device_id_mapping.insert(0, primary.clone());
-        
+
         for (idx, backend_name) in additional.iter().enumerate() {
             device_id_mapping.insert(idx + 1, backend_name.clone());
         }
-        
+
         Self {
             primary_backend: primary.clone(),
             additional_backends: additional.clone(),
@@ -366,18 +378,21 @@ impl BackendMetadata {
             },
         }
     }
-    
+
     /// Create new BackendMetadata for fat mode
     pub fn new_fat(all_backends: Vec<String>) -> Self {
         let mut device_id_mapping = std::collections::HashMap::new();
-        let primary = all_backends.first().cloned().unwrap_or_else(|| "cpu".to_string());
+        let primary = all_backends
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "cpu".to_string());
         let additional = all_backends.iter().skip(1).cloned().collect();
-        
+
         device_id_mapping.insert(0, primary.clone());
         for (idx, backend_name) in all_backends.iter().skip(1).enumerate() {
             device_id_mapping.insert(idx + 1, backend_name.clone());
         }
-        
+
         Self {
             primary_backend: primary,
             additional_backends: additional,
@@ -385,18 +400,21 @@ impl BackendMetadata {
             selection_mode: BackendSelectionMode::Fat,
         }
     }
-    
+
     /// Create new BackendMetadata for auto mode
     pub fn new_auto(detected_backends: Vec<String>) -> Self {
         let mut device_id_mapping = std::collections::HashMap::new();
-        let primary = detected_backends.first().cloned().unwrap_or_else(|| "cpu".to_string());
+        let primary = detected_backends
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "cpu".to_string());
         let additional = detected_backends.iter().skip(1).cloned().collect();
-        
+
         device_id_mapping.insert(0, primary.clone());
         for (idx, backend_name) in detected_backends.iter().skip(1).enumerate() {
             device_id_mapping.insert(idx + 1, backend_name.clone());
         }
-        
+
         Self {
             primary_backend: primary,
             additional_backends: additional,
@@ -404,12 +422,12 @@ impl BackendMetadata {
             selection_mode: BackendSelectionMode::Auto,
         }
     }
-    
+
     /// Get backend name for a device ID
     pub fn get_backend_for_device(&self, device_id: usize) -> Option<&String> {
         self.device_id_mapping.get(&device_id)
     }
-    
+
     /// Validate device ID is in range
     pub fn validate_device_id(&self, device_id: usize) -> CoelanoxResult<()> {
         let max_id = self.device_id_mapping.keys().max().copied().unwrap_or(0);
@@ -418,13 +436,16 @@ impl BackendMetadata {
         }
         Ok(())
     }
-    
+
     /// Get backend for device ID with validation
     pub fn get_backend_for_device_checked(&self, device_id: usize) -> CoelanoxResult<&String> {
         self.validate_device_id(device_id)?;
-        self.device_id_mapping.get(&device_id)
-            .ok_or_else(|| CoelanoxError::DeviceIdOutOfRange(device_id, 
-                self.device_id_mapping.keys().max().copied().unwrap_or(0)))
+        self.device_id_mapping.get(&device_id).ok_or_else(|| {
+            CoelanoxError::DeviceIdOutOfRange(
+                device_id,
+                self.device_id_mapping.keys().max().copied().unwrap_or(0),
+            )
+        })
     }
 }
 
@@ -487,7 +508,7 @@ impl CoelanoxManifest {
         model_size: usize,
     ) -> Self {
         let now = chrono::Utc::now().timestamp() as u64;
-        
+
         Self {
             name,
             format,
@@ -510,58 +531,66 @@ impl CoelanoxManifest {
             packaging_fingerprint: None,
         }
     }
-    
+
     /// Validate the manifest
     pub fn validate(&self) -> CoelanoxResult<()> {
         if self.name.is_empty() {
-            return Err(CoelanoxError::ManifestParse("Model name cannot be empty".to_string()));
+            return Err(CoelanoxError::ManifestParse(
+                "Model name cannot be empty".to_string(),
+            ));
         }
-        
+
         // model_size may be 0 for scalar/interpreted fallback (no generated code blob)
         if self.input_shapes.is_empty() {
-            return Err(CoelanoxError::ManifestParse("Input shapes cannot be empty".to_string()));
+            return Err(CoelanoxError::ManifestParse(
+                "Input shapes cannot be empty".to_string(),
+            ));
         }
-        
+
         if self.output_shapes.is_empty() {
-            return Err(CoelanoxError::ManifestParse("Output shapes cannot be empty".to_string()));
+            return Err(CoelanoxError::ManifestParse(
+                "Output shapes cannot be empty".to_string(),
+            ));
         }
 
         let _ = shape_sets_total_elements(&self.input_shapes)?;
         let _ = shape_sets_total_elements(&self.output_shapes)?;
-        
+
         Ok(())
     }
-    
+
     /// Write manifest to binary stream
     pub fn write_binary<W: Write>(&self, writer: &mut W) -> CoelanoxResult<()> {
         // JSON manifest format; binary manifest variant not implemented
-        let json_data = serde_json::to_vec(self)
-            .map_err(|e| CoelanoxError::ManifestParse(format!("Failed to serialize manifest: {}", e)))?;
-        
+        let json_data = serde_json::to_vec(self).map_err(|e| {
+            CoelanoxError::ManifestParse(format!("Failed to serialize manifest: {}", e))
+        })?;
+
         // Write length prefix
         writer.write_all(&(json_data.len() as u32).to_le_bytes())?;
-        
+
         // Write JSON data
         writer.write_all(&json_data)?;
-        
+
         Ok(())
     }
-    
+
     /// Read manifest from binary stream
     pub fn read_binary<R: Read>(reader: &mut R) -> CoelanoxResult<Self> {
         // Read length prefix
         let mut length_bytes = [0u8; 4];
         reader.read_exact(&mut length_bytes)?;
         let length = u32::from_le_bytes(length_bytes) as usize;
-        
+
         // Read JSON data
         let mut json_data = vec![0u8; length];
         reader.read_exact(&mut json_data)?;
-        
+
         // Deserialize from JSON
-        let manifest: CoelanoxManifest = serde_json::from_slice(&json_data)
-            .map_err(|e| CoelanoxError::ManifestParse(format!("Failed to deserialize manifest: {}", e)))?;
-        
+        let manifest: CoelanoxManifest = serde_json::from_slice(&json_data).map_err(|e| {
+            CoelanoxError::ManifestParse(format!("Failed to deserialize manifest: {}", e))
+        })?;
+
         Ok(manifest)
     }
 }
@@ -579,17 +608,21 @@ pub enum CompressionType {
     Deflate,
 }
 
-impl CompressionType {
-    /// Get compression type from string
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl FromStr for CompressionType {
+    type Err = std::convert::Infallible;
+
+    /// Parse compression type from string; unknown values map to [`CompressionType::None`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "zstd" => CompressionType::Zstd,
             "lz4" => CompressionType::Lz4,
             "deflate" => CompressionType::Deflate,
             _ => CompressionType::None,
-        }
+        })
     }
-    
+}
+
+impl CompressionType {
     /// Get string representation
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -634,10 +667,23 @@ pub struct CoelanoxContainer {
 
 impl CoelanoxContainer {
     /// Create a new COELANOX container
-    pub fn new(manifest: CoelanoxManifest, optimized_code: Vec<u8>, compressed_weights: Vec<u8>, compression_type: CompressionType, ir_data: Vec<u8>) -> Self {
-        Self::new_with_nvme(manifest, optimized_code, compressed_weights, compression_type, ir_data, None)
+    pub fn new(
+        manifest: CoelanoxManifest,
+        optimized_code: Vec<u8>,
+        compressed_weights: Vec<u8>,
+        compression_type: CompressionType,
+        ir_data: Vec<u8>,
+    ) -> Self {
+        Self::new_with_nvme(
+            manifest,
+            optimized_code,
+            compressed_weights,
+            compression_type,
+            ir_data,
+            None,
+        )
     }
-    
+
     /// Create a new COELANOX container with NVMe backing data
     pub fn new_with_nvme(
         manifest: CoelanoxManifest,
@@ -647,10 +693,20 @@ impl CoelanoxContainer {
         ir_data: Vec<u8>,
         nvme_backing_data: Option<Vec<u8>>,
     ) -> Self {
-        Self::new_with_hal_data(manifest, optimized_code, compressed_weights, compression_type, ir_data, nvme_backing_data, None, None)
+        Self::new_with_hal_data(
+            manifest,
+            optimized_code,
+            compressed_weights,
+            compression_type,
+            ir_data,
+            nvme_backing_data,
+            None,
+            None,
+        )
     }
 
     /// Create a new COELANOX container with NVMe, CLFMM, CLFMP, and optional execution plan data
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_hal_data(
         manifest: CoelanoxManifest,
         optimized_code: Vec<u8>,
@@ -662,13 +718,22 @@ impl CoelanoxContainer {
         clfmp_data: Option<Vec<u8>>,
     ) -> Self {
         Self::new_with_hal_data_and_plan(
-            manifest, optimized_code, compressed_weights, compression_type, ir_data,
-            nvme_backing_data, clfmm_data, clfmp_data, None, 0,
+            manifest,
+            optimized_code,
+            compressed_weights,
+            compression_type,
+            ir_data,
+            nvme_backing_data,
+            clfmm_data,
+            clfmp_data,
+            None,
+            0,
         )
     }
 
     /// Create a new COELANOX container with NVMe, CLFMM, CLFMP, and optional execution plan (CLF mini-executor).
     /// `header_flags` is passed to the container header (e.g. COELANOX_FLAG_AUDIT_REQUIRED for compliance).
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_hal_data_and_plan(
         manifest: CoelanoxManifest,
         optimized_code: Vec<u8>,
@@ -683,16 +748,16 @@ impl CoelanoxContainer {
     ) -> Self {
         let manifest_size = serde_json::to_vec(&manifest).unwrap_or_default().len();
         let code_offset = COELANOX_HEADER_SIZE as u64 + manifest_size as u64;
-        
+
         // Calculate weights offset (with length prefix: 4 bytes)
         let weights_offset = code_offset + optimized_code.len() as u64;
-        
+
         // Calculate IR offset (weights have 4-byte length prefix)
         let ir_offset = weights_offset + 4 + compressed_weights.len() as u64;
-        
+
         // Calculate NVMe backing offset (IR has 4-byte length prefix)
         let nvme_backing_offset = ir_offset + 4 + ir_data.len() as u64;
-        
+
         // Calculate total size including NVMe backing and optional CLFMM/CLFMP/execution_plan
         let nvme_size = nvme_backing_data.as_ref().map(|d| d.len()).unwrap_or(0) as u64;
         let base_after_nvme = if nvme_size > 0 {
@@ -712,13 +777,23 @@ impl CoelanoxContainer {
         let total_size = base_after_nvme
             + clfmm_data.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0)
             + clfmp_data.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0)
-            + execution_plan.as_ref().map(|d| 8 + d.len() as u64).unwrap_or(0);
+            + execution_plan
+                .as_ref()
+                .map(|d| 8 + d.len() as u64)
+                .unwrap_or(0);
 
         Self {
-            header: CoelanoxHeader::new_with_flags(total_size, COELANOX_HEADER_SIZE as u64, code_offset, header_flags),
+            header: CoelanoxHeader::new_with_flags(
+                total_size,
+                COELANOX_HEADER_SIZE as u64,
+                code_offset,
+                header_flags,
+            ),
             manifest,
             optimized_code,
-            compressed_weights: std::sync::Arc::new(std::sync::Mutex::new(Some(compressed_weights))),
+            compressed_weights: std::sync::Arc::new(std::sync::Mutex::new(Some(
+                compressed_weights,
+            ))),
             compression_type,
             ir_data,
             nvme_backing_data,
@@ -729,15 +804,15 @@ impl CoelanoxContainer {
             security: None,
         }
     }
-    
+
     /// Validate the container
     pub fn validate(&self) -> CoelanoxResult<()> {
         // Validate header
         self.header.validate()?;
-        
+
         // Validate manifest
         self.manifest.validate()?;
-        
+
         // Validate code size matches manifest
         if self.optimized_code.len() != self.manifest.model_size {
             return Err(CoelanoxError::PayloadValidation(format!(
@@ -746,10 +821,10 @@ impl CoelanoxContainer {
                 self.optimized_code.len()
             )));
         }
-        
+
         Ok(())
     }
-    
+
     /// Get total container size
     pub fn total_size(&self) -> usize {
         self.header.container_size as usize
@@ -762,7 +837,7 @@ impl CoelanoxContainer {
             .map(|g| g.as_ref().map(|v| v.len()).unwrap_or(0))
             .unwrap_or(0)
     }
-    
+
     /// Load weights into a Vec<f32>. Consumes the compressed buffer on first call so the runtime
     /// can avoid holding both compressed and decompressed in memory (~500MB+ savings for BERT).
     /// Subsequent calls return an error if weights were already released; use warm cache instead.
@@ -790,13 +865,14 @@ impl CoelanoxContainer {
                 let n = data.len() / 4;
                 let mut weights = Vec::with_capacity(n);
                 weights.extend(
-                    data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())),
+                    data.chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap())),
                 );
                 Ok(weights)
             }
         }
     }
-    
+
     /// Zstd decompression. Currently falls back to raw-f32 passthrough; native Zstd not implemented.
     fn decompress_zstd(&self, data: &[u8]) -> CoelanoxResult<Vec<f32>> {
         self.decompress_deflate(data)
@@ -818,7 +894,7 @@ impl CoelanoxContainer {
         }
         Ok(weights)
     }
-    
+
     /// Write container to binary file.
     ///
     /// Computes SHA-256 hash and embeds it in the header. When `signing_key` is `Some`,
@@ -849,13 +925,14 @@ impl CoelanoxContainer {
         // Write container to buffer (header with hash=0)
         let mut buffer = Vec::new();
         {
-            let cw = self
-                .compressed_weights
-                .lock()
-                .map_err(|_| CoelanoxError::Runtime("compressed_weights mutex poisoned".to_string()))?;
-            let cw_ref = cw
-                .as_ref()
-                .ok_or_else(|| CoelanoxError::Runtime("Cannot write container: weights already released".to_string()))?;
+            let cw = self.compressed_weights.lock().map_err(|_| {
+                CoelanoxError::Runtime("compressed_weights mutex poisoned".to_string())
+            })?;
+            let cw_ref = cw.as_ref().ok_or_else(|| {
+                CoelanoxError::Runtime(
+                    "Cannot write container: weights already released".to_string(),
+                )
+            })?;
             let mut cursor = std::io::Cursor::new(&mut buffer);
             header.write_binary(&mut cursor)?;
             self.manifest.write_binary(&mut cursor)?;
@@ -885,7 +962,7 @@ impl CoelanoxContainer {
         // Hash: header (hash zeroed) + rest
         let mut hasher = Sha256::new();
         hasher.update(&buffer[..COELANOX_HEADER_SECURITY_HASH_OFFSET]);
-        hasher.update(&[0u8; 32]);
+        hasher.update([0u8; 32]);
         hasher.update(&buffer[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..]);
         let calculated_hash: [u8; 32] = hasher.finalize().into();
 
@@ -901,33 +978,33 @@ impl CoelanoxContainer {
         std::fs::write(path, &buffer).map_err(CoelanoxError::FileSystem)?;
         Ok(())
     }
-    
+
     /// Write container to binary stream
     pub fn write_binary<W: Write>(&self, writer: &mut W) -> CoelanoxResult<()> {
         // Write header
         self.header.write_binary(writer)?;
-        
+
         // Write manifest
         self.manifest.write_binary(writer)?;
-        
+
         // Write optimized code
         writer.write_all(&self.optimized_code)?;
-        
+
         // Write compressed weights with length prefix
         let cw = self
             .compressed_weights
             .lock()
             .map_err(|_| CoelanoxError::Runtime("compressed_weights mutex poisoned".to_string()))?;
-        let cw_ref = cw
-            .as_ref()
-            .ok_or_else(|| CoelanoxError::Runtime("Cannot write container: weights already released".to_string()))?;
+        let cw_ref = cw.as_ref().ok_or_else(|| {
+            CoelanoxError::Runtime("Cannot write container: weights already released".to_string())
+        })?;
         writer.write_all(&(cw_ref.len() as u32).to_le_bytes())?;
         writer.write_all(cw_ref)?;
-        
+
         // Write IR data with length prefix
         writer.write_all(&(self.ir_data.len() as u32).to_le_bytes())?;
         writer.write_all(&self.ir_data)?;
-        
+
         // Write NVMe backing data with length prefix (if present)
         if let Some(ref nvme_backing) = self.nvme_backing_data {
             writer.write_all(&(nvme_backing.len() as u64).to_le_bytes())?;
@@ -951,52 +1028,51 @@ impl CoelanoxContainer {
             writer.write_all(&(plan.len() as u64).to_le_bytes())?;
             writer.write_all(plan)?;
         }
-        
+
         // Future: write backend_hints, security metadata if present in manifest
-        
+
         Ok(())
     }
-    
+
     /// Read container from binary file
     pub fn read_binary_file(path: &std::path::Path) -> CoelanoxResult<Self> {
-        let mut file = std::fs::File::open(path)
-            .map_err(CoelanoxError::FileSystem)?;
-        
+        let mut file = std::fs::File::open(path).map_err(CoelanoxError::FileSystem)?;
+
         Self::read_binary(&mut file)
     }
-    
+
     /// Read container from binary stream
     pub fn read_binary<R: Read>(reader: &mut R) -> CoelanoxResult<Self> {
         // Read header
         let header = CoelanoxHeader::read_binary(reader)?;
-        
+
         // Read manifest
         let manifest = CoelanoxManifest::read_binary(reader)?;
-        
+
         // Read optimized code
         let mut optimized_code = vec![0u8; manifest.model_size];
         reader.read_exact(&mut optimized_code)?;
-        
+
         // Read compressed weights length
         let mut weights_len_bytes = [0u8; 4];
         reader.read_exact(&mut weights_len_bytes)?;
         let weights_len = u32::from_le_bytes(weights_len_bytes) as usize;
-        
+
         // Read compressed weights
         let mut compressed_weights_raw = vec![0u8; weights_len];
         reader.read_exact(&mut compressed_weights_raw)?;
         let compressed_weights =
             std::sync::Arc::new(std::sync::Mutex::new(Some(compressed_weights_raw)));
-        
+
         // Read IR data length
         let mut ir_len_bytes = [0u8; 4];
         reader.read_exact(&mut ir_len_bytes)?;
         let ir_len = u32::from_le_bytes(ir_len_bytes) as usize;
-        
+
         // Read IR data
         let mut ir_data = vec![0u8; ir_len];
         reader.read_exact(&mut ir_data)?;
-        
+
         // Read NVMe backing data if present (check manifest for size)
         // We read sequentially since we're already at the right position after IR data
         let nvme_backing_data = if let Some(nvme_size) = manifest.nvme_backing_size {
@@ -1005,14 +1081,15 @@ impl CoelanoxContainer {
                 let mut nvme_len_bytes = [0u8; 8];
                 reader.read_exact(&mut nvme_len_bytes)?;
                 let nvme_len = u64::from_le_bytes(nvme_len_bytes) as usize;
-                
+
                 // Validate size matches manifest
                 if nvme_len != nvme_size {
-                    return Err(CoelanoxError::PayloadValidation(
-                        format!("NVMe backing size mismatch: manifest says {}, file has {}", nvme_size, nvme_len)
-                    ));
+                    return Err(CoelanoxError::PayloadValidation(format!(
+                        "NVMe backing size mismatch: manifest says {}, file has {}",
+                        nvme_size, nvme_len
+                    )));
                 }
-                
+
                 // Read NVMe backing data
                 let mut nvme_backing = vec![0u8; nvme_len];
                 reader.read_exact(&mut nvme_backing)?;
@@ -1031,9 +1108,10 @@ impl CoelanoxContainer {
                 reader.read_exact(&mut len_bytes)?;
                 let len = u64::from_le_bytes(len_bytes) as usize;
                 if len != clfmm_size {
-                    return Err(CoelanoxError::PayloadValidation(
-                        format!("CLFMM size mismatch: manifest says {}, file has {}", clfmm_size, len)
-                    ));
+                    return Err(CoelanoxError::PayloadValidation(format!(
+                        "CLFMM size mismatch: manifest says {}, file has {}",
+                        clfmm_size, len
+                    )));
                 }
                 let mut data = vec![0u8; len];
                 reader.read_exact(&mut data)?;
@@ -1052,9 +1130,10 @@ impl CoelanoxContainer {
                 reader.read_exact(&mut len_bytes)?;
                 let len = u64::from_le_bytes(len_bytes) as usize;
                 if len != clfmp_size {
-                    return Err(CoelanoxError::PayloadValidation(
-                        format!("CLFMP size mismatch: manifest says {}, file has {}", clfmp_size, len)
-                    ));
+                    return Err(CoelanoxError::PayloadValidation(format!(
+                        "CLFMP size mismatch: manifest says {}, file has {}",
+                        clfmp_size, len
+                    )));
                 }
                 let mut data = vec![0u8; len];
                 reader.read_exact(&mut data)?;
@@ -1073,9 +1152,10 @@ impl CoelanoxContainer {
                 reader.read_exact(&mut len_bytes)?;
                 let len = u64::from_le_bytes(len_bytes) as usize;
                 if len != plan_size {
-                    return Err(CoelanoxError::PayloadValidation(
-                        format!("Execution plan size mismatch: manifest says {}, file has {}", plan_size, len)
-                    ));
+                    return Err(CoelanoxError::PayloadValidation(format!(
+                        "Execution plan size mismatch: manifest says {}, file has {}",
+                        plan_size, len
+                    )));
                 }
                 let mut data = vec![0u8; len];
                 reader.read_exact(&mut data)?;
@@ -1086,9 +1166,9 @@ impl CoelanoxContainer {
         } else {
             None
         };
-        
+
         // Future: read backend_hints, security metadata, compression_type from manifest
-        
+
         Ok(Self {
             header,
             manifest,
@@ -1104,14 +1184,14 @@ impl CoelanoxContainer {
             security: None,
         })
     }
-    
+
     /// Convert from JSON format to binary format
     pub fn to_binary(&self) -> CoelanoxResult<Vec<u8>> {
         let mut buffer = Vec::new();
         self.write_binary(&mut buffer)?;
         Ok(buffer)
     }
-    
+
     /// Convert from binary format to JSON format
     pub fn from_binary(data: &[u8]) -> CoelanoxResult<Self> {
         let mut cursor = std::io::Cursor::new(data);
@@ -1128,27 +1208,27 @@ impl CoelanoxValidator {
         if !path.exists() {
             return Err(CoelanoxError::FileSystem(io::Error::new(
                 io::ErrorKind::NotFound,
-                "File not found"
+                "File not found",
             )));
         }
-        
+
         Ok(())
     }
-    
+
     /// Validate COELANOX data (min size + magic; full validation not implemented).
     pub fn validate_data(data: &[u8]) -> CoelanoxResult<()> {
         if data.len() < 4 {
             return Err(CoelanoxError::Format("Data too small".to_string()));
         }
-        
+
         // Check magic number
         if !crate::validate_magic(data) {
             return Err(CoelanoxError::InvalidMagic);
         }
-        
+
         Ok(())
     }
-    
+
     /// Parse header from data (stub: returns dummy header; full parsing in read_binary).
     pub fn parse_header(_data: &[u8]) -> CoelanoxResult<CoelanoxHeader> {
         Ok(CoelanoxHeader::new(0, 0, 0))
@@ -1161,43 +1241,43 @@ impl CoelanoxValidator {
 pub fn verify_security_hash_from_slice(container_data: &[u8]) -> CoelanoxResult<()> {
     if container_data.len() < COELANOX_HEADER_SIZE {
         return Err(CoelanoxError::SecurityValidation(
-            "Container file too small to contain valid header".to_string()
+            "Container file too small to contain valid header".to_string(),
         ));
     }
     if container_data.len() < COELANOX_HEADER_SECURITY_HASH_OFFSET + 32 {
         return Err(CoelanoxError::SecurityValidation(
-            "Container file too small to contain security hash".to_string()
+            "Container file too small to contain security hash".to_string(),
         ));
     }
-    let flags = u32::from_le_bytes(
-        container_data[8..12].try_into().map_err(|_| {
-            CoelanoxError::SecurityValidation("Failed to read header flags".to_string())
-        })?,
-    );
+    let flags = u32::from_le_bytes(container_data[8..12].try_into().map_err(|_| {
+        CoelanoxError::SecurityValidation("Failed to read header flags".to_string())
+    })?);
     let content_len = if header_signed(flags) {
         if container_data.len() < COELANOX_HEADER_SIZE + ED25519_SIGNATURE_LEN {
             return Err(CoelanoxError::SecurityValidation(
-                "Signed container too small for signature trailer".to_string()
+                "Signed container too small for signature trailer".to_string(),
             ));
         }
         container_data.len() - ED25519_SIGNATURE_LEN
     } else {
         container_data.len()
     };
-    let stored_hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET
-        ..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
+    let stored_hash: [u8; 32] = container_data
+        [COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
         .try_into()
-        .map_err(|_| CoelanoxError::SecurityValidation(
-            "Failed to extract security hash from header".to_string()
-        ))?;
+        .map_err(|_| {
+            CoelanoxError::SecurityValidation(
+                "Failed to extract security hash from header".to_string(),
+            )
+        })?;
     let mut hasher = Sha256::new();
     hasher.update(&container_data[..COELANOX_HEADER_SECURITY_HASH_OFFSET]);
-    hasher.update(&[0u8; 32]);
+    hasher.update([0u8; 32]);
     hasher.update(&container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET + 32..content_len]);
     let calculated_hash: [u8; 32] = hasher.finalize().into();
     if calculated_hash != stored_hash {
         return Err(CoelanoxError::SecurityValidation(
-            "Container hash mismatch - file may have been tampered with".to_string()
+            "Container hash mismatch - file may have been tampered with".to_string(),
         ));
     }
     Ok(())
@@ -1211,39 +1291,39 @@ pub fn verify_signature_from_slice(
 ) -> CoelanoxResult<()> {
     if container_data.len() < COELANOX_HEADER_SIZE {
         return Err(CoelanoxError::SecurityValidation(
-            "Container too small for signature verification".to_string()
+            "Container too small for signature verification".to_string(),
         ));
     }
-    let flags = u32::from_le_bytes(
-        container_data[8..12].try_into().map_err(|_| {
-            CoelanoxError::SecurityValidation("Failed to read header flags".to_string())
-        })?,
-    );
+    let flags = u32::from_le_bytes(container_data[8..12].try_into().map_err(|_| {
+        CoelanoxError::SecurityValidation("Failed to read header flags".to_string())
+    })?);
     if !header_signed(flags) {
         return Err(CoelanoxError::SecurityValidation(
-            "Container is not signed; cannot verify signature".to_string()
+            "Container is not signed; cannot verify signature".to_string(),
         ));
     }
     if container_data.len() < COELANOX_HEADER_SIZE + ED25519_SIGNATURE_LEN {
         return Err(CoelanoxError::SecurityValidation(
-            "Signed container too small for signature".to_string()
+            "Signed container too small for signature".to_string(),
         ));
     }
-    let hash: [u8; 32] = container_data[COELANOX_HEADER_SECURITY_HASH_OFFSET
-        ..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
+    let hash: [u8; 32] = container_data
+        [COELANOX_HEADER_SECURITY_HASH_OFFSET..COELANOX_HEADER_SECURITY_HASH_OFFSET + 32]
         .try_into()
         .map_err(|_| CoelanoxError::SecurityValidation("Invalid hash in header".to_string()))?;
     let sig_bytes = &container_data[container_data.len() - ED25519_SIGNATURE_LEN..];
-    let signature = Signature::from_bytes(sig_bytes.try_into().map_err(|_| {
-        CoelanoxError::SecurityValidation("Invalid signature length".to_string())
-    })?);
+    let signature =
+        Signature::from_bytes(sig_bytes.try_into().map_err(|_| {
+            CoelanoxError::SecurityValidation("Invalid signature length".to_string())
+        })?);
     let verifying_key = VerifyingKey::from_bytes(public_key)
         .map_err(|_| CoelanoxError::SecurityValidation("Invalid public key".to_string()))?;
-    verifying_key
-        .verify(&hash, &signature)
-        .map_err(|_| CoelanoxError::SecurityValidation(
-            "Signature verification failed - container may have been tampered or key mismatch".to_string()
-        ))?;
+    verifying_key.verify(&hash, &signature).map_err(|_| {
+        CoelanoxError::SecurityValidation(
+            "Signature verification failed - container may have been tampered or key mismatch"
+                .to_string(),
+        )
+    })?;
     Ok(())
 }
 

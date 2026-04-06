@@ -3,10 +3,10 @@
 //! Pure Rust scalar implementations with parallel iteration for large buffers
 //! (same pattern as MatMul: use a tuned primitive—here Rayon—for speed).
 
-use crate::CoelanoxResult;
-use std::collections::HashMap;
 use crate::ir::Attribute;
+use crate::CoelanoxResult;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 /// Threshold above which we use parallel iteration (16K balances parallelism vs rayon overhead).
 const PAR_THRESHOLD: usize = 64 * 1024;

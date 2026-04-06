@@ -31,6 +31,22 @@ jobs:
           cd coelanox
           cargo test
 
+      - name: Format
+        run: |
+          cd coelanox
+          cargo fmt --all -- --check
+
+      - name: Clippy
+        run: |
+          cd coelanox
+          cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Audit
+        run: |
+          cargo install cargo-audit --locked --quiet
+          cd coelanox
+          cargo audit
+
       - name: Build
         run: |
           cd coelanox

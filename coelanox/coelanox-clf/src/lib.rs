@@ -8,6 +8,8 @@ pub mod format;
 pub mod op_registry;
 pub mod reader;
 
-pub use format::{ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC};
+pub use format::{
+    ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC,
+};
 pub use op_registry::{op_type_to_clf_id, OpType};
 pub use reader::{ClfError, ClfReader, ClfReaderFromBytes, MissingOpIdPolicy};

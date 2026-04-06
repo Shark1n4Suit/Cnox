@@ -1,5 +1,5 @@
 //! Tensor manipulation operations
-//! 
+//!
 //! Pure Rust scalar implementations of tensor manipulation operations:
 //! - Reshape: Change tensor shape (metadata only, no data movement)
 //! - Transpose: Transpose tensor dimensions
@@ -10,9 +10,9 @@
 //! - Scatter: Scatter elements into tensor using indices
 //! - Broadcast: Broadcast tensor to larger shape
 
+use crate::ir::Attribute;
 use crate::{CoelanoxError, CoelanoxResult};
 use std::collections::HashMap;
-use crate::ir::Attribute;
 
 /// Reshape: copy input to output (shape change is metadata; caller provides layout).
 pub fn reshape(
@@ -38,31 +38,40 @@ pub fn transpose(
     output: &mut [f32],
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    let shape: Vec<usize> = attributes.get("shape")
+    let shape: Vec<usize> = attributes
+        .get("shape")
         .and_then(|a| match a {
             Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect()),
             _ => None,
         })
-        .ok_or_else(|| CoelanoxError::Internal("Transpose requires attribute 'shape' (IntArray)".to_string()))?;
+        .ok_or_else(|| {
+            CoelanoxError::Internal("Transpose requires attribute 'shape' (IntArray)".to_string())
+        })?;
 
-    let perm: Vec<usize> = attributes.get("perm")
+    let perm: Vec<usize> = attributes
+        .get("perm")
         .and_then(|a| match a {
             Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect()),
             _ => None,
         })
-        .ok_or_else(|| CoelanoxError::Internal("Transpose requires attribute 'perm' (IntArray)".to_string()))?;
+        .ok_or_else(|| {
+            CoelanoxError::Internal("Transpose requires attribute 'perm' (IntArray)".to_string())
+        })?;
 
     if shape.is_empty() || perm.len() != shape.len() {
         return Err(CoelanoxError::Internal(format!(
             "Transpose: shape len {} and perm len {} must match and be non-zero",
-            shape.len(), perm.len()
+            shape.len(),
+            perm.len()
         )));
     }
     let total: usize = shape.iter().product();
     if input.len() < total || output.len() < total {
         return Err(CoelanoxError::Internal(format!(
             "Transpose: input len {} or output len {} < total elements {}",
-            input.len(), output.len(), total
+            input.len(),
+            output.len(),
+            total
         )));
     }
 
@@ -100,7 +109,7 @@ pub fn transpose(
     let mut out_multi = vec![0usize; out_shape.len()];
     let mut in_multi = vec![0usize; shape.len()];
 
-    for out_linear in 0..total {
+    for (out_linear, out_slot) in output.iter_mut().enumerate().take(total) {
         // Output linear index -> output multi-index (div/rem, but no alloc).
         let mut rem = out_linear;
         for (i, &stride) in out_strides.iter().enumerate() {
@@ -111,16 +120,20 @@ pub fn transpose(
         for (i, &p) in perm.iter().enumerate() {
             in_multi[p] = out_multi[i];
         }
-        let in_linear: usize = in_multi.iter().zip(in_strides.iter()).map(|(m, s)| m * s).sum();
-        output[out_linear] = input[in_linear];
+        let in_linear: usize = in_multi
+            .iter()
+            .zip(in_strides.iter())
+            .map(|(m, s)| m * s)
+            .sum();
+        *out_slot = input[in_linear];
     }
     Ok(())
 }
 
 /// Execute permute operation: Permute tensor dimensions
-/// 
+///
 /// Similar to transpose but more general - can handle any permutation
-/// 
+///
 /// # Attributes
 /// * `perm` - Permutation of dimensions (e.g., [0, 2, 1, 3] for 4D permute)
 pub fn permute(
@@ -156,10 +169,13 @@ pub fn slice(
         Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect::<Vec<_>>()),
         _ => None,
     });
-    let input_shape = attributes.get("input_shape").or(attributes.get("dimensions")).and_then(|a| match a {
-        Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect::<Vec<_>>()),
-        _ => None,
-    });
+    let input_shape = attributes
+        .get("input_shape")
+        .or(attributes.get("dimensions"))
+        .and_then(|a| match a {
+            Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect::<Vec<_>>()),
+            _ => None,
+        });
 
     if let (Some(st), Some(en), Some(shape)) = (starts, ends, input_shape) {
         if st.len() != en.len() || st.len() != shape.len() {
@@ -241,7 +257,9 @@ pub fn split(
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
     if outputs.is_empty() {
-        return Err(CoelanoxError::Internal("Split requires at least one output".to_string()));
+        return Err(CoelanoxError::Internal(
+            "Split requires at least one output".to_string(),
+        ));
     }
     if outputs.len() == 1 {
         let out = &mut outputs[0];
@@ -255,7 +273,11 @@ pub fn split(
             Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect()),
             _ => None,
         })
-        .ok_or_else(|| CoelanoxError::Internal("Split with multiple outputs requires attribute 'split' (IntArray)".to_string()))?;
+        .ok_or_else(|| {
+            CoelanoxError::Internal(
+                "Split with multiple outputs requires attribute 'split' (IntArray)".to_string(),
+            )
+        })?;
     if sizes.len() != outputs.len() {
         return Err(CoelanoxError::Internal(format!(
             "Split: 'split' has {} sizes but {} outputs",
@@ -343,7 +365,7 @@ pub fn scatter(
 }
 
 /// Execute broadcast operation: Broadcast tensor to larger shape
-/// 
+///
 /// # Arguments
 /// * `input` - Input tensor data
 /// * `output` - Output tensor buffer (must be pre-allocated)
@@ -365,9 +387,9 @@ pub fn broadcast(
 }
 
 /// Execute expand operation: Expand tensor dimensions
-/// 
+///
 /// Similar to broadcast but adds new dimensions
-/// 
+///
 /// # Attributes
 /// * `shape` - Target shape to expand to
 pub fn expand(
@@ -377,4 +399,3 @@ pub fn expand(
 ) -> CoelanoxResult<()> {
     broadcast(input, output, &HashMap::new())
 }
-

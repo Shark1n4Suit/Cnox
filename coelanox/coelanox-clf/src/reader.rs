@@ -34,10 +34,7 @@ pub enum ClfError {
     #[error("missing op_id {0} in CLF (policy: Fail)")]
     MissingOpId(u32),
     #[error("CLF kind mismatch: expected {expected:?}, got {actual:?}")]
-    KindMismatch {
-        expected: ClfKind,
-        actual: ClfKind,
-    },
+    KindMismatch { expected: ClfKind, actual: ClfKind },
 }
 
 /// CLF reader: parses header and manifest, provides get_blob(op_id).
@@ -133,17 +130,23 @@ impl ClfReader {
             let op_id = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
             let offset = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
             let size = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
-            manifest.insert(op_id, ManifestEntry { op_id, offset, size });
+            manifest.insert(
+                op_id,
+                ManifestEntry {
+                    op_id,
+                    offset,
+                    size,
+                },
+            );
         }
 
         let blob_store_offset = reader.stream_position()?;
         let file_len = reader.seek(SeekFrom::End(0))?;
-        let has_sig = file_len >= (SIG_BLOCK_LEN as u64)
-            && {
-                reader.seek(SeekFrom::End(-(SIG_BLOCK_LEN as i64)))?;
-                let mut sig_magic = [0u8; 4];
-                reader.read_exact(&mut sig_magic).is_ok() && sig_magic == SIG_MAGIC
-            };
+        let has_sig = file_len >= (SIG_BLOCK_LEN as u64) && {
+            reader.seek(SeekFrom::End(-(SIG_BLOCK_LEN as i64)))?;
+            let mut sig_magic = [0u8; 4];
+            reader.read_exact(&mut sig_magic).is_ok() && sig_magic == SIG_MAGIC
+        };
         let blob_store_len = if has_sig {
             file_len
                 .saturating_sub(SIG_BLOCK_LEN as u64)
@@ -284,7 +287,14 @@ impl ClfReaderFromBytes {
             let op_id = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
             let offset = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
             let size = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
-            manifest.insert(op_id, ManifestEntry { op_id, offset, size });
+            manifest.insert(
+                op_id,
+                ManifestEntry {
+                    op_id,
+                    offset,
+                    size,
+                },
+            );
         }
         let blob_store_offset = cursor.stream_position()?;
         Ok(Self {

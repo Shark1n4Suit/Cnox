@@ -1,5 +1,5 @@
 //! Comparison operations
-//! 
+//!
 //! Pure Rust scalar implementations of comparison operations:
 //! - Equal: Element-wise equality comparison
 //! - NotEqual: Element-wise inequality comparison
@@ -8,9 +8,9 @@
 //! - Less: Element-wise less-than comparison
 //! - LessEqual: Element-wise less-than-or-equal comparison
 
+use crate::ir::Attribute;
 use crate::CoelanoxResult;
 use std::collections::HashMap;
-use crate::ir::Attribute;
 
 /// Execute element-wise equality: output = (input_a == input_b) ? 1.0 : 0.0
 pub fn equal(
@@ -21,7 +21,11 @@ pub fn equal(
 ) -> CoelanoxResult<()> {
     let len = input_a.len().min(input_b.len()).min(output.len());
     for i in 0..len {
-        output[i] = if (input_a[i] - input_b[i]).abs() < f32::EPSILON { 1.0 } else { 0.0 };
+        output[i] = if (input_a[i] - input_b[i]).abs() < f32::EPSILON {
+            1.0
+        } else {
+            0.0
+        };
     }
     Ok(())
 }
@@ -35,7 +39,11 @@ pub fn not_equal(
 ) -> CoelanoxResult<()> {
     let len = input_a.len().min(input_b.len()).min(output.len());
     for i in 0..len {
-        output[i] = if (input_a[i] - input_b[i]).abs() >= f32::EPSILON { 1.0 } else { 0.0 };
+        output[i] = if (input_a[i] - input_b[i]).abs() >= f32::EPSILON {
+            1.0
+        } else {
+            0.0
+        };
     }
     Ok(())
 }
@@ -95,4 +103,3 @@ pub fn less_equal(
     }
     Ok(())
 }
-

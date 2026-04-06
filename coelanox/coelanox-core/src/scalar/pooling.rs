@@ -3,10 +3,10 @@
 //! Pure Rust scalar implementations with parallel iteration for large buffers
 //! (same pattern as MatMul: use Rayon when beneficial).
 
-use crate::CoelanoxResult;
-use std::collections::HashMap;
 use crate::ir::Attribute;
+use crate::CoelanoxResult;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 const PAR_THRESHOLD: usize = 64 * 1024;
 
@@ -16,15 +16,26 @@ pub fn max_pool(
     output: &mut [f32],
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    let kernel_size = attributes.get("kernel_size")
-        .and_then(|a| match a { crate::ir::Attribute::Int(i) => Some(*i as usize), _ => None })
+    let kernel_size = attributes
+        .get("kernel_size")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Int(i) => Some(*i as usize),
+            _ => None,
+        })
         .unwrap_or(2);
-    let stride = attributes.get("stride")
-        .and_then(|a| match a { crate::ir::Attribute::Int(i) => Some(*i as usize), _ => None })
+    let stride = attributes
+        .get("stride")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Int(i) => Some(*i as usize),
+            _ => None,
+        })
         .unwrap_or(kernel_size);
-    let max_out = (input.len().saturating_sub(kernel_size) / stride).saturating_add(1).min(output.len());
+    let max_out = (input.len().saturating_sub(kernel_size) / stride)
+        .saturating_add(1)
+        .min(output.len());
     if max_out >= PAR_THRESHOLD {
-        output.par_iter_mut()
+        output
+            .par_iter_mut()
             .take(max_out)
             .enumerate()
             .for_each(|(out_idx, o)| {
@@ -57,15 +68,26 @@ pub fn avg_pool(
     output: &mut [f32],
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    let kernel_size = attributes.get("kernel_size")
-        .and_then(|a| match a { crate::ir::Attribute::Int(i) => Some(*i as usize), _ => None })
+    let kernel_size = attributes
+        .get("kernel_size")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Int(i) => Some(*i as usize),
+            _ => None,
+        })
         .unwrap_or(2);
-    let stride = attributes.get("stride")
-        .and_then(|a| match a { crate::ir::Attribute::Int(i) => Some(*i as usize), _ => None })
+    let stride = attributes
+        .get("stride")
+        .and_then(|a| match a {
+            crate::ir::Attribute::Int(i) => Some(*i as usize),
+            _ => None,
+        })
         .unwrap_or(kernel_size);
-    let max_out = (input.len().saturating_sub(kernel_size) / stride).saturating_add(1).min(output.len());
+    let max_out = (input.len().saturating_sub(kernel_size) / stride)
+        .saturating_add(1)
+        .min(output.len());
     if max_out >= PAR_THRESHOLD {
-        output.par_iter_mut()
+        output
+            .par_iter_mut()
             .take(max_out)
             .enumerate()
             .for_each(|(out_idx, o)| {
@@ -94,7 +116,10 @@ pub fn global_max_pool(
 ) -> CoelanoxResult<()> {
     if !output.is_empty() && !input.is_empty() {
         output[0] = if input.len() >= PAR_THRESHOLD {
-            input.par_iter().fold(|| f32::NEG_INFINITY, |a, &b| a.max(b)).reduce(|| f32::NEG_INFINITY, |a, b| a.max(b))
+            input
+                .par_iter()
+                .fold(|| f32::NEG_INFINITY, |a, &b| a.max(b))
+                .reduce(|| f32::NEG_INFINITY, |a, b| a.max(b))
         } else {
             input.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b))
         };
@@ -119,4 +144,3 @@ pub fn global_avg_pool(
     }
     Ok(())
 }
-

@@ -11,8 +11,8 @@
 
 mod common;
 
-use common::{f32_payload, read_ipc_ok_only, wait_serve_ready};
 use coelanox_core::format::CoelanoxContainer;
+use common::{f32_payload, read_ipc_ok_only, wait_serve_ready};
 use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,8 +21,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 fn coelanox_bin() -> &'static str {
-    option_env!("CARGO_BIN_EXE_coelanox")
-        .expect("run with `cargo test -p coelanox-cli` so CARGO_BIN_EXE_coelanox is set")
+    env!("CARGO_BIN_EXE_coelanox")
 }
 
 /// `coelanox-cli` lives at `coelanox/coelanox-cli`; `../..` is the cnox repo root (parent of `coelanox/`).
@@ -82,7 +81,13 @@ fn fingerprint_sumsq(v: &[f32]) -> f64 {
 const ABS_TOL: f32 = 5e-4;
 
 fn assert_close_f32(label: &str, a: &[f32], b: &[f32]) {
-    assert_eq!(a.len(), b.len(), "{label}: length mismatch {} vs {}", a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "{label}: length mismatch {} vs {}",
+        a.len(),
+        b.len()
+    );
     let mut max_abs = 0f32;
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         let d = (x - y).abs();
@@ -281,14 +286,7 @@ fn bert_scalar_e2e_run_benchmark_audit_serve_match() {
     let payload = f32_payload(&input);
 
     let mut child = Command::new(bin)
-        .args([
-            "serve",
-            "-f",
-            &cnox,
-            "-b",
-            "scalar",
-            "--no-verify",
-        ])
+        .args(["serve", "-f", &cnox, "-b", "scalar", "--no-verify"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

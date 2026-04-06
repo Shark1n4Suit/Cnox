@@ -10,21 +10,13 @@ use tempfile::tempdir;
 
 #[test]
 fn serve_ipc_creq_then_cnxt_returns_crok() {
-    let bin = option_env!("CARGO_BIN_EXE_coelanox")
-        .expect("run with `cargo test -p coelanox-cli` so CARGO_BIN_EXE_coelanox is set");
+    let bin = env!("CARGO_BIN_EXE_coelanox");
 
     let (cnox, input_elems) = minimal_relu_container().expect("container");
     let path = cnox.path().to_str().unwrap().to_owned();
 
     let mut child = Command::new(bin)
-        .args([
-            "serve",
-            "-f",
-            &path,
-            "-b",
-            "scalar",
-            "--no-verify",
-        ])
+        .args(["serve", "-f", &path, "-b", "scalar", "--no-verify"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -56,8 +48,7 @@ fn serve_ipc_creq_then_cnxt_returns_crok() {
 
 #[test]
 fn serve_ipc_audit_flush_writes_file_before_shutdown() {
-    let bin = option_env!("CARGO_BIN_EXE_coelanox")
-        .expect("run with `cargo test -p coelanox-cli` so CARGO_BIN_EXE_coelanox is set");
+    let bin = env!("CARGO_BIN_EXE_coelanox");
 
     let dir = tempdir().expect("tempdir");
     let audit_path = dir.path().join("serve_audit.json");

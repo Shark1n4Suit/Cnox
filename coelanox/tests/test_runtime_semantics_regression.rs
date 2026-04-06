@@ -1,15 +1,15 @@
 //! Regression: runtime rejects containers whose manifest IR semantics version is unsupported.
 
-use coelanox_core::format::{CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat};
+use coelanox_core::format::{
+    CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat,
+};
 use coelanox_core::ir::{self, DataType, OpType, Shape, UniversalIR};
 use coelanox_core::CoelanoxResult;
 use coelanox_orchestrator::CoelanoxRuntime;
 use coelanox_packager::optimizers::{CpuOptimizer, HardwareOptimizer};
 use tempfile::NamedTempFile;
 
-fn container_with_semantics_version(
-    version: Option<String>,
-) -> CoelanoxResult<NamedTempFile> {
+fn container_with_semantics_version(version: Option<String>) -> CoelanoxResult<NamedTempFile> {
     let mut manifest = CoelanoxManifest::new(
         "semantics_test".into(),
         ModelFormat::Onnx,
@@ -21,7 +21,8 @@ fn container_with_semantics_version(
 
     let mut universal_ir = UniversalIR::new("semantics_test".to_string());
     let shape = Shape::new(vec![1, 10]);
-    let tid_in = universal_ir.add_intermediate_tensor("in".into(), shape.clone(), DataType::Float32);
+    let tid_in =
+        universal_ir.add_intermediate_tensor("in".into(), shape.clone(), DataType::Float32);
     let tid_out = universal_ir.add_intermediate_tensor("out".into(), shape, DataType::Float32);
     let node_id = universal_ir.add_node(OpType::Relu);
     {
@@ -63,9 +64,10 @@ fn load_rejects_unsupported_ir_semantics_version() {
 
 #[test]
 fn load_accepts_current_ir_semantics_version() {
-    let file =
-        container_with_semantics_version(Some(coelanox_core::format::COELANOX_IR_SEMANTICS_VERSION.into()))
-            .expect("container");
+    let file = container_with_semantics_version(Some(
+        coelanox_core::format::COELANOX_IR_SEMANTICS_VERSION.into(),
+    ))
+    .expect("container");
     let rt = CoelanoxRuntime::new();
     rt.load_container(file.path().to_str().unwrap())
         .expect("current semantics version should load");

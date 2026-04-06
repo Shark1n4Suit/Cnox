@@ -8,7 +8,8 @@
 //! - **`long`**: legacy session mode — entries accumulate in RAM and each flush rewrites the full snapshot (unbounded memory on long-lived `serve`).
 //!
 //! **Session options** ([`AuditSessionConfig`]): sample head/tail sizes, optional stats and SHA-256
-//! over tensor bytes, optional restriction to graph-output nodes, and optional run metadata.
+//! over tensor bytes, optional restriction to graph-output nodes, optional run metadata, and
+//! optional **pretty JSON** for append mode (`forget` + `.json`).
 
 use crate::audit_ir::graph_output_node_indices;
 use sha2::{Digest, Sha256};
@@ -87,6 +88,11 @@ pub struct AuditSessionConfig {
     pub final_output_only: bool,
     pub output_node_indices: Vec<usize>,
     pub run: Option<AuditRunContext>,
+    /// When true and the audit path ends in `.json` with strategy [`AuditStrategy::Forget`], each
+    /// flushed batch is written as **pretty-printed JSON** (multi-line per batch). Default is
+    /// **compact single-line JSONL** for machine streaming. Strategies `last` / `long` still use
+    /// pretty JSON on overwrite (unchanged).
+    pub pretty_json: bool,
 }
 
 impl Default for AuditSessionConfig {
@@ -100,6 +106,7 @@ impl Default for AuditSessionConfig {
             final_output_only: false,
             output_node_indices: Vec::new(),
             run: None,
+            pretty_json: false,
         }
     }
 }
@@ -185,15 +192,14 @@ static AUDIT_STATE: Mutex<AuditState> = Mutex::new(AuditState {
         final_output_only: false,
         output_node_indices: Vec::new(),
         run: None,
+        pretty_json: false,
     },
     pending_input: None,
 });
 
 #[inline]
 fn lock_audit_state() -> std::sync::MutexGuard<'static, AuditState> {
-    AUDIT_STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    AUDIT_STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn clamp_sample_sizes(head: usize, tail: usize) -> (usize, usize) {
@@ -402,10 +408,10 @@ fn write_entries_overwrite(path: &Path, batch: &AuditBatchV2) -> std::io::Result
         }
     }
 
-    let is_json = path.extension().map_or(false, |e| e == "json");
+    let is_json = path.extension().is_some_and(|e| e == "json");
     if is_json {
         let s = serde_json::to_string_pretty(batch)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(path, s)
     } else {
         let lines = format_plain_batch(batch);
@@ -413,48 +419,70 @@ fn write_entries_overwrite(path: &Path, batch: &AuditBatchV2) -> std::io::Result
     }
 }
 
+fn format_stats_plain(s: &AuditTensorStats) -> String {
+    format!(
+        "min={:.6} max={:.6} mean={:.6} nan_count={} inf_count={}",
+        s.min, s.max, s.mean, s.nan_count, s.inf_count
+    )
+}
+
 fn format_plain_batch(batch: &AuditBatchV2) -> String {
-    let mut s = String::new();
+    let mut out = String::new();
+    out.push_str("--- coelanox_audit ---\n");
+    out.push_str(&format!("schema: {}\n", batch.schema));
     if let Some(ref run) = batch.run {
-        s.push_str(&format!(
-            "audit schema={} run_id={} started_at_ms={} container={} backend={} container_sha256={}\n",
-            batch.schema,
-            run.run_id,
-            run.started_at_unix_ms,
-            run.container_path,
-            run.backend,
+        out.push_str("[run]\n");
+        out.push_str(&format!("  run_id: {}\n", run.run_id));
+        out.push_str(&format!("  started_at_unix_ms: {}\n", run.started_at_unix_ms));
+        out.push_str(&format!("  container_path: {}\n", run.container_path));
+        out.push_str(&format!("  backend: {}\n", run.backend));
+        out.push_str(&format!(
+            "  container_sha256_hex: {}\n",
             run.container_sha256_hex.as_deref().unwrap_or("-")
         ));
     }
     if let Some(ref inp) = batch.input {
-        s.push_str(&format!(
-            "audit input len={} sha256={} head={:?} tail={:?} elided={:?}\n",
-            inp.len,
-            inp.sha256_hex.as_deref().unwrap_or("-"),
-            inp.sample_head,
-            inp.sample_tail,
-            inp.elided
+        out.push_str("[input]\n");
+        out.push_str(&format!("  len: {}\n", inp.len));
+        out.push_str(&format!(
+            "  sha256_hex: {}\n",
+            inp.sha256_hex.as_deref().unwrap_or("-")
         ));
+        out.push_str(&format!("  sample_head: {:?}\n", inp.sample_head));
+        if !inp.sample_tail.is_empty() {
+            out.push_str(&format!("  sample_tail: {:?}\n", inp.sample_tail));
+        }
+        if let Some(ref e) = inp.elided {
+            out.push_str(&format!("  elided: {}\n", e));
+        }
     }
+    out.push_str("[ops]\n");
     for e in &batch.ops {
-        s.push_str(&format!(
-            "audit op {} {} out_len={} head={:?} tail={:?} stats={:?} sha256={} elided={:?}\n",
-            e.op_index,
-            e.op_type,
-            e.out_len,
-            e.out_sample_head,
-            e.out_sample_tail,
-            e.stats,
-            e.out_sha256_hex.as_deref().unwrap_or("-"),
-            e.audit_elided
+        out.push_str(&format!("  - op_index: {}\n", e.op_index));
+        out.push_str(&format!("    op_type: {}\n", e.op_type));
+        out.push_str(&format!("    out_len: {}\n", e.out_len));
+        out.push_str(&format!("    out_sample_head: {:?}\n", e.out_sample_head));
+        if !e.out_sample_tail.is_empty() {
+            out.push_str(&format!("    out_sample_tail: {:?}\n", e.out_sample_tail));
+        }
+        if let Some(ref st) = e.stats {
+            out.push_str(&format!("    stats: {}\n", format_stats_plain(st)));
+        }
+        out.push_str(&format!(
+            "    out_sha256_hex: {}\n",
+            e.out_sha256_hex.as_deref().unwrap_or("-")
         ));
+        if let Some(ref el) = e.audit_elided {
+            out.push_str(&format!("    elided: {}\n", el));
+        }
     }
-    s.push('\n');
-    s
+    out.push('\n');
+    out
 }
 
-/// Append one batch: for `.json` paths, one **JSON object** per line (JSONL). For plain paths, append a text block.
-fn append_entries_batch(path: &Path, batch: &AuditBatchV2) -> std::io::Result<()> {
+/// Append one batch: for `.json` paths, one JSON object per flush (compact JSONL by default).
+/// With `pretty_json`, writes indented JSON (multi-line per batch; not strict single-line JSONL).
+fn append_entries_batch(path: &Path, batch: &AuditBatchV2, pretty_json: bool) -> std::io::Result<()> {
     use std::io::Write;
 
     if let Some(parent) = path.parent() {
@@ -463,15 +491,18 @@ fn append_entries_batch(path: &Path, batch: &AuditBatchV2) -> std::io::Result<()
         }
     }
 
-    let is_json = path.extension().map_or(false, |e| e == "json");
+    let is_json = path.extension().is_some_and(|e| e == "json");
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
 
     if is_json {
-        let line = serde_json::to_string(batch)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let line = if pretty_json {
+            serde_json::to_string_pretty(batch).map_err(|e| std::io::Error::other(e.to_string()))?
+        } else {
+            serde_json::to_string(batch).map_err(|e| std::io::Error::other(e.to_string()))?
+        };
         f.write_all(line.as_bytes())?;
         f.write_all(b"\n")?;
     } else {
@@ -510,7 +541,7 @@ fn flush_locked(state: &mut AuditState) -> std::io::Result<()> {
 
     match state.strategy {
         AuditStrategy::Forget => {
-            append_entries_batch(path, &batch)?;
+            append_entries_batch(path, &batch, state.session.pretty_json)?;
             state.entries.clear();
         }
         AuditStrategy::Last => {
@@ -602,15 +633,17 @@ pub fn record_input_snapshot(input: &[f32]) {
 }
 
 /// Resolve graph-output node indices from container IR (for `--audit-final-only`).
-pub fn output_node_indices_from_ir_data(ir_data: &[u8]) -> coelanox_core::CoelanoxResult<Vec<usize>> {
+pub fn output_node_indices_from_ir_data(
+    ir_data: &[u8],
+) -> coelanox_core::CoelanoxResult<Vec<usize>> {
     let ir = coelanox_core::ir::deserialize_optimized_ir(ir_data)?;
     Ok(graph_output_node_indices(&ir))
 }
 
-/// Log one op: node index, op type, output size, and **full** output buffer (or representative slice).
+/// Log one op: node index, op type string, output size, and **full** output buffer (or representative slice).
 pub fn log_after_op(
     node_index: usize,
-    op_type: &impl std::fmt::Debug,
+    op_type: &str,
     output_len: usize,
     output_data: &[f32],
 ) {
@@ -621,8 +654,13 @@ pub fn log_after_op(
     if !should_log_node(&state, node_index) {
         return;
     }
-    let op_type_str = format!("{:?}", op_type);
-    let entry = build_op_entry(&state.session, node_index, &op_type_str, output_len, output_data);
+    let entry = build_op_entry(
+        &state.session,
+        node_index,
+        op_type,
+        output_len,
+        output_data,
+    );
     tracing::info!(
         "audit op {} {} out_len={} head={:?}",
         entry.op_index,
@@ -654,7 +692,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("audit.json");
         set_audit_mode(true, Some(&path), AuditStrategy::Forget);
-        log_after_op(0, &"Add", 4, &[1.0, 2.0, 3.0, 4.0]);
+        log_after_op(0, "Add", 4, &[1.0, 2.0, 3.0, 4.0]);
         flush_now().expect("flush");
         let s = std::fs::read_to_string(&path).expect("read audit");
         assert!(s.contains("\"schema\":2"));
@@ -670,9 +708,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("audit.json");
         set_audit_mode(true, Some(&path), AuditStrategy::Forget);
-        log_after_op(0, &"A", 1, &[1.0]);
+        log_after_op(0, "A", 1, &[1.0]);
         flush_now().expect("flush1");
-        log_after_op(0, &"B", 1, &[2.0]);
+        log_after_op(0, "B", 1, &[2.0]);
         flush_now().expect("flush2");
         let s = std::fs::read_to_string(&path).expect("read");
         assert_eq!(s.lines().count(), 2);
@@ -686,9 +724,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("audit.json");
         set_audit_mode(true, Some(&path), AuditStrategy::Last);
-        log_after_op(0, &"First", 1, &[1.0]);
+        log_after_op(0, "First", 1, &[1.0]);
         flush_now().expect("flush1");
-        log_after_op(0, &"Second", 1, &[2.0]);
+        log_after_op(0, "Second", 1, &[2.0]);
         flush_now().expect("flush2");
         let s = std::fs::read_to_string(&path).expect("read");
         assert!(s.contains("Second"));
@@ -703,9 +741,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("audit.json");
         set_audit_mode(true, Some(&path), AuditStrategy::Long);
-        log_after_op(0, &"A", 1, &[1.0]);
+        log_after_op(0, "A", 1, &[1.0]);
         flush_now().expect("flush1");
-        log_after_op(1, &"B", 1, &[2.0]);
+        log_after_op(1, "B", 1, &[2.0]);
         flush_now().expect("flush2");
         let s = std::fs::read_to_string(&path).expect("read");
         assert!(s.contains("A"));
@@ -720,11 +758,11 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("audit.log");
         set_audit_mode(true, Some(&path), AuditStrategy::Forget);
-        log_after_op(1, &"Mul", 2, &[3.0, 4.0]);
+        log_after_op(1, "Mul", 2, &[3.0, 4.0]);
         flush_now().expect("flush");
         let s = std::fs::read_to_string(&path).expect("read audit");
-        assert!(s.contains("audit"));
-        assert!(s.contains("Mul"));
+        assert!(s.contains("coelanox_audit"));
+        assert!(s.contains("op_type: Mul"));
         set_audit_mode(false, None, AuditStrategy::Forget);
     }
 
@@ -735,7 +773,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("out.log");
         set_audit_mode(true, Some(&path), AuditStrategy::Forget);
-        log_after_op(0, &"Sub", 1, &[1.0]);
+        log_after_op(0, "Sub", 1, &[1.0]);
         set_audit_mode(false, None, AuditStrategy::Forget);
         let meta = std::fs::metadata(&path).expect("file exists");
         assert!(meta.len() > 0);
@@ -762,7 +800,7 @@ mod tests {
         let p2 = dir.path().join("two.log");
         set_audit_mode(true, Some(&p1), AuditStrategy::Forget);
         set_audit_mode(true, Some(&p2), AuditStrategy::Forget);
-        log_after_op(0, &"Relu", 1, &[1.0]);
+        log_after_op(0, "Relu", 1, &[1.0]);
         set_audit_mode(false, None, AuditStrategy::Forget);
         assert!(flush_now().is_ok());
         set_audit_mode(false, None, AuditStrategy::Forget);
@@ -773,14 +811,18 @@ mod tests {
     #[test]
     fn extended_head_matches_default_prefix() {
         let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
-        let mut cfg = AuditSessionConfig::default();
-        cfg.sample_head = 8;
+        let cfg = AuditSessionConfig {
+            sample_head: 8,
+            ..Default::default()
+        };
         let e = build_op_entry(&cfg, 0, "T", data.len(), &data);
         assert_eq!(e.out_sample_head.len(), 8);
         assert_eq!(e.out_sample_head[0], 0.0);
 
-        let mut cfg2 = AuditSessionConfig::default();
-        cfg2.sample_head = 4;
+        let cfg2 = AuditSessionConfig {
+            sample_head: 4,
+            ..Default::default()
+        };
         let e2 = build_op_entry(&cfg2, 0, "T", data.len(), &data);
         assert_eq!(e.out_sample_head[..4], e2.out_sample_head[..]);
     }

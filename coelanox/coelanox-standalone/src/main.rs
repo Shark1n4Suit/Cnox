@@ -11,7 +11,9 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "coelanox-run")]
-#[command(about = "Load one .cnox and run inference, or --serve for framed binary IPC (same protocol as `coelanox serve`)")]
+#[command(
+    about = "Load one .cnox and run inference, or --serve for framed binary IPC (same protocol as `coelanox serve`)"
+)]
 struct Cli {
     /// Path to the `.cnox` container
     model: PathBuf,

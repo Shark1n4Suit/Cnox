@@ -2,7 +2,9 @@
 #![allow(dead_code)]
 // Each integration-test binary links this module independently; not every helper is used in every crate.
 
-use coelanox_core::format::{CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat};
+use coelanox_core::format::{
+    CoelanoxContainer, CoelanoxManifest, CompressionType, HardwareTarget, ModelFormat,
+};
 use coelanox_core::ir::{self, DataType, OpType, Shape, UniversalIR};
 use coelanox_core::CoelanoxResult;
 use coelanox_packager::optimizers::{CpuOptimizer, HardwareOptimizer};
@@ -28,13 +30,12 @@ pub fn minimal_relu_container() -> CoelanoxResult<(tempfile::NamedTempFile, usiz
 
     let mut universal_ir = UniversalIR::new("ipc_smoke".to_string());
     let shape = Shape::new(vec![1, 10]);
-    let tid_in = universal_ir.add_intermediate_tensor("in".into(), shape.clone(), DataType::Float32);
+    let tid_in =
+        universal_ir.add_intermediate_tensor("in".into(), shape.clone(), DataType::Float32);
     let tid_out = universal_ir.add_intermediate_tensor("out".into(), shape, DataType::Float32);
     let node_id = universal_ir.add_node(OpType::Relu);
     {
-        let node = universal_ir
-            .get_node_mut(node_id)
-            .expect("Relu node");
+        let node = universal_ir.get_node_mut(node_id).expect("Relu node");
         node.add_input_tensor(tid_in);
         node.add_output_tensor(tid_out);
     }

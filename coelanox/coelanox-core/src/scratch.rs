@@ -20,26 +20,66 @@ pub fn peak_scratch_elements_for_op(
     let attr_map: std::collections::HashMap<_, _> = attributes.iter().cloned().collect();
 
     match op_type {
-        OpType::Convolution => conv_scratch_from_shapes(input_shapes, output_shapes, weight_shapes, &attr_map),
-        OpType::MatMul | OpType::Gemm => matmul_scratch_from_shapes(input_shapes, output_shapes, weight_shapes),
-        OpType::Softmax | OpType::LogSoftmax => softmax_scratch_from_shapes(input_shapes, &attr_map),
-        OpType::LayerNorm => layernorm_scratch_from_shapes(input_shapes, &attr_map),
-        OpType::ReduceSum | OpType::ReduceMean | OpType::ReduceMax | OpType::ReduceMin | OpType::ReduceProd => {
-            reduce_scratch_from_shapes(input_shapes, output_shapes)
+        OpType::Convolution => {
+            conv_scratch_from_shapes(input_shapes, output_shapes, weight_shapes, &attr_map)
         }
-        OpType::MaxPool | OpType::AvgPool => pool_scratch_from_shapes(input_shapes, output_shapes, &attr_map),
+        OpType::MatMul | OpType::Gemm => {
+            matmul_scratch_from_shapes(input_shapes, output_shapes, weight_shapes)
+        }
+        OpType::Softmax | OpType::LogSoftmax => {
+            softmax_scratch_from_shapes(input_shapes, &attr_map)
+        }
+        OpType::LayerNorm => layernorm_scratch_from_shapes(input_shapes, &attr_map),
+        OpType::ReduceSum
+        | OpType::ReduceMean
+        | OpType::ReduceMax
+        | OpType::ReduceMin
+        | OpType::ReduceProd => reduce_scratch_from_shapes(input_shapes, output_shapes),
+        OpType::MaxPool | OpType::AvgPool => {
+            pool_scratch_from_shapes(input_shapes, output_shapes, &attr_map)
+        }
         // Element-wise, no scratch
-        OpType::Add | OpType::Subtract | OpType::Multiply | OpType::Divide
-        | OpType::Relu | OpType::Sigmoid | OpType::Tanh | OpType::Gelu | OpType::Swish
-        | OpType::Sqrt | OpType::Abs | OpType::Pow | OpType::Cos | OpType::Sin | OpType::Exp | OpType::Log
-        | OpType::BatchNorm | OpType::Dropout
-        | OpType::Reshape | OpType::Transpose | OpType::Permute
-        | OpType::Concatenate | OpType::Split | OpType::Slice | OpType::Gather | OpType::Scatter
-        | OpType::Broadcast | OpType::Expand
-        | OpType::GlobalMaxPool | OpType::GlobalAvgPool
-        | OpType::Equal | OpType::NotEqual | OpType::Greater | OpType::GreaterEqual
-        | OpType::Less | OpType::LessEqual | OpType::And | OpType::Or | OpType::Not
-        | OpType::Min | OpType::Max
+        OpType::Add
+        | OpType::Subtract
+        | OpType::Multiply
+        | OpType::Divide
+        | OpType::Relu
+        | OpType::Sigmoid
+        | OpType::Tanh
+        | OpType::Gelu
+        | OpType::Swish
+        | OpType::Sqrt
+        | OpType::Abs
+        | OpType::Pow
+        | OpType::Cos
+        | OpType::Sin
+        | OpType::Exp
+        | OpType::Log
+        | OpType::BatchNorm
+        | OpType::Dropout
+        | OpType::Reshape
+        | OpType::Transpose
+        | OpType::Permute
+        | OpType::Concatenate
+        | OpType::Split
+        | OpType::Slice
+        | OpType::Gather
+        | OpType::Scatter
+        | OpType::Broadcast
+        | OpType::Expand
+        | OpType::GlobalMaxPool
+        | OpType::GlobalAvgPool
+        | OpType::Equal
+        | OpType::NotEqual
+        | OpType::Greater
+        | OpType::GreaterEqual
+        | OpType::Less
+        | OpType::LessEqual
+        | OpType::And
+        | OpType::Or
+        | OpType::Not
+        | OpType::Min
+        | OpType::Max
         | OpType::Custom(_) => 0,
     }
 }
@@ -51,8 +91,8 @@ fn conv_scratch_from_shapes(
     weight_shapes: &[Shape],
     attr_map: &std::collections::HashMap<String, Attribute>,
 ) -> usize {
-    let in_shape = input_shapes.first().and_then(|s| nchw(s));
-    let out_shape = output_shapes.first().and_then(|s| nchw(s));
+    let in_shape = input_shapes.first().and_then(nchw);
+    let out_shape = output_shapes.first().and_then(nchw);
     let (c_in, k_h, k_w) = if let Some(w) = weight_shapes.first() {
         if w.dimensions.len() == 4 {
             let _c_out = w.dimensions[0];
@@ -95,9 +135,18 @@ fn matmul_scratch_from_shapes(
     output_shapes: &[Shape],
     weight_shapes: &[Shape],
 ) -> usize {
-    let in_shape = input_shapes.first().map(|s| s.dimensions.as_slice()).unwrap_or(&[]);
-    let w_shape = weight_shapes.first().map(|s| s.dimensions.as_slice()).unwrap_or(&[]);
-    let out_shape = output_shapes.first().map(|s| s.dimensions.as_slice()).unwrap_or(&[]);
+    let in_shape = input_shapes
+        .first()
+        .map(|s| s.dimensions.as_slice())
+        .unwrap_or(&[]);
+    let w_shape = weight_shapes
+        .first()
+        .map(|s| s.dimensions.as_slice())
+        .unwrap_or(&[]);
+    let out_shape = output_shapes
+        .first()
+        .map(|s| s.dimensions.as_slice())
+        .unwrap_or(&[]);
     if in_shape.len() >= 2 && w_shape.len() >= 2 && out_shape.len() >= 2 {
         let (m, k_in) = (in_shape[0], in_shape[1]);
         let (k_w, n) = (w_shape[0], w_shape[1]);
@@ -133,8 +182,14 @@ fn layernorm_scratch_from_shapes(
 
 /// Reductions: accumulator over reduced dimensions.
 fn reduce_scratch_from_shapes(input_shapes: &[Shape], output_shapes: &[Shape]) -> usize {
-    let in_el = input_shapes.first().map(|s| s.total_elements()).unwrap_or(0);
-    let out_el = output_shapes.first().map(|s| s.total_elements()).unwrap_or(0);
+    let in_el = input_shapes
+        .first()
+        .map(|s| s.total_elements())
+        .unwrap_or(0);
+    let out_el = output_shapes
+        .first()
+        .map(|s| s.total_elements())
+        .unwrap_or(0);
     in_el.max(out_el)
 }
 
@@ -151,6 +206,9 @@ fn pool_scratch_from_shapes(
     let k_prod: usize = kernel
         .map(|a| a.iter().map(|&x| x as usize).product())
         .unwrap_or(1);
-    let out_el = output_shapes.first().map(|s| s.total_elements()).unwrap_or(0);
+    let out_el = output_shapes
+        .first()
+        .map(|s| s.total_elements())
+        .unwrap_or(0);
     out_el * k_prod
 }

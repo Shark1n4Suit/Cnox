@@ -138,7 +138,8 @@ Produces `secret.bin` (32 bytes, keep private) and `public.bin` (32 bytes, share
 | `--backend` | `-b` | `<BACKEND>` | `auto` | Backend: `auto`, `cpu`, `gpu`, `npu`, `tpu`. Use `auto` to match benchmark behaviour |
 | `--audit` | — | flag | false | Audit mode: after each op, log to stderr and optionally to file (structured batch; see below) |
 | `--audit-output` | — | `<AUDIT_OUTPUT>` | — | When using `--audit`, write audit batches to this file |
-| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | **`forget`** (default): clear RAM after each flush; **append** each batch to disk (paths ending in `.json` use **JSONL**: one **JSON object per line**, schema version **2** — `run`, optional `input`, and `ops[]`). **`last`**: overwrite file with the last batch only. **`long`**: session-cumulative in RAM; each flush rewrites the full snapshot (legacy; unbounded memory on long `serve`) |
+| `--audit-strategy` | — | `<forget\|last\|long>` | `forget` | **`forget`** (default): clear RAM after each flush; **append** each batch to disk (paths ending in `.json` use **JSONL**: one **JSON object per line** by default, schema version **2** — `run`, optional `input`, and `ops[]`). **`last`**: overwrite file with the last batch only (pretty-printed JSON for `.json`). **`long`**: session-cumulative in RAM; each flush rewrites the full snapshot (legacy; unbounded memory on long `serve`) |
+| `--audit-pretty` | — | flag | false | For **`forget`** + `.json` paths: write **indented** JSON per batch (multi-line). Default remains **compact** one-line JSONL for streaming tools. Non-`.json` paths use a structured **plain-text** layout (`--- coelanox_audit ---`, `[run]`, `[input]`, `[ops]`). |
 | `--audit-sample` | — | `<N>` | `4` | Number of **leading** floats to record per op output (combined with `--audit-tail`, capped internally) |
 | `--audit-tail` | — | `<M>` | `0` | Number of **trailing** floats per op output (non-overlapping with the head when the tensor is long enough) |
 | `--audit-stats` | — | flag | false | Include min / max / mean and NaN / Inf counts per tensor (full scan only up to an internal element cap per tensor) |
@@ -179,6 +180,7 @@ Loads **one** `.cnox` (with the same verify/signature behaviour as `run`), then 
 | `--audit-stats` | — | flag | false | Same as `run` |
 | `--audit-hash` | — | flag | false | Same as `run` |
 | `--audit-final-only` | — | flag | false | Same as `run` |
+| `--audit-pretty` | — | flag | false | Same as `run` |
 | `--max-workspace-mb` | — | `<N>` | — | Workspace cap (overrides `COELANOX_MAX_WORKSPACE_MB`; `0` = unlimited) |
 | `--no-verify` | — | flag | false | Skip hash verification on load (development only) |
 | `--trusted-key` | — | `<PATH>` | — | Ed25519 public key for signature verification |
@@ -313,8 +315,8 @@ coelanox
 ├── keygen      (-o output-dir)
 ├── verify      (-f required; -v, --trusted-key, --require-signature)
 ├── info        (-f required; --dump-plan, --list-ops)
-├── run         (-f, -o required; -i, -b, --audit, --audit-output, --audit-strategy, --audit-sample, --audit-tail, --audit-stats, --audit-hash, --audit-final-only, --max-workspace-mb)
-├── serve       (-f required; -b, --audit, --audit-output, --audit-strategy, --audit-sample, --audit-tail, --audit-stats, --audit-hash, --audit-final-only, --max-workspace-mb, --no-verify, --trusted-key, --require-signature)
+├── run         (-f, -o required; -i, -b, --audit, --audit-output, --audit-strategy, --audit-sample, --audit-tail, --audit-stats, --audit-hash, --audit-final-only, --audit-pretty, --max-workspace-mb)
+├── serve       (-f required; -b, --audit, --audit-output, --audit-strategy, --audit-sample, --audit-tail, --audit-stats, --audit-hash, --audit-final-only, --audit-pretty, --max-workspace-mb, --no-verify, --trusted-key, --require-signature)
 ├── benchmark   (-f required; -i, --loop-iterations, --backend, --output, --max-workspace-mb)
 ├── env         (no args)
 ├── uninstall   (--purge-audit)

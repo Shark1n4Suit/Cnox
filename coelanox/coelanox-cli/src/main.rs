@@ -1,21 +1,28 @@
 //! COELANOX CLI - Command line interface for COELANOX
-//! 
+//!
 //! This module provides the command line interface for the COELANOX toolchain.
 
+#![allow(clippy::too_many_arguments)]
+
 use clap::{Parser, Subcommand};
-use tracing::{info, warn, error};
-use coelanox_core::{CoelanoxError, CoelanoxResult, format::{HardwareTarget, header_audit_required, generate_signing_keypair, is_container_signed}};
-use coelanox_packager::CoelanoxPackager;
-use coelanox_orchestrator::{
-    AuditRunContext, AuditSessionConfig, AuditStrategy, CoelanoxRuntime, RuntimeConfig,
-    MAX_AUDIT_SAMPLE_TOTAL, output_node_indices_from_ir_data, record_input_snapshot, set_audit_mode,
-    set_audit_session,
+use coelanox_core::{
+    format::{
+        generate_signing_keypair, header_audit_required, is_container_signed, HardwareTarget,
+    },
+    CoelanoxError, CoelanoxResult,
 };
-use sha2::{Digest, Sha256};
 use coelanox_ipc::{run_serve_stdio, ServeOptions};
-use std::path::{Path, PathBuf};
+use coelanox_orchestrator::{
+    output_node_indices_from_ir_data, record_input_snapshot, set_audit_mode, set_audit_session,
+    AuditRunContext, AuditSessionConfig, AuditStrategy, CoelanoxRuntime, RuntimeConfig,
+    MAX_AUDIT_SAMPLE_TOTAL,
+};
+use coelanox_packager::CoelanoxPackager;
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use tracing::{error, info, warn};
 
 /// Load runtime config: from COELANOX_CONFIG_FILE if set, else from environment (COELANOX_* vars).
 fn load_runtime_config() -> RuntimeConfig {
@@ -27,7 +34,10 @@ fn load_runtime_config() -> RuntimeConfig {
                 return c;
             }
             Err(e) => {
-                warn!("Could not load config from {} ({}); using environment variables and defaults", path, e);
+                warn!(
+                    "Could not load config from {} ({}); using environment variables and defaults",
+                    path, e
+                );
             }
         }
     }
@@ -38,17 +48,17 @@ fn load_runtime_config() -> RuntimeConfig {
 fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<PathBuf> {
     let input_path = Path::new(input_path);
     let output_path = Path::new(output_path);
-    
+
     // Relative paths (unless already under models/output) go under models/output/
     let normalized_output = output_path
         .iter()
         .map(|s| s.to_string_lossy().to_lowercase())
         .collect::<Vec<_>>();
-    
+
     // Check if output already starts with "models/output" or "models\\output" (Windows)
-    let already_in_output_dir = normalized_output.len() >= 2 
+    let already_in_output_dir = normalized_output.len() >= 2
         && (normalized_output[0] == "models" && normalized_output[1] == "output");
-    
+
     // If output path is relative and doesn't already start with models/output, make it relative to models/output/
     let final_output_path = if output_path.is_relative() && !already_in_output_dir {
         let mut models_output = PathBuf::from("models/output");
@@ -57,23 +67,22 @@ fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<Pat
     } else {
         output_path.to_path_buf()
     };
-    
+
     // Ensure the output directory exists
     if let Some(parent) = final_output_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| CoelanoxError::FileSystem(e))?;
+        fs::create_dir_all(parent).map_err(CoelanoxError::FileSystem)?;
     }
-    
+
     // If no extension provided, add .cnox
     let final_path = if final_output_path.extension().is_none() {
         final_output_path.with_extension("cnox")
     } else {
         final_output_path
     };
-    
+
     println!("Input:  {}", input_path.display());
     println!("Output: {}", final_path.display());
-    
+
     Ok(final_path)
 }
 
@@ -93,59 +102,59 @@ enum Commands {
         /// Source model path (ONNX, bundle, or other supported input)
         #[arg(short, long)]
         input: String,
-        
+
         /// Destination path for the .cnox file
         #[arg(short, long)]
         output: String,
-        
+
         /// Domain hint: cv, nlp, audio, tabular, or custom (requires --input-shapes / --output-shapes)
         #[arg(short, long, default_value = "cv")]
         model_type: String,
-        
+
         /// Custom models: comma-separated shapes, e.g. "[1,3,224,224],[1,1,28,28]"
         #[arg(long)]
         input_shapes: Option<String>,
-        
+
         /// Custom models: comma-separated shapes, e.g. "[1,1000],[1,10]"
         #[arg(long)]
         output_shapes: Option<String>,
-        
+
         /// Hardware target: cpu, gpu, edge, auto, or a backend-specific name (e.g. h100, intel-npu)
         #[arg(short, long, default_value = "auto")]
         target: String,
-        
+
         /// Optimization preset: none, basic, advanced, maximum
         #[arg(long, default_value = "advanced")]
         optimization: String,
-        
+
         /// Prefer demo or specialized translators (e.g. BERT) where applicable
         #[arg(long)]
         use_demo_translator: bool,
-        
+
         /// Embed all backends (cannot be combined with --target or --auto)
         #[arg(long)]
         fat: bool,
-        
+
         /// Auto-select backends from the host (cannot be combined with --target or --fat)
         #[arg(long)]
         auto: bool,
-        
+
         /// Extra backends to include, comma-separated (e.g. amd,intel,qualcomm)
         #[arg(long)]
         backend_add: Option<String>,
-        
+
         /// Omit native backend code; runtime uses scalar IR only (portable, slower)
         #[arg(long)]
         fallback_only: bool,
-        
+
         /// Mark the container so inference always runs with audit logging enabled
         #[arg(long)]
         audit_required: bool,
-        
+
         /// Cap workspace + scratch in MB; packaging fails if the graph needs more
         #[arg(long)]
         max_workspace: Option<u64>,
-        
+
         /// External weights file (e.g. separate FP16 weights for ONNX)
         #[arg(long)]
         weights: Option<String>,
@@ -154,14 +163,14 @@ enum Commands {
         #[arg(long)]
         signing_key: Option<String>,
     },
-    
+
     /// Check that a .cnox file parses and is internally consistent
     Validate {
         /// Path to the .cnox file
         #[arg(short, long)]
         file: String,
     },
-    
+
     /// Generate an Ed25519 keypair for signing containers (secret.bin, public.bin)
     Keygen {
         /// Directory for secret.bin and public.bin (default: current directory)
@@ -187,7 +196,7 @@ enum Commands {
         #[arg(long)]
         require_signature: bool,
     },
-    
+
     /// Inspect manifest, sizes, and shapes for a .cnox file
     Info {
         /// Path to the .cnox file
@@ -200,29 +209,29 @@ enum Commands {
         #[arg(long)]
         list_ops: bool,
     },
-    
+
     /// Run inference for a packaged model
     Run {
         /// Path to the .cnox file
         #[arg(short, long)]
         file: String,
-        
+
         /// Input tensor as JSON (f32 array); omit to use a synthetic all-ones tensor
         #[arg(short, long)]
         input: Option<String>,
-        
+
         /// Path for JSON inference output
         #[arg(short, long)]
         output: String,
-        
+
         /// Execution backend: auto, cpu, gpu, scalar, etc. (auto aligns with benchmark defaults)
         #[arg(short, long, default_value = "auto")]
         backend: String,
-        
+
         /// Per-operation audit log to stderr and optional file
         #[arg(long)]
         audit: bool,
-        
+
         /// Audit log file path when audit is active (`--audit` or container `audit-required` header)
         #[arg(long)]
         audit_output: Option<String>,
@@ -246,11 +255,15 @@ enum Commands {
         /// Audit: only log ops that produce graph sink outputs (IR-derived).
         #[arg(long)]
         audit_final_only: bool,
-        
+
+        /// Audit: for `.json` output with strategy `forget`, write **pretty-printed** JSON per batch (multi-line). Default is compact JSONL (one line per batch).
+        #[arg(long)]
+        audit_pretty: bool,
+
         /// Workspace limit in MB (overrides COELANOX_MAX_WORKSPACE_MB; 0 = unlimited)
         #[arg(long)]
         max_workspace_mb: Option<u64>,
-        
+
         /// Skip hash verification on load (development only)
         #[arg(long)]
         no_verify: bool,
@@ -297,6 +310,11 @@ enum Commands {
         /// Audit: only log ops that produce graph sink outputs (IR-derived).
         #[arg(long)]
         audit_final_only: bool,
+
+        /// Audit: for `.json` output with strategy `forget`, write **pretty-printed** JSON per batch (multi-line). Default is compact JSONL (one line per batch).
+        #[arg(long)]
+        audit_pretty: bool,
+
         /// Workspace limit in MB (overrides COELANOX_MAX_WORKSPACE_MB; 0 = unlimited)
         #[arg(long)]
         max_workspace_mb: Option<u64>,
@@ -310,7 +328,7 @@ enum Commands {
         #[arg(long)]
         require_signature: bool,
     },
-    
+
     /// Measure latency and throughput for a container
     Benchmark {
         /// Path to the .cnox file
@@ -353,34 +371,34 @@ enum Commands {
         #[arg(long)]
         purge_audit: bool,
     },
-    
+
     /// Run inference with extra diagnostics (optional GDB)
     Debug {
         /// Path to the .cnox file
         #[arg(short, long)]
         file: String,
-        
+
         /// Input tensor as JSON (f32 array); omit for synthetic input
         #[arg(short, long)]
         input: Option<String>,
-        
+
         /// JSON path for structured debug output
         #[arg(short, long, default_value = "debug_output.json")]
         output: String,
-        
+
         /// Run under GDB with a generated script (requires GDB on PATH)
         #[arg(long)]
         gdb: bool,
-        
+
         /// On Unix, install a minimal SIGSEGV handler when not using GDB
         #[arg(long, default_value = "true")]
         dump_registers: bool,
-        
+
         /// Reserved for future trace depth limits
         #[arg(short, long, default_value = "10")]
         trace_limit: usize,
     },
-    
+
     /// Copy a deployable runtime binary (same architecture as this CLI)
     Extract {
         /// Output path for the copied binary (default: `coelanox` for full CLI, or use with `--minimal` → e.g. `coelanox-run`)
@@ -390,11 +408,11 @@ enum Commands {
         /// Copy minimal `coelanox-run` from the same directory as this executable (requires `cargo build --release -p coelanox-standalone` so both binaries exist in `target/release/`)
         #[arg(long)]
         minimal: bool,
-        
+
         /// Request ARM64 output (not implemented; same-arch only for now)
         #[arg(long)]
         arm: bool,
-        
+
         /// Rust target triple for cross-build (not implemented; use CI artifacts)
         #[arg(long)]
         target: Option<String>,
@@ -406,124 +424,278 @@ fn main() -> CoelanoxResult<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
-    
+
     let cli = Cli::parse();
-    
+
     match cli.command {
-        Commands::Package { input, output, model_type, input_shapes, output_shapes, target, optimization, use_demo_translator, fat, auto, backend_add, fallback_only, audit_required, max_workspace, weights, signing_key } => {
-            package_command(&input, &output, &model_type, input_shapes.as_deref(), output_shapes.as_deref(), &target, &optimization, use_demo_translator, fat, auto, backend_add.as_deref(), fallback_only, audit_required, max_workspace, weights.as_deref(), signing_key.as_deref())
-        }
-        Commands::Validate { file } => {
-            validate_command(&file)
-        }
-        Commands::Keygen { output_dir } => {
-            keygen_command(output_dir.as_deref())
-        }
-        Commands::Verify { file, verbose, trusted_key, require_signature } => {
-            verify_command(&file, verbose, trusted_key.as_deref(), require_signature)
-        }
-        Commands::Info { file, dump_plan, list_ops } => {
-            info_command(&file, dump_plan, list_ops)
-        }
-        Commands::Run { file, input, output, backend, audit, audit_output, audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+        Commands::Package {
+            input,
+            output,
+            model_type,
+            input_shapes,
+            output_shapes,
+            target,
+            optimization,
+            use_demo_translator,
+            fat,
+            auto,
+            backend_add,
+            fallback_only,
+            audit_required,
+            max_workspace,
+            weights,
+            signing_key,
+        } => package_command(
+            &input,
+            &output,
+            &model_type,
+            input_shapes.as_deref(),
+            output_shapes.as_deref(),
+            &target,
+            &optimization,
+            use_demo_translator,
+            fat,
+            auto,
+            backend_add.as_deref(),
+            fallback_only,
+            audit_required,
+            max_workspace,
+            weights.as_deref(),
+            signing_key.as_deref(),
+        ),
+        Commands::Validate { file } => validate_command(&file),
+        Commands::Keygen { output_dir } => keygen_command(output_dir.as_deref()),
+        Commands::Verify {
+            file,
+            verbose,
+            trusted_key,
+            require_signature,
+        } => verify_command(&file, verbose, trusted_key.as_deref(), require_signature),
+        Commands::Info {
+            file,
+            dump_plan,
+            list_ops,
+        } => info_command(&file, dump_plan, list_ops),
+        Commands::Run {
+            file,
+            input,
+            output,
+            backend,
+            audit,
+            audit_output,
+            audit_strategy,
+            audit_sample,
+            audit_tail,
+            audit_stats,
+            audit_hash,
+            audit_final_only,
+            audit_pretty,
+            max_workspace_mb,
+            no_verify,
+            trusted_key,
+            require_signature,
+        } => {
             let audit_strategy = parse_audit_strategy(&audit_strategy)?;
-            run_command(&file, input.as_deref(), &output, &backend, audit, audit_output.as_deref(), audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
+            run_command(
+                &file,
+                input.as_deref(),
+                &output,
+                &backend,
+                audit,
+                audit_output.as_deref(),
+                audit_strategy,
+                audit_sample,
+                audit_tail,
+                audit_stats,
+                audit_hash,
+                audit_final_only,
+                audit_pretty,
+                max_workspace_mb,
+                no_verify,
+                trusted_key.as_deref(),
+                require_signature,
+            )
         }
-        Commands::Serve { file, backend, audit, audit_output, audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key, require_signature } => {
+        Commands::Serve {
+            file,
+            backend,
+            audit,
+            audit_output,
+            audit_strategy,
+            audit_sample,
+            audit_tail,
+            audit_stats,
+            audit_hash,
+            audit_final_only,
+            audit_pretty,
+            max_workspace_mb,
+            no_verify,
+            trusted_key,
+            require_signature,
+        } => {
             let audit_strategy = parse_audit_strategy(&audit_strategy)?;
-            serve_command(&file, &backend, audit, audit_output.as_deref(), audit_strategy, audit_sample, audit_tail, audit_stats, audit_hash, audit_final_only, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
+            serve_command(
+                &file,
+                &backend,
+                audit,
+                audit_output.as_deref(),
+                audit_strategy,
+                audit_sample,
+                audit_tail,
+                audit_stats,
+                audit_hash,
+                audit_final_only,
+                audit_pretty,
+                max_workspace_mb,
+                no_verify,
+                trusted_key.as_deref(),
+                require_signature,
+            )
         }
-        Commands::Benchmark { file, iterations, loop_iterations, backend, output, max_workspace_mb, no_verify, trusted_key, require_signature } => {
-            benchmark_command(&file, iterations, loop_iterations, &backend, &output, max_workspace_mb, no_verify, trusted_key.as_deref(), require_signature)
-        }
-        Commands::Env => {
-            env_command()
-        }
-        Commands::Uninstall { purge_audit } => {
-            uninstall_command(purge_audit)
-        }
-        Commands::Debug { file, input, output, gdb, dump_registers, trace_limit } => {
-            debug_command(&file, input.as_deref(), &output, gdb, dump_registers, trace_limit)
-        }
-        Commands::Extract { output, minimal, arm, target } => {
-            extract_command(&output, minimal, arm, target.as_deref())
-        }
+        Commands::Benchmark {
+            file,
+            iterations,
+            loop_iterations,
+            backend,
+            output,
+            max_workspace_mb,
+            no_verify,
+            trusted_key,
+            require_signature,
+        } => benchmark_command(
+            &file,
+            iterations,
+            loop_iterations,
+            &backend,
+            &output,
+            max_workspace_mb,
+            no_verify,
+            trusted_key.as_deref(),
+            require_signature,
+        ),
+        Commands::Env => env_command(),
+        Commands::Uninstall { purge_audit } => uninstall_command(purge_audit),
+        Commands::Debug {
+            file,
+            input,
+            output,
+            gdb,
+            dump_registers,
+            trace_limit,
+        } => debug_command(
+            &file,
+            input.as_deref(),
+            &output,
+            gdb,
+            dump_registers,
+            trace_limit,
+        ),
+        Commands::Extract {
+            output,
+            minimal,
+            arm,
+            target,
+        } => extract_command(&output, minimal, arm, target.as_deref()),
     }
 }
 
-fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Option<&str>, output_shapes: Option<&str>, target: &str, _optimization: &str, use_demo_translator: bool, fat: bool, auto: bool, backend_add: Option<&str>, fallback_only: bool, audit_required: bool, max_workspace: Option<u64>, weights: Option<&str>, signing_key: Option<&str>) -> CoelanoxResult<()> {
-    info!("Packaging {} into COELANOX container: {}", model_type, output);
-    
+fn package_command(
+    input: &str,
+    output: &str,
+    model_type: &str,
+    input_shapes: Option<&str>,
+    output_shapes: Option<&str>,
+    target: &str,
+    _optimization: &str,
+    use_demo_translator: bool,
+    fat: bool,
+    auto: bool,
+    backend_add: Option<&str>,
+    fallback_only: bool,
+    audit_required: bool,
+    max_workspace: Option<u64>,
+    weights: Option<&str>,
+    signing_key: Option<&str>,
+) -> CoelanoxResult<()> {
+    info!(
+        "Packaging {} into COELANOX container: {}",
+        model_type, output
+    );
+
     // Ensure proper output path and directory structure
     let final_output_path = ensure_output_path(input, output)?;
-    
+
     // Validate model type
     let valid_types = ["cv", "nlp", "audio", "tabular", "custom"];
     if !valid_types.contains(&model_type.to_lowercase().as_str()) {
-        return Err(CoelanoxError::format(&format!(
+        return Err(CoelanoxError::format(format!(
             "Unknown model type '{}'. Expected one of: {}.",
             model_type,
             valid_types.join(", ")
         )));
     }
-    
+
     // Validate custom shapes if provided
     if model_type.to_lowercase() == "custom" {
         if input_shapes.is_none() || output_shapes.is_none() {
             return Err(CoelanoxError::format(
-                "Custom model type requires --input-shapes and --output-shapes"
+                "Custom model type requires --input-shapes and --output-shapes",
             ));
         }
-        
+
         // Validate shape format
         if let Some(input_shapes_str) = input_shapes {
             if !is_valid_shape_format(input_shapes_str) {
-                return Err(CoelanoxError::format(&format!(
+                return Err(CoelanoxError::format(format!(
                     "Invalid --input-shapes '{}'. Example: '[1,3,224,224],[1,1,28,28]'",
                     input_shapes_str
                 )));
             }
         }
-        
+
         if let Some(output_shapes_str) = output_shapes {
             if !is_valid_shape_format(output_shapes_str) {
-                return Err(CoelanoxError::format(&format!(
+                return Err(CoelanoxError::format(format!(
                     "Invalid --output-shapes '{}'. Example: '[1,1000],[1,10]'",
                     output_shapes_str
                 )));
             }
         }
-        
-        info!("Custom shapes: input={:?}, output={:?}", input_shapes, output_shapes);
+
+        info!(
+            "Custom shapes: input={:?}, output={:?}",
+            input_shapes, output_shapes
+        );
     }
-    
+
     let packager = CoelanoxPackager::new()?;
     let env = packager.get_environment();
     info!(
         "Host: {} {} | {} {} | {} logical CPUs | {} GB RAM",
-        env.os,
-        env.architecture,
-        env.cpu_vendor,
-        env.cpu_model,
-        env.cpu_cores,
-        env.memory_gb
+        env.os, env.architecture, env.cpu_vendor, env.cpu_model, env.cpu_cores, env.memory_gb
     );
     if let Some(gpu) = &env.gpu_info {
         info!("GPU: {} {} ({} GB)", gpu.vendor, gpu.model, gpu.memory_gb);
     }
     info!("SIMD: {:?}", env.simd_capabilities);
-    
+
     // Validate flag combinations
     if fat && auto {
-        return Err(CoelanoxError::format("--fat and --auto cannot be used together"));
+        return Err(CoelanoxError::format(
+            "--fat and --auto cannot be used together",
+        ));
     }
     if fat && target != "auto" {
-        return Err(CoelanoxError::format("--fat cannot be combined with --target; use one or the other"));
+        return Err(CoelanoxError::format(
+            "--fat cannot be combined with --target; use one or the other",
+        ));
     }
     if auto && target != "auto" {
-        return Err(CoelanoxError::format("--auto cannot be combined with --target; use one or the other"));
+        return Err(CoelanoxError::format(
+            "--auto cannot be combined with --target; use one or the other",
+        ));
     }
-    
+
     // Determine target hardware
     // If --fat or --auto, we'll handle selection in packager
     // Otherwise, parse --target (supports both old values and new hardware-specific values)
@@ -542,9 +714,9 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
             }
             // Hardware-specific targets
             "h100" | "a100" | "v100" => HardwareTarget::Gpu, // NVIDIA GPUs
-            "amd-gpu" | "amd" => HardwareTarget::Gpu, // AMD GPU
-            "intel-npu" | "intel" => HardwareTarget::NPU, // Intel NPU
-            "qualcomm" => HardwareTarget::NPU, // Qualcomm NPU
+            "amd-gpu" | "amd" => HardwareTarget::Gpu,        // AMD GPU
+            "intel-npu" | "intel" => HardwareTarget::NPU,    // Intel NPU
+            "qualcomm" => HardwareTarget::NPU,               // Qualcomm NPU
             _ => {
                 // Try as custom target
                 if target.contains('-') || target.chars().all(|c| c.is_alphanumeric()) {
@@ -556,9 +728,9 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
             }
         }
     };
-    
+
     info!("Hardware target: {:?}", hardware_target);
-    
+
     let weights_path = weights.map(std::path::Path::new);
     let container = packager.package(
         std::path::Path::new(input),
@@ -574,7 +746,7 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
         fallback_only,
         audit_required,
         max_workspace,
-        weights_path.as_deref(),
+        weights_path,
     )?;
 
     // Resolve signing key: --signing-key or COELANOX_SIGNING_KEY (path to 32-byte file)
@@ -582,10 +754,11 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
         .map(String::from)
         .or_else(|| std::env::var("COELANOX_SIGNING_KEY").ok());
     let signing_key_bytes = if let Some(ref path) = signing_key_path {
-        let key = std::fs::read(path)
-            .map_err(|e| CoelanoxError::format(&format!("Could not read signing key {}: {}", path, e)))?;
+        let key = std::fs::read(path).map_err(|e| {
+            CoelanoxError::format(format!("Could not read signing key {}: {}", path, e))
+        })?;
         if key.len() != 32 {
-            return Err(CoelanoxError::format(&format!(
+            return Err(CoelanoxError::format(format!(
                 "Signing key must be 32 bytes (Ed25519 seed); got {} bytes",
                 key.len()
             )));
@@ -599,26 +772,34 @@ fn package_command(input: &str, output: &str, model_type: &str, input_shapes: Op
 
     // Save container to binary file (with optional signing)
     container.write_binary_file_with_signing(&final_output_path, signing_key_bytes.as_ref())?;
-    
-    info!("Wrote {} ({} bytes)", final_output_path.display(), container.total_size());
+
+    info!(
+        "Wrote {} ({} bytes)",
+        final_output_path.display(),
+        container.total_size()
+    );
     let input_size = std::fs::metadata(input)?.len();
     let compression_ratio = input_size as f64 / container.total_size() as f64;
-    info!("Source file size vs container: {:.1}x (reference only)", compression_ratio);
-    
+    info!(
+        "Source file size vs container: {:.1}x (reference only)",
+        compression_ratio
+    );
+
     Ok(())
 }
 
 fn validate_command(file: &str) -> CoelanoxResult<()> {
     info!("Validating {}", file);
-    
-    let container = coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
-    
+
+    let container =
+        coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
+
     println!("Validation succeeded.");
     println!("CLI version: 0.7.0");
     println!("Model name: {}", container.manifest.name);
     println!("Format: {:?}", container.manifest.format);
     println!("Size: {} bytes", container.total_size());
-    
+
     Ok(())
 }
 
@@ -630,15 +811,23 @@ fn keygen_command(output_dir: Option<&str>) -> CoelanoxResult<()> {
     if let Some(dir) = output_dir {
         std::fs::create_dir_all(dir).map_err(CoelanoxError::FileSystem)?;
     }
-    std::fs::write(&secret_path, &secret).map_err(CoelanoxError::FileSystem)?;
-    std::fs::write(&public_path, &public).map_err(CoelanoxError::FileSystem)?;
+    std::fs::write(&secret_path, secret).map_err(CoelanoxError::FileSystem)?;
+    std::fs::write(&public_path, public).map_err(CoelanoxError::FileSystem)?;
     println!("Ed25519 signing keypair written.");
     println!("  Private key (confidential): {}", secret_path.display());
-    println!("  Public key (for --trusted-key): {}", public_path.display());
+    println!(
+        "  Public key (for --trusted-key): {}",
+        public_path.display()
+    );
     Ok(())
 }
 
-fn verify_command(file: &str, verbose: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
+fn verify_command(
+    file: &str,
+    verbose: bool,
+    trusted_key: Option<&str>,
+    require_signature: bool,
+) -> CoelanoxResult<()> {
     if verbose {
         info!("Verifying {}", file);
     }
@@ -682,10 +871,11 @@ fn resolve_trusted_key(path: Option<&str>) -> CoelanoxResult<Option<[u8; 32]>> {
         .or_else(|| std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").ok());
     match p.as_deref() {
         Some(path) => {
-            let key = std::fs::read(path)
-                .map_err(|e| CoelanoxError::format(&format!("Could not read trusted public key {}: {}", path, e)))?;
+            let key = std::fs::read(path).map_err(|e| {
+                CoelanoxError::format(format!("Could not read trusted public key {}: {}", path, e))
+            })?;
             if key.len() != 32 {
-                return Err(CoelanoxError::format(&format!(
+                return Err(CoelanoxError::format(format!(
                     "Trusted public key must be 32 bytes; got {} bytes",
                     key.len()
                 )));
@@ -700,14 +890,17 @@ fn resolve_trusted_key(path: Option<&str>) -> CoelanoxResult<Option<[u8; 32]>> {
 
 fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<()> {
     info!("Inspecting {}", file);
-    
-    let container = coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
-    
+
+    let container =
+        coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
+
     if list_ops {
         use coelanox_core::ir::{deserialize_optimized_ir, OpType};
         let ir = deserialize_optimized_ir(&container.ir_data)?;
-        let mut custom_ops: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut all_types: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut custom_ops: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut all_types: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for node in &ir.optimized_nodes {
             let key = format!("{:?}", node.op_type);
             *all_types.entry(key.clone()).or_insert(0) += 1;
@@ -715,7 +908,10 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
                 *custom_ops.entry(name.clone()).or_insert(0) += 1;
             }
         }
-        println!("--- IR operation types ({} nodes) ---", ir.optimized_nodes.len());
+        println!(
+            "--- IR operation types ({} nodes) ---",
+            ir.optimized_nodes.len()
+        );
         let mut types: Vec<_> = all_types.into_iter().collect();
         types.sort_by(|a, b| b.1.cmp(&a.1));
         for (op, count) in &types {
@@ -732,19 +928,35 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
         }
         return Ok(());
     }
-    
+
     if dump_plan {
         if let Some(ref plan) = container.execution_plan {
             let steps = coelanox_executor::dump_plan_conv_steps(plan)?;
             println!("--- Execution plan: convolution steps (op_id=30) ---");
-            println!("{:<8} {:>12} {:>12} {:>12} {:>14}  (scratch MB)", "step", "in_len", "out_len", "w_len", "scratch_el");
+            println!(
+                "{:<8} {:>12} {:>12} {:>12} {:>14}  (scratch MB)",
+                "step", "in_len", "out_len", "w_len", "scratch_el"
+            );
             for (step_ix, in_len, out_len, w_len, scratch) in &steps {
-                let mb = (*scratch as u64 * 4 + 1024 * 1024 - 1) / (1024 * 1024);
-                println!("{:<8} {:>12} {:>12} {:>12} {:>14}  ~{}", step_ix, in_len, out_len, w_len, scratch, mb);
+                let mb = (*scratch as u64 * 4).div_ceil(1024 * 1024);
+                println!(
+                    "{:<8} {:>12} {:>12} {:>12} {:>14}  ~{}",
+                    step_ix, in_len, out_len, w_len, scratch, mb
+                );
             }
-            let max_scratch = steps.iter().map(|(_, _, _, _, s)| s).max().copied().unwrap_or(0);
+            let max_scratch = steps
+                .iter()
+                .map(|(_, _, _, _, s)| s)
+                .max()
+                .copied()
+                .unwrap_or(0);
             println!();
-            println!("Conv steps: {}  max_scratch_elements: {}  (~{} MB)", steps.len(), max_scratch, (max_scratch as u64 * 4 + 1024 * 1024 - 1) / (1024 * 1024));
+            println!(
+                "Conv steps: {}  max_scratch_elements: {}  (~{} MB)",
+                steps.len(),
+                max_scratch,
+                (max_scratch as u64 * 4).div_ceil(1024 * 1024)
+            );
             return Ok(());
         } else {
             return Err(CoelanoxError::Runtime(
@@ -752,7 +964,7 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
             ));
         }
     }
-    
+
     println!("--- COELANOX container ---");
     println!("File: {}", file);
     println!("Format version: 0.7.0");
@@ -770,27 +982,40 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
     println!();
     println!("--- Layout ---");
     println!("Total size: {} bytes", container.total_size());
-    println!("Header size: {} bytes", coelanox_core::format::COELANOX_HEADER_SIZE);
-    println!("Manifest size: ~{} bytes", serde_json::to_string(&container.manifest).unwrap_or_default().len());
-    println!("Machine code size: {} bytes", container.optimized_code.len());
-    println!("Compressed weights size: {} bytes", container.compressed_weights_len());
+    println!(
+        "Header size: {} bytes",
+        coelanox_core::format::COELANOX_HEADER_SIZE
+    );
+    println!(
+        "Manifest size: ~{} bytes",
+        serde_json::to_string(&container.manifest)
+            .unwrap_or_default()
+            .len()
+    );
+    println!(
+        "Machine code size: {} bytes",
+        container.optimized_code.len()
+    );
+    println!(
+        "Compressed weights size: {} bytes",
+        container.compressed_weights_len()
+    );
     println!("IR data size: {} bytes", container.ir_data.len());
     if let Some(elements) = container.manifest.workspace_required_elements {
-        let mb = (elements * 4 + 1024 * 1024 - 1) / (1024 * 1024);
+        let mb = (elements * 4).div_ceil(1024 * 1024);
         println!("Workspace required: {} elements (~{} MB)", elements, mb);
     }
     println!();
     println!("--- Compression ---");
     println!("Ratio vs source model: not available (source size not recorded in manifest)");
-    
+
     Ok(())
 }
 
 /// Default audit output path when container has audit-required flag and user did not set --audit-output:
 /// coelanox_audit/<container_stem>_<unix_secs>.json in current directory.
 fn parse_audit_strategy(s: &str) -> CoelanoxResult<AuditStrategy> {
-    s.parse()
-        .map_err(|e: String| CoelanoxError::format(&e))
+    s.parse().map_err(|e: String| CoelanoxError::format(&e))
 }
 
 fn default_audit_path(container_file: &str) -> PathBuf {
@@ -834,6 +1059,7 @@ fn make_audit_session(
     stats: bool,
     hash: bool,
     final_only: bool,
+    pretty: bool,
     container_path: &str,
     container_sha256: Option<String>,
     backend: &str,
@@ -867,15 +1093,41 @@ fn make_audit_session(
             container_sha256_hex: container_sha256,
             backend: backend.to_string(),
         }),
+        pretty_json: pretty,
     })
 }
 
-fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, audit: bool, audit_output: Option<&str>, audit_strategy: AuditStrategy, audit_sample: usize, audit_tail: usize, audit_stats: bool, audit_hash: bool, audit_final_only: bool, max_workspace_mb: Option<u64>, no_verify: bool, trusted_key: Option<&str>, require_signature: bool) -> CoelanoxResult<()> {
+fn run_command(
+    file: &str,
+    input: Option<&str>,
+    output: &str,
+    backend: &str,
+    audit: bool,
+    audit_output: Option<&str>,
+    audit_strategy: AuditStrategy,
+    audit_sample: usize,
+    audit_tail: usize,
+    audit_stats: bool,
+    audit_hash: bool,
+    audit_final_only: bool,
+    audit_pretty: bool,
+    max_workspace_mb: Option<u64>,
+    no_verify: bool,
+    trusted_key: Option<&str>,
+    require_signature: bool,
+) -> CoelanoxResult<()> {
     let input_desc = input
         .map(|p| format!("input file {}", p))
         .unwrap_or_else(|| "synthetic input (all ones, manifest-shaped)".to_string());
-    info!("Inference: {} -> {} (backend: {})", input_desc, output, backend);
-    let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
+    info!(
+        "Inference: {} -> {} (backend: {})",
+        input_desc, output, backend
+    );
+    let resolved_workspace_mb = max_workspace_mb.or_else(|| {
+        std::env::var("COELANOX_MAX_WORKSPACE_MB")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
 
     if require_signature {
         let signed = is_container_signed(std::path::Path::new(file))?;
@@ -902,31 +1154,41 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
         info!("Container loaded.");
     } else {
         info!("Loading container with integrity verification");
-        runtime.load_container(file).map_err(|e| {
+        runtime.load_container(file).inspect_err(|e| {
             if e.to_string().contains("verification") || e.to_string().contains("hash") {
                 eprintln!("Load aborted: integrity verification failed.");
                 eprintln!("The file may be corrupted, truncated, or modified.");
             }
-            e
         })?;
         info!("Container loaded and verified.");
     }
-    
+
     // If container has audit-required flag, always run with audit (compliance). Use --audit-output if set, else default folder.
     let container = runtime.get_container_info(file)?;
     let audit_required_by_container = header_audit_required(container.header.flags);
     let audit_path: Option<PathBuf> = if audit_required_by_container {
-        Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
+        Some(
+            audit_output
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_audit_path(file)),
+        )
     } else if audit {
         // Match audit-required behavior: --audit without --audit-output still writes under coelanox_audit/.
-        Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
+        Some(
+            audit_output
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_audit_path(file)),
+        )
     } else {
         None
     };
     if audit || audit_required_by_container {
         if audit_required_by_container && audit_output.is_none() {
             if let Some(ref p) = audit_path {
-                info!("Audit logging required by container; writing to {}", p.display());
+                info!(
+                    "Audit logging required by container; writing to {}",
+                    p.display()
+                );
             }
         }
         if audit && !audit_required_by_container && audit_output.is_none() {
@@ -942,6 +1204,7 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
             audit_stats,
             audit_hash,
             audit_final_only,
+            audit_pretty,
             file,
             container_sha,
             backend,
@@ -949,19 +1212,22 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
         )?;
         set_audit_session(true, audit_path.as_deref().map(Path::new), session);
     }
-    
+
     // Load input data
     let input_data = if let Some(input_file) = input {
         if input_file.ends_with(".json") {
             // Load from JSON file
-            let json_str = std::fs::read_to_string(input_file)
-                .map_err(|e| CoelanoxError::FileSystem(e))?;
+            let json_str =
+                std::fs::read_to_string(input_file).map_err(CoelanoxError::FileSystem)?;
             serde_json::from_str::<Vec<f32>>(&json_str)
-                .map_err(|e| CoelanoxError::format(&format!("Invalid input JSON: {}", e)))?
+                .map_err(|e| CoelanoxError::format(format!("Invalid input JSON: {}", e)))?
         } else {
             // Generate dummy input data
             let container = runtime.get_container_info(file)?;
-            let input_size: usize = container.manifest.input_shapes.iter()
+            let input_size: usize = container
+                .manifest
+                .input_shapes
+                .iter()
                 .map(|shape| shape.iter().product::<usize>())
                 .sum();
             vec![1.0f32; input_size]
@@ -969,7 +1235,10 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
     } else {
         // Generate dummy input data
         let container = runtime.get_container_info(file)?;
-        let input_size: usize = container.manifest.input_shapes.iter()
+        let input_size: usize = container
+            .manifest
+            .input_shapes
+            .iter()
             .map(|shape| shape.iter().product::<usize>())
             .sum();
         vec![1.0f32; input_size]
@@ -982,20 +1251,22 @@ fn run_command(file: &str, input: Option<&str>, output: &str, backend: &str, aud
         set_audit_mode(false, None, AuditStrategy::Forget);
     }
     let result = result?;
-    
+
     // Save output
     let output_json = serde_json::to_string_pretty(&result)
-        .map_err(|e| CoelanoxError::format(&format!("Could not write result JSON: {}", e)))?;
-    
-    std::fs::write(output, output_json)
-        .map_err(|e| CoelanoxError::FileSystem(e))?;
-    
+        .map_err(|e| CoelanoxError::format(format!("Could not write result JSON: {}", e)))?;
+
+    std::fs::write(output, output_json).map_err(CoelanoxError::FileSystem)?;
+
     info!("Inference finished.");
     println!("Input elements:   {}", input_data.len());
     println!("Output elements:  {}", result.len());
-    println!("Mean execution:   {} μs", runtime.get_stats().avg_execution_time);
+    println!(
+        "Mean execution:   {} μs",
+        runtime.get_stats().avg_execution_time
+    );
     println!("Result written to: {}", output);
-    
+
     Ok(())
 }
 
@@ -1011,14 +1282,18 @@ fn serve_command(
     audit_stats: bool,
     audit_hash: bool,
     audit_final_only: bool,
+    audit_pretty: bool,
     max_workspace_mb: Option<u64>,
     no_verify: bool,
     trusted_key: Option<&str>,
     require_signature: bool,
 ) -> CoelanoxResult<()> {
     info!("Serve mode: {} (backend: {})", file, backend);
-    let resolved_workspace_mb =
-        max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
+    let resolved_workspace_mb = max_workspace_mb.or_else(|| {
+        std::env::var("COELANOX_MAX_WORKSPACE_MB")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
 
     if require_signature {
         let signed = is_container_signed(std::path::Path::new(file))?;
@@ -1044,12 +1319,11 @@ fn serve_command(
         info!("Container loaded.");
     } else {
         info!("Loading container with integrity verification");
-        runtime.load_container(file).map_err(|e| {
+        runtime.load_container(file).inspect_err(|e| {
             if e.to_string().contains("verification") || e.to_string().contains("hash") {
                 eprintln!("Load aborted: integrity verification failed.");
                 eprintln!("The file may be corrupted, truncated, or modified.");
             }
-            e
         })?;
         info!("Container loaded and verified.");
     }
@@ -1057,16 +1331,27 @@ fn serve_command(
     let container = runtime.get_container_info(file)?;
     let audit_required_by_container = header_audit_required(container.header.flags);
     let audit_path: Option<PathBuf> = if audit_required_by_container {
-        Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
+        Some(
+            audit_output
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_audit_path(file)),
+        )
     } else if audit {
-        Some(audit_output.map(PathBuf::from).unwrap_or_else(|| default_audit_path(file)))
+        Some(
+            audit_output
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_audit_path(file)),
+        )
     } else {
         None
     };
     if audit || audit_required_by_container {
         if audit_required_by_container && audit_output.is_none() {
             if let Some(ref p) = audit_path {
-                info!("Audit logging required by container; writing to {}", p.display());
+                info!(
+                    "Audit logging required by container; writing to {}",
+                    p.display()
+                );
             }
         }
         if audit && !audit_required_by_container && audit_output.is_none() {
@@ -1082,6 +1367,7 @@ fn serve_command(
             audit_stats,
             audit_hash,
             audit_final_only,
+            audit_pretty,
             file,
             container_sha,
             backend,
@@ -1115,14 +1401,22 @@ fn benchmark_command(
     require_signature: bool,
 ) -> CoelanoxResult<()> {
     let effective_iterations = loop_iterations.unwrap_or(iterations);
-    let resolved_workspace_mb = max_workspace_mb.or_else(|| std::env::var("COELANOX_MAX_WORKSPACE_MB").ok().and_then(|s| s.parse().ok()));
+    let resolved_workspace_mb = max_workspace_mb.or_else(|| {
+        std::env::var("COELANOX_MAX_WORKSPACE_MB")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
     let is_long_run = effective_iterations >= 1000;
     info!(
         "Benchmark {} — {} iterations, backend {}{}",
         file,
         effective_iterations,
         backend,
-        if is_long_run { ", long-run stability sample" } else { "" }
+        if is_long_run {
+            ", long-run stability sample"
+        } else {
+            ""
+        }
     );
 
     let config = load_runtime_config();
@@ -1153,14 +1447,20 @@ fn benchmark_command(
     let result = runtime.benchmark(file, effective_iterations, Some(load_time_ms), backend)?;
 
     if output_format.eq_ignore_ascii_case("json") {
-        println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).unwrap_or_default()
+        );
         return Ok(());
     }
 
     // Human-readable text output
     println!("--- Benchmark ---");
     println!("Container: {}", result.container_name);
-    println!("Iterations: {} (warm-up runs: {})", result.iterations, result.warm_up_runs);
+    println!(
+        "Iterations: {} (warm-up runs: {})",
+        result.iterations, result.warm_up_runs
+    );
     if let Some(load_ms) = result.load_time_ms {
         println!("Load to ready: {} ms", load_ms);
     }
@@ -1173,7 +1473,10 @@ fn benchmark_command(
     println!("  p95:      {}", result.p95_us);
     println!("  p99:      {}", result.p99_us);
     println!("  Std dev:  {:.2}", result.std_dev_us);
-    println!("  True cold (first run, no warm-up): {} μs  (comparable to `run` execution time)", result.true_cold_time_us);
+    println!(
+        "  True cold (first run, no warm-up): {} μs  (comparable to `run` execution time)",
+        result.true_cold_time_us
+    );
     if let Some(cold) = result.cold_time_us {
         println!("  First measured (after warm-up): {} μs", cold);
     }
@@ -1185,15 +1488,25 @@ fn benchmark_command(
     let throughput = 1_000_000.0 / result.avg_time as f64;
     println!("  Sustained: {:.0} inferences/s", throughput);
     if result.min_time > 0 {
-        println!("  Peak (limited by min latency): {:.0} inferences/s", 1_000_000.0 / result.min_time as f64);
+        println!(
+            "  Peak (limited by min latency): {:.0} inferences/s",
+            1_000_000.0 / result.min_time as f64
+        );
     }
     println!();
     println!("--- Memory ---");
     println!("  Workspace (elements): {}", result.workspace_elements);
     println!("  Weights (decompressed): {} bytes", result.weights_bytes);
-    println!("  Executable memory: {} bytes", result.executable_memory_bytes);
+    println!(
+        "  Executable memory: {} bytes",
+        result.executable_memory_bytes
+    );
     if let Some(rss) = result.rss_after_bytes {
-        println!("  RSS after benchmark: {} bytes ({:.2} MiB)", rss, rss as f64 / (1024.0 * 1024.0));
+        println!(
+            "  RSS after benchmark: {} bytes ({:.2} MiB)",
+            rss,
+            rss as f64 / (1024.0 * 1024.0)
+        );
     }
     println!();
     println!("--- Timing breakdown ---");
@@ -1210,7 +1523,11 @@ fn benchmark_command(
             println!("--- Long-run stability ---");
             println!("  First 10% mean: {} μs", first);
             println!("  Last 10% mean:  {} μs", last);
-            println!("  Drift (last − first): {} μs ({})", drift, if drift > 0 { "slowdown" } else { "improvement" });
+            println!(
+                "  Drift (last − first): {} μs ({})",
+                drift,
+                if drift > 0 { "slowdown" } else { "improvement" }
+            );
         }
     }
     Ok(())
@@ -1218,9 +1535,9 @@ fn benchmark_command(
 
 fn env_command() -> CoelanoxResult<()> {
     info!("Collecting host environment");
-    
+
     let env = coelanox_core::utils::SystemEnvironment::detect()?;
-    
+
     println!("--- Host ---");
     println!("OS: {}", env.os);
     println!("Architecture: {}", env.architecture);
@@ -1229,7 +1546,7 @@ fn env_command() -> CoelanoxResult<()> {
     println!("Logical CPUs: {}", env.cpu_cores);
     println!("Memory: {} GB (approx.)", env.memory_gb);
     println!();
-    
+
     if let Some(ref gpu) = env.gpu_info {
         println!("--- GPU ---");
         println!("Vendor: {}", gpu.vendor);
@@ -1243,13 +1560,13 @@ fn env_command() -> CoelanoxResult<()> {
         }
         println!();
     }
-    
+
     println!("--- SIMD ---");
     for capability in &env.simd_capabilities {
         println!("  {:?}", capability);
     }
     println!();
-    
+
     println!("--- Optional toolchains (environment) ---");
     let mut caps: Vec<_> = env.capabilities.iter().collect();
     caps.sort_by(|a, b| a.0.cmp(b.0));
@@ -1257,17 +1574,21 @@ fn env_command() -> CoelanoxResult<()> {
         println!(
             "  {}: {}",
             capability,
-            if *available { "detected" } else { "not detected" }
+            if *available {
+                "detected"
+            } else {
+                "not detected"
+            }
         );
     }
     println!();
-    
+
     println!("--- Heuristic suggestions (packaging) ---");
     let recommended_target = env.recommended_target();
     let recommended_optimization = env.recommended_optimization();
     println!("Target: {:?}", recommended_target);
     println!("Optimization level: {:?}", recommended_optimization);
-    
+
     Ok(())
 }
 
@@ -1285,7 +1606,9 @@ fn uninstall_command(purge_audit: bool) -> CoelanoxResult<()> {
     #[cfg(windows)]
     println!("  - Windows PATH: Settings → System → About → Advanced system settings → Environment Variables → Path.");
     #[cfg(unix)]
-    println!("  - Unix PATH: adjust ~/.profile, ~/.bashrc, or files under /etc/profile.d/ as needed.");
+    println!(
+        "  - Unix PATH: adjust ~/.profile, ~/.bashrc, or files under /etc/profile.d/ as needed."
+    );
     println!();
     println!("The running process cannot delete its own binary; exit, then remove the file.");
     if purge_audit {
@@ -1306,14 +1629,23 @@ fn uninstall_command(purge_audit: bool) -> CoelanoxResult<()> {
 /// - **`--minimal`:** copy **`coelanox-run`** from the same directory as this binary (must be built, e.g. `cargo build --release -p coelanox-standalone`); supports `run` and **`--serve`** (IPC v1).
 ///
 /// Cross-arch (`--arm` / `--target`): not implemented; use CI or release artifacts.
-fn extract_command(output: &str, minimal: bool, arm: bool, target: Option<&str>) -> CoelanoxResult<()> {
+fn extract_command(
+    output: &str,
+    minimal: bool,
+    arm: bool,
+    target: Option<&str>,
+) -> CoelanoxResult<()> {
     info!(
         "Extract: output={}, minimal={}, arm={}, target={:?}",
         output, minimal, arm, target
     );
-    let effective_target = target
-        .map(|s| s.to_string())
-        .or_else(|| if arm { Some("aarch64-unknown-linux-gnu".to_string()) } else { None });
+    let effective_target = target.map(|s| s.to_string()).or_else(|| {
+        if arm {
+            Some("aarch64-unknown-linux-gnu".to_string())
+        } else {
+            None
+        }
+    });
 
     if effective_target.is_some() {
         eprintln!("Cross-architecture extract (--arm / --target) is not available in this build.");
@@ -1335,7 +1667,9 @@ fn extract_command(output: &str, minimal: bool, arm: bool, target: Option<&str>)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(out_path).map_err(CoelanoxError::FileSystem)?.permissions();
+        let mut perms = fs::metadata(out_path)
+            .map_err(CoelanoxError::FileSystem)?
+            .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(out_path, perms).map_err(CoelanoxError::FileSystem)?;
     }
@@ -1356,9 +1690,9 @@ fn extract_command(output: &str, minimal: bool, arm: bool, target: Option<&str>)
 /// `coelanox-run` in the same directory as the running `coelanox` (e.g. both in `target/release/`).
 fn resolve_sibling_coelanox_run() -> CoelanoxResult<PathBuf> {
     let exe = std::env::current_exe().map_err(CoelanoxError::FileSystem)?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| CoelanoxError::format("Could not resolve directory of current executable"))?;
+    let dir = exe.parent().ok_or_else(|| {
+        CoelanoxError::format("Could not resolve directory of current executable")
+    })?;
     let name = if cfg!(windows) {
         "coelanox-run.exe"
     } else {
@@ -1368,7 +1702,7 @@ fn resolve_sibling_coelanox_run() -> CoelanoxResult<PathBuf> {
     if candidate.is_file() {
         return Ok(candidate);
     }
-    Err(CoelanoxError::format(&format!(
+    Err(CoelanoxError::format(format!(
         "Minimal runtime not found: expected `{}` beside `{}`. \
          Build it with: cargo build --release -p coelanox-standalone (from the `coelanox/` workspace), \
          then run `coelanox extract --minimal` again so both binaries live in the same directory (e.g. target/release/).",
@@ -1387,64 +1721,85 @@ fn debug_command(
     _trace_limit: usize,
 ) -> CoelanoxResult<()> {
     info!("Debug session: {}", file);
-    
+
     if use_gdb {
         return debug_with_gdb(file, input, output);
     }
-    
+
     let config = load_runtime_config();
     let runtime = CoelanoxRuntime::with_config(config);
 
     // Load container
     info!("Loading container: {}", file);
     runtime.load_container(file)?;
-    
+
     let container_info = runtime.get_container_info(file)?;
     println!("--- Container ---");
     println!("Model: {}", container_info.manifest.name);
     println!("Input shapes: {:?}", container_info.manifest.input_shapes);
     println!("Output shapes: {:?}", container_info.manifest.output_shapes);
-    println!("Machine code size: {} bytes", container_info.optimized_code.len());
-    println!("Compressed weights size: {} bytes", container_info.compressed_weights_len());
+    println!(
+        "Machine code size: {} bytes",
+        container_info.optimized_code.len()
+    );
+    println!(
+        "Compressed weights size: {} bytes",
+        container_info.compressed_weights_len()
+    );
     println!();
-    
+
     // Load input data
     let input_data = if let Some(input_file) = input {
         info!("Input file: {}", input_file);
-        let input_json = fs::read_to_string(input_file)
-            .map_err(|e| CoelanoxError::FileSystem(e))?;
+        let input_json = fs::read_to_string(input_file).map_err(CoelanoxError::FileSystem)?;
         let input_vec: Vec<f32> = serde_json::from_str(&input_json)
-            .map_err(|e| CoelanoxError::format(&format!("Invalid input JSON: {}", e)))?;
+            .map_err(|e| CoelanoxError::format(format!("Invalid input JSON: {}", e)))?;
         println!("Input elements loaded: {}", input_vec.len());
         input_vec
     } else {
         // Generate dummy input data
-        let input_size: usize = container_info.manifest.input_shapes.iter()
+        let input_size: usize = container_info
+            .manifest
+            .input_shapes
+            .iter()
             .map(|shape| shape.iter().product::<usize>())
             .sum();
         println!("Synthetic input (ones): {} elements", input_size);
         vec![1.0f32; input_size]
     };
-    
+
     // Verify input descriptor setup
     println!("--- Input layout ---");
     let mut offset = 0;
     for (i, shape) in container_info.manifest.input_shapes.iter().enumerate() {
         let size: usize = shape.iter().product();
         if offset + size > input_data.len() {
-            error!("Input data too small: need {} elements starting at offset {}, got {} total", size, offset, input_data.len());
+            error!(
+                "Input data too small: need {} elements starting at offset {}, got {} total",
+                size,
+                offset,
+                input_data.len()
+            );
             return Err(CoelanoxError::Runtime(format!(
                 "Input data size mismatch: expected at least {} elements, got {}",
                 offset + size,
                 input_data.len()
             )));
         }
-        println!("Input {}: shape {:?}, size {}, offset {} - {} (indices {}-{})", 
-            i, shape, size, offset, offset + size - 1, offset, offset + size - 1);
+        println!(
+            "Input {}: shape {:?}, size {}, offset {} - {} (indices {}-{})",
+            i,
+            shape,
+            size,
+            offset,
+            offset + size - 1,
+            offset,
+            offset + size - 1
+        );
         offset += size;
     }
     println!();
-    
+
     // Set up signal handler for SIGSEGV (Unix only)
     #[cfg(unix)]
     if dump_registers {
@@ -1452,17 +1807,17 @@ fn debug_command(
             libc::signal(libc::SIGSEGV, crash_handler as libc::sighandler_t);
         }
     }
-    
+
     println!("--- Inference (debug) ---");
     println!("If the process crashes (e.g. SIGSEGV), additional detail may be printed below.");
     println!();
-    
+
     // Execute with error handling
     match runtime.execute(file, &input_data) {
         Ok(result) => {
             println!("Inference completed.");
             println!("Output size: {} elements", result.len());
-            
+
             // Save debug output
             let debug_info = serde_json::json!({
                 "status": "success",
@@ -1477,13 +1832,12 @@ fn debug_command(
                 },
                 "output": result,
             });
-            
+
             let output_json = serde_json::to_string_pretty(&debug_info)
-                .map_err(|e| CoelanoxError::format(&format!("Could not write debug JSON: {}", e)))?;
-            
-            fs::write(output, output_json)
-                .map_err(|e| CoelanoxError::FileSystem(e))?;
-            
+                .map_err(|e| CoelanoxError::format(format!("Could not write debug JSON: {}", e)))?;
+
+            fs::write(output, output_json).map_err(CoelanoxError::FileSystem)?;
+
             println!("Wrote debug output to {}", output);
             Ok(())
         }
@@ -1492,7 +1846,7 @@ fn debug_command(
             println!();
             println!("--- Failure detail ---");
             println!("Error: {:?}", e);
-            
+
             // Save error debug output
             let debug_info = serde_json::json!({
                 "status": "error",
@@ -1506,13 +1860,12 @@ fn debug_command(
                     "compressed_weights_size": container_info.compressed_weights_len(),
                 },
             });
-            
+
             let output_json = serde_json::to_string_pretty(&debug_info)
-                .map_err(|e| CoelanoxError::format(&format!("Could not write debug JSON: {}", e)))?;
-            
-            fs::write(output, output_json)
-                .map_err(|e| CoelanoxError::FileSystem(e))?;
-            
+                .map_err(|e| CoelanoxError::format(format!("Could not write debug JSON: {}", e)))?;
+
+            fs::write(output, output_json).map_err(CoelanoxError::FileSystem)?;
+
             println!("Wrote debug output to {}", output);
             Err(e)
         }
@@ -1522,13 +1875,14 @@ fn debug_command(
 /// Debug using GDB (external debugger)
 fn debug_with_gdb(file: &str, input: Option<&str>, output: &str) -> CoelanoxResult<()> {
     info!("Starting GDB session");
-    
+
     // Get path to current binary
     let binary_path = std::env::current_exe()
-        .map_err(|e| CoelanoxError::format(&format!("Could not resolve executable path: {}", e)))?;
-    
+        .map_err(|e| CoelanoxError::format(format!("Could not resolve executable path: {}", e)))?;
+
     // Create GDB script
-    let gdb_script = format!(r#"
+    let gdb_script = format!(
+        r#"
 set confirm off
 file {}
 break coelanox_orchestrator::runtime::CoelanoxRuntime::execute_machine_code
@@ -1554,20 +1908,19 @@ bt
 info registers
 x/16gx $rsp
 quit
-"#, 
+"#,
         binary_path.display(),
         file,
         input.map(|s| format!("--input {}", s)).unwrap_or_default()
     );
-    
+
     // Write GDB script to temp file
     let script_path = "/tmp/coelanox_debug.gdb";
-    fs::write(script_path, gdb_script)
-        .map_err(|e| CoelanoxError::FileSystem(e))?;
-    
+    fs::write(script_path, gdb_script).map_err(CoelanoxError::FileSystem)?;
+
     println!("GDB script: {}", script_path);
     println!("Running GDB...\n");
-    
+
     // Run GDB
     let output_cmd = Command::new("gdb")
         .arg("-batch")
@@ -1575,33 +1928,37 @@ quit
         .arg(script_path)
         .arg(&binary_path)
         .output()
-        .map_err(|e| CoelanoxError::format(&format!("GDB failed to start ({}). Install GDB or check PATH.", e)))?;
-    
+        .map_err(|e| {
+            CoelanoxError::format(format!(
+                "GDB failed to start ({}). Install GDB or check PATH.",
+                e
+            ))
+        })?;
+
     // Save GDB output
     let gdb_output = String::from_utf8_lossy(&output_cmd.stdout);
     let gdb_stderr = String::from_utf8_lossy(&output_cmd.stderr);
-    
+
     let debug_info = serde_json::json!({
         "status": if output_cmd.status.success() { "completed" } else { "crashed" },
         "exit_code": output_cmd.status.code(),
         "gdb_stdout": gdb_output,
         "gdb_stderr": gdb_stderr,
     });
-    
+
     let output_json = serde_json::to_string_pretty(&debug_info)
-        .map_err(|e| CoelanoxError::format(&format!("Could not write debug JSON: {}", e)))?;
-    
-    fs::write(output, output_json)
-        .map_err(|e| CoelanoxError::FileSystem(e))?;
-    
+        .map_err(|e| CoelanoxError::format(format!("Could not write debug JSON: {}", e)))?;
+
+    fs::write(output, output_json).map_err(CoelanoxError::FileSystem)?;
+
     println!("{}", gdb_output);
     if !gdb_stderr.is_empty() {
         eprintln!("{}", gdb_stderr);
     }
-    
+
     println!();
     println!("GDB output written to {}", output);
-    
+
     Ok(())
 }
 
@@ -1614,7 +1971,7 @@ extern "C" fn crash_handler(_sig: libc::c_int) {
     eprintln!("For a full register and stack view, run: coelanox debug --file <container> --gdb");
     eprintln!("Or attach GDB manually: gdb <coelanox binary>");
     eprintln!();
-    
+
     // Print stack trace if available
     eprintln!("--- Stack trace ---");
     #[cfg(backtrace)]
@@ -1626,14 +1983,14 @@ extern "C" fn crash_handler(_sig: libc::c_int) {
     {
         eprintln!("Set RUST_BACKTRACE=1 for a stack trace.");
     }
-    
+
     // Additional debug info
     eprintln!();
     eprintln!("--- Likely causes (SIGSEGV) ---");
     eprintln!("  - Invalid memory access (null, out of bounds)");
     eprintln!("  - Stack overflow or corrupted frame");
     eprintln!("  - Native code path: bad weights/input pointers or alignment");
-    
+
     std::process::exit(139); // SIGSEGV exit code
 }
 
@@ -1641,20 +1998,20 @@ extern "C" fn crash_handler(_sig: libc::c_int) {
 fn is_valid_shape_format(shapes_str: &str) -> bool {
     // Split by comma to get individual shapes
     let shapes: Vec<&str> = shapes_str.split(',').collect();
-    
+
     // Each shape should be in format [dim1,dim2,dim3,...]
     for shape in shapes {
         let shape = shape.trim();
         if !shape.starts_with('[') || !shape.ends_with(']') {
             return false;
         }
-        
+
         // Remove brackets and split by comma
-        let dims_str = &shape[1..shape.len()-1];
+        let dims_str = &shape[1..shape.len() - 1];
         if dims_str.is_empty() {
             return false;
         }
-        
+
         // Check each dimension is a valid number
         for dim in dims_str.split(',') {
             if dim.trim().parse::<usize>().is_err() {
@@ -1662,6 +2019,6 @@ fn is_valid_shape_format(shapes_str: &str) -> bool {
             }
         }
     }
-    
+
     true
 }

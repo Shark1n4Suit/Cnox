@@ -2,6 +2,7 @@
 
 | Document | Description |
 |----------|-------------|
+| **[non-technical/](non-technical/README.md)** | **Procurement & security pack** — product brief, runtime spec, ONNX customer ops, data flow, onboarding, known limitations |
 | [QUICKSTART](QUICKSTART.md) | **Start here** — Install, package → verify → run in 5 minutes |
 | [REFERENCE](REFERENCE.md) | What COELANOX is, `.cnox` format, implementation status |
 | [ARCHITECTURE](ARCHITECTURE.md) | Three-command model, security hash, backend manager, codebase map, binary layout |

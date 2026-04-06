@@ -45,7 +45,7 @@ const MAGIC_ERR: &[u8; 4] = b"CREr";
 const MAGIC_EXIT: &[u8; 4] = b"CNXT";
 
 /// Cap single-request tensor payload (bytes) to avoid OOM on malformed length.
-const MAX_IPC_PAYLOAD_BYTES: u32 = 512 * 1024 * 1024;
+pub const MAX_IPC_PAYLOAD_BYTES: u32 = 512 * 1024 * 1024;
 
 const ERR_BAD_MAGIC: u32 = 400;
 const ERR_PAYLOAD_LIMIT: u32 = 413;
@@ -188,21 +188,20 @@ fn drain_skip<R: Read>(r: &mut R, mut n: u32) -> CoelanoxResult<()> {
     while n > 0 {
         let take = std::cmp::min(n as usize, buf.len());
         r.read_exact(&mut buf[..take])
-            .map_err(|e| CoelanoxError::FileSystem(e))?;
+            .map_err(CoelanoxError::FileSystem)?;
         n -= take as u32;
     }
     Ok(())
 }
 
 fn bytes_to_f32_vec(b: &[u8]) -> Result<Vec<f32>, String> {
-    if b.len() % 4 != 0 {
+    if !b.len().is_multiple_of(4) {
         return Err(format!(
             "payload length {} is not a multiple of 4 (f32 LE)",
             b.len()
         ));
     }
-    Ok(b
-        .chunks_exact(4)
+    Ok(b.chunks_exact(4)
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect())
 }

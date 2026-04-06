@@ -2,10 +2,10 @@
 //!
 //! Pure Rust scalar implementations with parallel iteration for large buffers.
 
-use crate::CoelanoxResult;
-use std::collections::HashMap;
 use crate::ir::Attribute;
+use crate::CoelanoxResult;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 const PAR_THRESHOLD: usize = 64 * 1024;
 
@@ -17,7 +17,10 @@ pub fn abs(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.abs());
     } else {
         output[..len]
@@ -36,7 +39,10 @@ pub fn sqrt(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.sqrt());
     } else {
         output[..len]
@@ -53,7 +59,8 @@ pub fn pow(
     output: &mut [f32],
     attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    let exponent = attributes.get("exponent")
+    let exponent = attributes
+        .get("exponent")
         .and_then(|a| match a {
             crate::ir::Attribute::Float(f) => Some(*f),
             crate::ir::Attribute::Int(i) => Some(*i as f32),
@@ -62,7 +69,10 @@ pub fn pow(
         .unwrap_or(2.0);
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.powf(exponent));
     } else {
         output[..len]
@@ -81,7 +91,10 @@ pub fn cos(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.cos());
     } else {
         output[..len]
@@ -100,7 +113,10 @@ pub fn sin(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.sin());
     } else {
         output[..len]
@@ -119,7 +135,10 @@ pub fn exp(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.exp());
     } else {
         output[..len]
@@ -139,7 +158,10 @@ pub fn log(
     const EPS: f32 = 1e-8;
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = (x + EPS).ln());
     } else {
         output[..len]
@@ -149,4 +171,3 @@ pub fn log(
     }
     Ok(())
 }
-

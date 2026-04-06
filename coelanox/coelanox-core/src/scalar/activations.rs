@@ -3,10 +3,10 @@
 //! Pure Rust scalar implementations with parallel iteration for large buffers
 //! (same pattern as MatMul: use Rayon for multi-core when beneficial).
 
-use crate::CoelanoxResult;
-use std::collections::HashMap;
 use crate::ir::Attribute;
+use crate::CoelanoxResult;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 const PAR_THRESHOLD: usize = 64 * 1024;
 
@@ -18,7 +18,10 @@ pub fn relu(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.max(0.0));
     } else {
         output[..len]
@@ -37,7 +40,10 @@ pub fn sigmoid(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = 1.0 / (1.0 + (-x).exp()));
     } else {
         output[..len]
@@ -56,7 +62,10 @@ pub fn tanh(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x.tanh());
     } else {
         output[..len]
@@ -84,27 +93,32 @@ pub fn softmax(
         crate::ir::Attribute::IntArray(v) => Some(v.iter().map(|&x| x as usize).collect()),
         _ => None,
     });
-    let axis: i64 = attributes.get("axis").and_then(|a| a.as_int()).unwrap_or(-1);
+    let axis: i64 = attributes
+        .get("axis")
+        .and_then(|a| a.as_int())
+        .unwrap_or(-1);
     let last_dim = shape.as_ref().and_then(|s| s.last().copied());
-    let do_per_row = (axis == -1 || axis == 1) && last_dim.map_or(false, |d| d > 0 && len % d == 0);
+    let do_per_row =
+        (axis == -1 || axis == 1) && last_dim.is_some_and(|d| d > 0 && len.is_multiple_of(d));
 
     if do_per_row {
         let row_len = last_dim.unwrap();
         let num_rows = len / row_len;
         if num_rows >= PAR_THRESHOLD / row_len.max(1) {
-            output.par_chunks_mut(row_len)
+            output
+                .par_chunks_mut(row_len)
                 .zip(input.par_chunks(row_len))
                 .for_each(|(row_out, row_in): (&mut [f32], &[f32])| {
                     let max = row_in.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
                     let mut sum = 0.0f32;
-                    for i in 0..row_len {
-                        let e = (row_in[i] - max).exp();
-                        row_out[i] = e;
+                    for (out, &v) in row_out.iter_mut().zip(row_in.iter()) {
+                        let e = (v - max).exp();
+                        *out = e;
                         sum += e;
                     }
                     if sum > 0.0 {
-                        for i in 0..row_len {
-                            row_out[i] /= sum;
+                        for out in row_out.iter_mut() {
+                            *out /= sum;
                         }
                     }
                 });
@@ -116,14 +130,14 @@ pub fn softmax(
                 let row_out = &mut output[start..end];
                 let max = row_in.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
                 let mut sum = 0.0f32;
-                for i in 0..row_len {
-                    let e = (row_in[i] - max).exp();
-                    row_out[i] = e;
+                for (out, &v) in row_out.iter_mut().zip(row_in.iter()) {
+                    let e = (v - max).exp();
+                    *out = e;
                     sum += e;
                 }
                 if sum > 0.0 {
-                    for i in 0..row_len {
-                        row_out[i] /= sum;
+                    for out in row_out.iter_mut() {
+                        *out /= sum;
                     }
                 }
             }
@@ -148,7 +162,9 @@ pub fn softmax(
             .sum();
         (max, sum)
     } else {
-        let max = input[..len].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let max = input[..len]
+            .iter()
+            .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
         let mut sum = 0.0f32;
         for i in 0..len {
             let e = (input[i] - max).exp();
@@ -174,10 +190,13 @@ pub fn gelu(
     output: &mut [f32],
     _attributes: &HashMap<String, Attribute>,
 ) -> CoelanoxResult<()> {
-    const INV_SQRT_2: f32 = 0.7071067811865475; // 1/sqrt(2)
+    const INV_SQRT_2: f32 = 0.707_106_77; // 1/sqrt(2)
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = 0.5 * x * (1.0 + erf(x * INV_SQRT_2)));
     } else {
         output[..len]
@@ -190,11 +209,11 @@ pub fn gelu(
 
 /// Approximate erf for GELU (Abramowitz & Stegun approximation)
 fn erf(x: f32) -> f32 {
-    let a1 = 0.254829592f32;
-    let a2 = -0.284496736f32;
-    let a3 = 1.421413741f32;
-    let a4 = -1.453152027f32;
-    let a5 = 1.061405429f32;
+    let a1 = 0.254_829_6_f32;
+    let a2 = -0.284_496_72_f32;
+    let a3 = 1.421_413_8_f32;
+    let a4 = -1.453_152_1_f32;
+    let a5 = 1.061_405_4_f32;
 
     let p = 1.0 / (1.0 + 0.3275911 * x.abs());
 
@@ -214,7 +233,10 @@ pub fn swish(
 ) -> CoelanoxResult<()> {
     let len = input.len().min(output.len());
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x / (1.0 + (-x).exp()));
     } else {
         output[..len]
@@ -241,7 +263,9 @@ pub fn log_softmax(
             .fold(|| f32::NEG_INFINITY, |a, &b| a.max(b))
             .reduce(|| f32::NEG_INFINITY, |a, b| a.max(b))
     } else {
-        input[..len].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b))
+        input[..len]
+            .iter()
+            .fold(f32::NEG_INFINITY, |a, &b| a.max(b))
     };
     let sum: f32 = if len >= PAR_THRESHOLD {
         input.par_iter().take(len).map(|&x| (x - max).exp()).sum()
@@ -250,7 +274,10 @@ pub fn log_softmax(
     };
     let log_sum = sum.ln() + max;
     if len >= PAR_THRESHOLD {
-        output.par_iter_mut().take(len).zip(input.par_iter().take(len))
+        output
+            .par_iter_mut()
+            .take(len)
+            .zip(input.par_iter().take(len))
             .for_each(|(o, &x)| *o = x - log_sum);
     } else {
         output[..len]
@@ -260,4 +287,3 @@ pub fn log_softmax(
     }
     Ok(())
 }
-

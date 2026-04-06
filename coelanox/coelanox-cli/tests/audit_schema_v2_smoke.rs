@@ -11,7 +11,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 fn coelanox_bin() -> &'static str {
-    option_env!("CARGO_BIN_EXE_coelanox").expect("run with `cargo test -p coelanox-cli`")
+    env!("CARGO_BIN_EXE_coelanox")
 }
 
 fn first_jsonl_object(path: &std::path::Path) -> Value {

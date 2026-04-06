@@ -1,20 +1,20 @@
 //! Convert UniversalIR to OptimizedIR per hardware target (CPU adds attributes; no graph fusion).
 
-use coelanox_core::{CoelanoxResult};
 use coelanox_core::format::HardwareTarget;
-use coelanox_core::ir::{UniversalIR, OpType, GraphNode, Attribute, TensorRef, OptimizedIR};
+use coelanox_core::ir::{Attribute, GraphNode, OpType, OptimizedIR, TensorRef, UniversalIR};
+use coelanox_core::CoelanoxResult;
 
 /// Hardware optimizer trait - operates directly on graph structure
 pub trait HardwareOptimizer: Send + Sync {
     /// Optimize IR for specific hardware by transforming the graph directly
     fn optimize(&self, ir: &UniversalIR, target: HardwareTarget) -> CoelanoxResult<OptimizedIR>;
-    
+
     /// Get supported hardware targets
     fn supported_targets(&self) -> Vec<HardwareTarget>;
-    
+
     /// Get optimizer name
     fn name(&self) -> &str;
-    
+
     /// Get optimizer version
     fn version(&self) -> &str;
 }
@@ -35,17 +35,23 @@ impl CpuOptimizer {
             version: "1.0.0".to_string(),
         }
     }
-    
+
     /// Replace operations with CPU-optimized versions
     fn replace_with_cpu_optimized_ops(&self, mut node: GraphNode) -> GraphNode {
         match node.op_type {
             OpType::Convolution => {
                 node.add_attribute("cpu_conv_optimized".to_string(), Attribute::Bool(true));
-                node.add_attribute("cpu_conv_type".to_string(), Attribute::String("im2col".to_string()));
+                node.add_attribute(
+                    "cpu_conv_type".to_string(),
+                    Attribute::String("im2col".to_string()),
+                );
             }
             OpType::MatMul => {
                 node.add_attribute("cpu_matmul_optimized".to_string(), Attribute::Bool(true));
-                node.add_attribute("cpu_matmul_type".to_string(), Attribute::String("blas".to_string()));
+                node.add_attribute(
+                    "cpu_matmul_type".to_string(),
+                    Attribute::String("blas".to_string()),
+                );
             }
             _ => {
                 node.add_attribute("cpu_optimized".to_string(), Attribute::Bool(true));
@@ -53,7 +59,7 @@ impl CpuOptimizer {
         }
         node
     }
-    
+
     /// Apply CPU-specific optimizations based on graph analysis
     fn apply_cpu_optimizations(&self, mut node: GraphNode, ir: &UniversalIR) -> GraphNode {
         let input_tensors = node.input_tensors.clone();
@@ -64,14 +70,20 @@ impl CpuOptimizer {
                         // Optimize based on weight tensor properties
                         if tensor.shape.dimensions.len() == 4 {
                             // 4D tensor - likely convolution weights
-                            node.add_attribute("weight_layout".to_string(), Attribute::String("NCHW".to_string()));
+                            node.add_attribute(
+                                "weight_layout".to_string(),
+                                Attribute::String("NCHW".to_string()),
+                            );
                         }
                     }
                     TensorRef::Intermediate(tensor) => {
                         // Optimize based on intermediate tensor properties
                         if tensor.shape.total_elements() > 1000000 {
                             // Large tensor - use memory-efficient algorithms
-                            node.add_attribute("memory_efficient".to_string(), Attribute::Bool(true));
+                            node.add_attribute(
+                                "memory_efficient".to_string(),
+                                Attribute::Bool(true),
+                            );
                         }
                     }
                 }
@@ -79,24 +91,29 @@ impl CpuOptimizer {
         }
         node
     }
-    
+
     /// Optimize memory layout for CPU execution
     fn optimize_memory_layout(&self, mut node: GraphNode, _ir: &UniversalIR) -> GraphNode {
-        node.add_attribute("memory_layout".to_string(), Attribute::String("row_major".to_string()));
+        node.add_attribute(
+            "memory_layout".to_string(),
+            Attribute::String("row_major".to_string()),
+        );
         node.add_attribute("cache_friendly".to_string(), Attribute::Bool(true));
         node
     }
-    
+
     /// Add SIMD optimization hints based on operation type
     fn add_simd_hints(&self, mut node: GraphNode) -> GraphNode {
         match node.op_type {
             OpType::Add | OpType::Multiply => {
                 node.add_attribute("simd_enabled".to_string(), Attribute::Bool(true));
-                node.add_attribute("simd_width".to_string(), Attribute::Int(8)); // AVX-256
+                node.add_attribute("simd_width".to_string(), Attribute::Int(8));
+                // AVX-256
             }
             OpType::Convolution => {
                 node.add_attribute("simd_enabled".to_string(), Attribute::Bool(true));
-                node.add_attribute("simd_width".to_string(), Attribute::Int(4)); // AVX-128
+                node.add_attribute("simd_width".to_string(), Attribute::Int(4));
+                // AVX-128
             }
             _ => {
                 node.add_attribute("simd_enabled".to_string(), Attribute::Bool(false));
@@ -104,16 +121,20 @@ impl CpuOptimizer {
         }
         node
     }
-    
+
     /// Add nodes from IR to optimized IR (no fusion)
-    fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
+    fn add_nodes_without_fusion(
+        &self,
+        ir: &UniversalIR,
+        optimized_ir: &mut OptimizedIR,
+    ) -> CoelanoxResult<()> {
         for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
-        
+
         Ok(())
     }
-    
+
     /// Add intermediate tensors from IR
     fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
         for tensor in &ir.intermediate_tensors {
@@ -126,15 +147,15 @@ impl HardwareOptimizer for CpuOptimizer {
     fn optimize(&self, ir: &UniversalIR, target: HardwareTarget) -> CoelanoxResult<OptimizedIR> {
         // Create optimized IR efficiently sharing weights
         let mut optimized_ir = OptimizedIR::new(ir, target);
-        
+
         // === PRIMITIVES-ONLY OPTIMIZATIONS (NO FUSION) ===
-        
+
         // Pass 1: Add all nodes from IR to optimized IR (keep operations separate)
         self.add_nodes_without_fusion(ir, &mut optimized_ir)?;
-        
+
         // Pass 2: Apply individual optimizations to each primitive operation
         let mut final_nodes = Vec::with_capacity(optimized_ir.optimized_nodes.len());
-        
+
         // Apply optimizations to each node (keeping them separate)
         for mut node in optimized_ir.optimized_nodes {
             // Apply individual primitive optimizations
@@ -144,24 +165,24 @@ impl HardwareOptimizer for CpuOptimizer {
             node = self.add_simd_hints(node);
             final_nodes.push(node);
         }
-        
+
         // Replace with optimized nodes
         optimized_ir.optimized_nodes = final_nodes;
-        
+
         // Add intermediate tensors from original IR
         self.add_intermediate_tensors(&mut optimized_ir, ir);
-        
+
         Ok(optimized_ir)
     }
-    
+
     fn supported_targets(&self) -> Vec<HardwareTarget> {
         vec![HardwareTarget::Cpu]
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn version(&self) -> &str {
         &self.version
     }
@@ -183,8 +204,7 @@ impl GpuOptimizer {
             version: "1.0.0".to_string(),
         }
     }
-    
-    
+
     /// Replace operations with GPU-optimized versions
     fn replace_with_gpu_optimized_ops(&self, mut node: GraphNode) -> GraphNode {
         match node.op_type {
@@ -205,7 +225,7 @@ impl GpuOptimizer {
         }
         node
     }
-    
+
     /// Apply GPU-specific optimizations based on graph analysis
     fn apply_gpu_optimizations(&self, mut node: GraphNode, ir: &UniversalIR) -> GraphNode {
         // Analyze tensor shapes for GPU optimization opportunities
@@ -217,14 +237,20 @@ impl GpuOptimizer {
                         // Optimize based on weight tensor properties
                         if tensor.shape.dimensions.len() == 4 {
                             // 4D tensor - likely convolution weights
-                            node.add_attribute("weight_layout".to_string(), Attribute::String("NHWC".to_string()));
+                            node.add_attribute(
+                                "weight_layout".to_string(),
+                                Attribute::String("NHWC".to_string()),
+                            );
                         }
                     }
                     TensorRef::Intermediate(tensor) => {
                         // Optimize based on intermediate tensor properties
                         if tensor.shape.total_elements() > 1000000 {
                             // Large tensor - use memory-efficient algorithms
-                            node.add_attribute("memory_efficient".to_string(), Attribute::Bool(true));
+                            node.add_attribute(
+                                "memory_efficient".to_string(),
+                                Attribute::Bool(true),
+                            );
                         }
                     }
                 }
@@ -232,15 +258,18 @@ impl GpuOptimizer {
         }
         node
     }
-    
+
     /// Optimize memory layout for GPU execution
     fn optimize_gpu_memory_layout(&self, mut node: GraphNode, _ir: &UniversalIR) -> GraphNode {
         // Add GPU memory layout optimizations
-        node.add_attribute("memory_layout".to_string(), Attribute::String("coalesced".to_string()));
+        node.add_attribute(
+            "memory_layout".to_string(),
+            Attribute::String("coalesced".to_string()),
+        );
         node.add_attribute("shared_memory".to_string(), Attribute::Bool(true));
         node
     }
-    
+
     /// Add CUDA optimization hints
     fn add_cuda_hints(&self, mut node: GraphNode) -> GraphNode {
         // Add CUDA optimization hints based on operation type
@@ -259,16 +288,20 @@ impl GpuOptimizer {
         }
         node
     }
-    
+
     /// Add nodes from IR to optimized IR (no fusion)
-    fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
+    fn add_nodes_without_fusion(
+        &self,
+        ir: &UniversalIR,
+        optimized_ir: &mut OptimizedIR,
+    ) -> CoelanoxResult<()> {
         for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
-        
+
         Ok(())
     }
-    
+
     /// Add intermediate tensors from IR
     fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
         for tensor in &ir.intermediate_tensors {
@@ -281,15 +314,15 @@ impl HardwareOptimizer for GpuOptimizer {
     fn optimize(&self, ir: &UniversalIR, target: HardwareTarget) -> CoelanoxResult<OptimizedIR> {
         // Create optimized IR efficiently sharing weights
         let mut optimized_ir = OptimizedIR::new(ir, target);
-        
+
         // === PRIMITIVES-ONLY OPTIMIZATIONS (NO FUSION) ===
-        
+
         // Pass 1: Add all nodes from IR to optimized IR (keep operations separate)
         self.add_nodes_without_fusion(ir, &mut optimized_ir)?;
-        
+
         // Pass 2: Apply individual optimizations to each primitive operation
         let mut final_nodes = Vec::with_capacity(optimized_ir.optimized_nodes.len());
-        
+
         // Apply optimizations to each node (keeping them separate)
         for mut node in optimized_ir.optimized_nodes {
             // Apply individual primitive optimizations
@@ -299,24 +332,24 @@ impl HardwareOptimizer for GpuOptimizer {
             node = self.add_cuda_hints(node);
             final_nodes.push(node);
         }
-        
+
         // Replace with optimized nodes
         optimized_ir.optimized_nodes = final_nodes;
-        
+
         // Add intermediate tensors from original IR
         self.add_intermediate_tensors(&mut optimized_ir, ir);
-        
+
         Ok(optimized_ir)
     }
-    
+
     fn supported_targets(&self) -> Vec<HardwareTarget> {
         vec![HardwareTarget::Gpu]
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn version(&self) -> &str {
         &self.version
     }
@@ -338,8 +371,7 @@ impl EdgeOptimizer {
             version: "1.0.0".to_string(),
         }
     }
-    
-    
+
     /// Replace operations with Edge-optimized versions
     fn replace_with_edge_optimized_ops(&self, mut node: GraphNode) -> GraphNode {
         match node.op_type {
@@ -360,7 +392,7 @@ impl EdgeOptimizer {
         }
         node
     }
-    
+
     /// Apply Edge-specific optimizations based on graph analysis
     fn apply_edge_optimizations(&self, mut node: GraphNode, ir: &UniversalIR) -> GraphNode {
         // Analyze tensor shapes for Edge optimization opportunities
@@ -372,14 +404,20 @@ impl EdgeOptimizer {
                         // Optimize based on weight tensor properties
                         if tensor.shape.dimensions.len() == 4 {
                             // 4D tensor - likely convolution weights
-                            node.add_attribute("weight_layout".to_string(), Attribute::String("NCHW".to_string()));
+                            node.add_attribute(
+                                "weight_layout".to_string(),
+                                Attribute::String("NCHW".to_string()),
+                            );
                         }
                     }
                     TensorRef::Intermediate(tensor) => {
                         // Optimize based on intermediate tensor properties
                         if tensor.shape.total_elements() > 100000 {
                             // Large tensor - use memory-efficient algorithms
-                            node.add_attribute("memory_efficient".to_string(), Attribute::Bool(true));
+                            node.add_attribute(
+                                "memory_efficient".to_string(),
+                                Attribute::Bool(true),
+                            );
                         }
                     }
                 }
@@ -387,15 +425,18 @@ impl EdgeOptimizer {
         }
         node
     }
-    
+
     /// Optimize memory layout for Edge execution
     fn optimize_edge_memory_layout(&self, mut node: GraphNode, _ir: &UniversalIR) -> GraphNode {
         // Add Edge memory layout optimizations
-        node.add_attribute("memory_layout".to_string(), Attribute::String("compact".to_string()));
+        node.add_attribute(
+            "memory_layout".to_string(),
+            Attribute::String("compact".to_string()),
+        );
         node.add_attribute("cache_friendly".to_string(), Attribute::Bool(true));
         node
     }
-    
+
     /// Add power optimization hints
     fn add_power_hints(&self, mut node: GraphNode) -> GraphNode {
         // Add power optimization hints based on operation type
@@ -414,16 +455,20 @@ impl EdgeOptimizer {
         }
         node
     }
-    
+
     /// Add nodes from IR to optimized IR (no fusion)
-    fn add_nodes_without_fusion(&self, ir: &UniversalIR, optimized_ir: &mut OptimizedIR) -> CoelanoxResult<()> {
+    fn add_nodes_without_fusion(
+        &self,
+        ir: &UniversalIR,
+        optimized_ir: &mut OptimizedIR,
+    ) -> CoelanoxResult<()> {
         for node in &ir.nodes {
             optimized_ir.add_optimized_node(node.clone());
         }
-        
+
         Ok(())
     }
-    
+
     /// Add intermediate tensors from IR
     fn add_intermediate_tensors(&self, optimized_ir: &mut OptimizedIR, ir: &UniversalIR) {
         for tensor in &ir.intermediate_tensors {
@@ -436,15 +481,15 @@ impl HardwareOptimizer for EdgeOptimizer {
     fn optimize(&self, ir: &UniversalIR, target: HardwareTarget) -> CoelanoxResult<OptimizedIR> {
         // Create optimized IR efficiently sharing weights
         let mut optimized_ir = OptimizedIR::new(ir, target);
-        
+
         // === PRIMITIVES-ONLY OPTIMIZATIONS (NO FUSION) ===
-        
+
         // Pass 1: Add all nodes from IR to optimized IR (keep operations separate)
         self.add_nodes_without_fusion(ir, &mut optimized_ir)?;
-        
+
         // Pass 2: Apply individual optimizations to each primitive operation
         let mut final_nodes = Vec::with_capacity(optimized_ir.optimized_nodes.len());
-        
+
         // Apply optimizations to each node (keeping them separate)
         for mut node in optimized_ir.optimized_nodes {
             // Apply individual primitive optimizations
@@ -454,24 +499,24 @@ impl HardwareOptimizer for EdgeOptimizer {
             node = self.add_power_hints(node);
             final_nodes.push(node);
         }
-        
+
         // Replace with optimized nodes
         optimized_ir.optimized_nodes = final_nodes;
-        
+
         // Add intermediate tensors from original IR
         self.add_intermediate_tensors(&mut optimized_ir, ir);
-        
+
         Ok(optimized_ir)
     }
-    
+
     fn supported_targets(&self) -> Vec<HardwareTarget> {
         vec![HardwareTarget::Edge]
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn version(&self) -> &str {
         &self.version
     }

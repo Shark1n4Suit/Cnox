@@ -15,17 +15,17 @@
 //! to this backend via the registry when machine code execution fails.
 
 use coelanox_core::format::CoelanoxContainer;
-use coelanox_core::ir::{OpType, GraphNode, Attribute, TensorId};
+use coelanox_core::ir::{Attribute, GraphNode, OpType, TensorId};
 use coelanox_core::scalar::execute_scalar_op;
 use coelanox_core::{CoelanoxError, CoelanoxResult};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use rayon::prelude::*;
 
 use crate::execution_backend::{ContainerWarmData, ExecutionBackend};
 
 /// Scalar fallback backend
-/// 
+///
 /// This backend uses the authoritative scalar operations from `coelanox-core`
 /// to execute operations when vendor backends are unavailable or fail.
 #[derive(Debug, Clone)]
@@ -44,22 +44,22 @@ impl ScalarFallbackBackend {
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
-    
+
     /// Get backend name
     pub fn name(&self) -> &str {
         &self.name
     }
-    
+
     /// Get backend version
     pub fn version(&self) -> &str {
         &self.version
     }
-    
+
     /// Execute a single operation using scalar fallback
-    /// 
+    ///
     /// This method provides a 1:1 mapping with Universal IR operations
     /// by delegating to `coelanox-core::scalar::execute_scalar_op`.
-    /// 
+    ///
     /// # Arguments
     /// * `op_type` - The operation type from OpType enum
     /// * `input_a` - First input tensor (or single input for unary ops)
@@ -67,7 +67,7 @@ impl ScalarFallbackBackend {
     /// * `output` - Output tensor buffer (must be pre-allocated)
     /// * `weights` - Weight tensor (optional, for operations that need weights)
     /// * `attributes` - Operation-specific attributes
-    /// 
+    ///
     /// # Returns
     /// * `Ok(())` if operation succeeds
     /// * `Err(CoelanoxError)` if operation fails
@@ -82,15 +82,10 @@ impl ScalarFallbackBackend {
     ) -> CoelanoxResult<()> {
         // Delegate to core scalar operations for 1:1 mapping
         coelanox_core::scalar::execute_scalar_op(
-            op_type,
-            input_a,
-            input_b,
-            output,
-            weights,
-            attributes,
+            op_type, input_a, input_b, output, weights, attributes,
         )
     }
-    
+
     /// Execute a graph node via scalar backend (delegates to execute_operation).
     pub fn execute_node(
         &self,
@@ -109,27 +104,24 @@ impl ScalarFallbackBackend {
             &node.attributes,
         )
     }
-    
+
     /// Check if this backend supports an operation
-    /// 
+    ///
     /// The scalar fallback supports all operations that have a corresponding
     /// implementation in `coelanox-core::scalar` (1:1 mapping with OpType).
-    /// 
+    ///
     /// # Arguments
     /// * `op_type` - The operation type to check
-    /// 
+    ///
     /// # Returns
     /// * `true` if operation is supported
     /// * `false` if operation is not supported (Custom only)
     pub fn supports_operation(&self, op_type: &OpType) -> bool {
-        match op_type {
-            OpType::Custom(_) => false,
-            _ => true,
-        }
+        !matches!(op_type, OpType::Custom(_))
     }
-    
+
     /// Get list of supported operations
-    /// 
+    ///
     /// Returns a list of all OpType variants that are supported by the scalar fallback.
     /// This matches the 1:1 mapping in `coelanox-core::scalar::execute_scalar_op`.
     pub fn supported_operations(&self) -> Vec<OpType> {
@@ -240,18 +232,28 @@ impl ScalarExecutionBackend {
         match warm_data {
             Some(warm) => {
                 if let Some(ref ir) = warm.optimized_ir {
-                    return self.execute_ir_with(container, input_data, ir, warm.decompressed_weights.as_slice());
+                    return self.execute_ir_with(
+                        container,
+                        input_data,
+                        ir,
+                        warm.decompressed_weights.as_slice(),
+                    );
                 }
                 // Weights cached but IR not (plan path ran first); deserialize IR only.
                 use coelanox_core::ir::deserialize_optimized_ir;
                 let ir_owned = deserialize_optimized_ir(&container.ir_data)?;
-                return self.execute_ir_with(container, input_data, &ir_owned, warm.decompressed_weights.as_slice());
+                self.execute_ir_with(
+                    container,
+                    input_data,
+                    &ir_owned,
+                    warm.decompressed_weights.as_slice(),
+                )
             }
             None => {
                 use coelanox_core::ir::deserialize_optimized_ir;
                 let ir_owned = deserialize_optimized_ir(&container.ir_data)?;
                 let weights_owned = container.decompress_weights()?;
-                return self.execute_ir_with(container, input_data, &ir_owned, &weights_owned);
+                self.execute_ir_with(container, input_data, &ir_owned, &weights_owned)
             }
         }
     }
@@ -264,10 +266,12 @@ impl ScalarExecutionBackend {
         ir: &coelanox_core::ir::OptimizedIR,
         weights: &[f32],
     ) -> CoelanoxResult<Vec<f32>> {
-
         // Arc so we can share tensor buffers across parallel node execution.
-        let mut tensor_data: HashMap<TensorId, Arc<Vec<f32>>> =
-            HashMap::with_capacity(ir.intermediate_tensors.len().saturating_add(ir.optimized_nodes.len()));
+        let mut tensor_data: HashMap<TensorId, Arc<Vec<f32>>> = HashMap::with_capacity(
+            ir.intermediate_tensors
+                .len()
+                .saturating_add(ir.optimized_nodes.len()),
+        );
 
         let produced: HashSet<TensorId> = ir
             .optimized_nodes
@@ -301,7 +305,8 @@ impl ScalarExecutionBackend {
         };
         let node_order: Vec<usize> = {
             let mut deg = in_degree.clone();
-            let mut queue: std::collections::VecDeque<usize> = (0..nodes.len()).filter(|&i| deg[i] == 0).collect();
+            let mut queue: std::collections::VecDeque<usize> =
+                (0..nodes.len()).filter(|&i| deg[i] == 0).collect();
             let mut order = Vec::with_capacity(nodes.len());
             while let Some(i) = queue.pop_front() {
                 order.push(i);
@@ -389,7 +394,7 @@ impl ScalarExecutionBackend {
         let weight_offsets_ref = &weight_offsets;
         let audit_enabled = crate::audit::is_enabled();
 
-        while in_degree.iter().any(|&d| d == 0) {
+        while in_degree.contains(&0) {
             if crate::runtime::execution_deadline_expired() {
                 return Err(CoelanoxError::Runtime(
                     "Execution timeout exceeded (COELANOX_EXECUTION_TIMEOUT_MS)".to_string(),
@@ -405,7 +410,16 @@ impl ScalarExecutionBackend {
             }
 
             #[allow(clippy::type_complexity)]
-            let jobs: Vec<(usize, Arc<Vec<f32>>, Option<Arc<Vec<f32>>>, Option<(usize, usize)>, usize, OpType, HashMap<String, Attribute>, Vec<TensorId>)> = ready
+            let jobs: Vec<(
+                usize,
+                Arc<Vec<f32>>,
+                Option<Arc<Vec<f32>>>,
+                Option<(usize, usize)>,
+                usize,
+                OpType,
+                HashMap<String, Attribute>,
+                Vec<TensorId>,
+            )> = ready
                 .iter()
                 .map(|&node_index| -> CoelanoxResult<_> {
                     let node = &nodes[node_index];
@@ -415,15 +429,25 @@ impl ScalarExecutionBackend {
                     let input_a = if tid_a.is_weight() {
                         let idx = tid_a.index();
                         let start = *weight_offsets_ref.get(idx).ok_or_else(|| {
-                            CoelanoxError::Runtime(format!("Invalid weight tensor index {} on node {}", idx, node_index))
+                            CoelanoxError::Runtime(format!(
+                                "Invalid weight tensor index {} on node {}",
+                                idx, node_index
+                            ))
                         })?;
                         let end = *weight_offsets_ref.get(idx + 1).ok_or_else(|| {
-                            CoelanoxError::Runtime(format!("Invalid weight tensor range end {} on node {}", idx + 1, node_index))
+                            CoelanoxError::Runtime(format!(
+                                "Invalid weight tensor range end {} on node {}",
+                                idx + 1,
+                                node_index
+                            ))
                         })?;
                         Arc::new(weights_ref[start..end].to_vec())
                     } else {
                         tensor_data.get(tid_a).cloned().ok_or_else(|| {
-                            CoelanoxError::Runtime(format!("Missing input tensor {:?} for node {}", tid_a, node_index))
+                            CoelanoxError::Runtime(format!(
+                                "Missing input tensor {:?} for node {}",
+                                tid_a, node_index
+                            ))
                         })?
                     };
                     let input_b = node.input_tensors.get(1).and_then(|&tid| {
@@ -436,22 +460,36 @@ impl ScalarExecutionBackend {
                             tensor_data.get(&tid).cloned()
                         }
                     });
-                    let weight_range = node.input_tensors.iter().find(|t| t.is_weight()).and_then(|tid| {
-                        let idx = tid.index();
-                        let start = weight_offsets_ref.get(idx).copied()?;
-                        let end = weight_offsets_ref.get(idx + 1).copied()?;
-                        Some((start, end))
-                    });
-                    let output_size = node.output_tensors.first().and_then(|tid| {
-                        if tid.is_intermediate() {
-                            ir.intermediate_tensors.get(tid.index()).map(|t| t.elements())
-                        } else {
-                            None
-                        }
-                    }).unwrap_or_else(|| {
-                        input_a.len().max(input_b.as_ref().map(|b| b.len()).unwrap_or(0))
-                    });
-                    let out_tids: Vec<TensorId> = node.output_tensors.iter()
+                    let weight_range =
+                        node.input_tensors
+                            .iter()
+                            .find(|t| t.is_weight())
+                            .and_then(|tid| {
+                                let idx = tid.index();
+                                let start = weight_offsets_ref.get(idx).copied()?;
+                                let end = weight_offsets_ref.get(idx + 1).copied()?;
+                                Some((start, end))
+                            });
+                    let output_size = node
+                        .output_tensors
+                        .first()
+                        .and_then(|tid| {
+                            if tid.is_intermediate() {
+                                ir.intermediate_tensors
+                                    .get(tid.index())
+                                    .map(|t| t.elements())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| {
+                            input_a
+                                .len()
+                                .max(input_b.as_ref().map(|b| b.len()).unwrap_or(0))
+                        });
+                    let out_tids: Vec<TensorId> = node
+                        .output_tensors
+                        .iter()
                         .filter(|tid| tid.is_intermediate())
                         .copied()
                         .collect();
@@ -464,15 +502,24 @@ impl ScalarExecutionBackend {
                     // For Conv, add input_shape so scalar can use im2col+sgemm (2D NCHW).
                     let mut attrs = node.attributes.clone();
                     if matches!(node.op_type, OpType::Convolution) {
-                        let in_tid = node.input_tensors.iter().find(|t| !t.is_weight()).ok_or_else(|| {
-                            CoelanoxError::Runtime(format!("Convolution node {} has no non-weight input", node_index))
-                        })?;
+                        let in_tid = node
+                            .input_tensors
+                            .iter()
+                            .find(|t| !t.is_weight())
+                            .ok_or_else(|| {
+                                CoelanoxError::Runtime(format!(
+                                    "Convolution node {} has no non-weight input",
+                                    node_index
+                                ))
+                            })?;
                         if in_tid.is_intermediate() {
                             if let Some(t) = ir.intermediate_tensors.get(in_tid.index()) {
                                 if t.shape.dimensions.len() >= 4 {
                                     attrs.insert(
                                         "input_shape".to_string(),
-                                        Attribute::IntArray(t.shape.dimensions.iter().map(|&d| d as i64).collect()),
+                                        Attribute::IntArray(
+                                            t.shape.dimensions.iter().map(|&d| d as i64).collect(),
+                                        ),
                                     );
                                 }
                             }
@@ -492,31 +539,52 @@ impl ScalarExecutionBackend {
                 .collect::<CoelanoxResult<Vec<_>>>()?;
 
             // Return audit tag from workers so we log from the main thread (full output slice for audit sampling/stats/hash).
-            type JobResult = Result<(usize, Vec<f32>, Vec<TensorId>, Option<OpType>), CoelanoxError>;
+            type JobResult =
+                Result<(usize, Vec<f32>, Vec<TensorId>, Option<OpType>), CoelanoxError>;
             let results: Vec<JobResult> = jobs
                 .into_par_iter()
-                .map(|(node_index, input_a, input_b, weight_range, output_size, op_type, attributes, out_tids)| {
-                    let input_a_slice = input_a.as_slice();
-                    let input_b_slice = input_b.as_ref().map(|b| b.as_slice());
-                    let weight_slice = weight_range.and_then(|(s, e)| weights_ref.get(s..e));
-                    let mut output = vec![0.0f32; output_size];
-                    execute_scalar_op(
-                        &op_type,
-                        input_a_slice,
-                        input_b_slice,
-                        &mut output,
-                        weight_slice,
-                        &attributes,
-                    )?;
-                    let audit_tag = if audit_enabled { Some(op_type.clone()) } else { None };
-                    Ok((node_index, output, out_tids, audit_tag))
-                })
+                .map(
+                    |(
+                        node_index,
+                        input_a,
+                        input_b,
+                        weight_range,
+                        output_size,
+                        op_type,
+                        attributes,
+                        out_tids,
+                    )| {
+                        let input_a_slice = input_a.as_slice();
+                        let input_b_slice = input_b.as_ref().map(|b| b.as_slice());
+                        let weight_slice = weight_range.and_then(|(s, e)| weights_ref.get(s..e));
+                        let mut output = vec![0.0f32; output_size];
+                        execute_scalar_op(
+                            &op_type,
+                            input_a_slice,
+                            input_b_slice,
+                            &mut output,
+                            weight_slice,
+                            &attributes,
+                        )?;
+                        let audit_tag = if audit_enabled {
+                            Some(op_type.clone())
+                        } else {
+                            None
+                        };
+                        Ok((node_index, output, out_tids, audit_tag))
+                    },
+                )
                 .collect();
 
             for res in results {
                 let (node_index, output, out_tids, audit_tag) = res?;
                 if let Some(ref op_type) = audit_tag {
-                    crate::audit::log_after_op(node_index, op_type, output.len(), output.as_slice());
+                    crate::audit::log_after_op(
+                        node_index,
+                        &format!("{op_type:?}"),
+                        output.len(),
+                        output.as_slice(),
+                    );
                 }
                 let out_arc = Arc::new(output);
                 for tid in &out_tids {
@@ -541,7 +609,9 @@ impl ScalarExecutionBackend {
         // Prefer remove() so we return the last node's output Vec.
         let result = node_order.last().and_then(|&idx| {
             let node = &ir.optimized_nodes[idx];
-            node.output_tensors.first().and_then(|tid| tensor_data.remove(tid))
+            node.output_tensors
+                .first()
+                .and_then(|tid| tensor_data.remove(tid))
         });
 
         match result {
@@ -556,7 +626,9 @@ impl ScalarExecutionBackend {
                 .find(|v| v.len() == output_size)
                 .cloned()
                 .map(|arc| (*arc).clone())
-                .ok_or_else(|| CoelanoxError::Runtime("Could not resolve output tensor".to_string())),
+                .ok_or_else(|| {
+                    CoelanoxError::Runtime("Could not resolve output tensor".to_string())
+                }),
         }
     }
 }
@@ -591,41 +663,41 @@ mod tests {
     use super::*;
     use coelanox_core::ir::NodeId;
     use std::collections::HashMap;
-    
+
     #[test]
     fn test_scalar_fallback_creation() {
         let backend = ScalarFallbackBackend::new();
         assert_eq!(backend.name(), "scalar-fallback");
         assert!(!backend.version().is_empty());
     }
-    
+
     #[test]
     fn test_supports_operation() {
         let backend = ScalarFallbackBackend::new();
-        
+
         // Supported operations
         assert!(backend.supports_operation(&OpType::Add));
         assert!(backend.supports_operation(&OpType::Relu));
         assert!(backend.supports_operation(&OpType::MatMul));
-        
+
         // Unsupported operations
         assert!(!backend.supports_operation(&OpType::Custom("test".to_string())));
     }
-    
+
     #[test]
     fn test_supported_operations_list() {
         let backend = ScalarFallbackBackend::new();
         let supported = backend.supported_operations();
-        
+
         // Should include common operations
         assert!(supported.contains(&OpType::Add));
         assert!(supported.contains(&OpType::Relu));
         assert!(supported.contains(&OpType::MatMul));
-        
+
         // Should not include custom
         assert!(!supported.contains(&OpType::Custom("test".to_string())));
     }
-    
+
     #[test]
     fn test_execute_operation_structure() {
         let backend = ScalarFallbackBackend::new();
@@ -662,4 +734,3 @@ mod tests {
         assert_eq!(output, vec![0.0, 0.0, 1.0, 2.0]);
     }
 }
-
