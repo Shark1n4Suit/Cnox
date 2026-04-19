@@ -159,12 +159,12 @@ pub fn conv_scratch_from_lens_raw(in_len: usize, out_len: usize, w_len: usize) -
         }
         let k_prod = w_len / weight_el;
         let k_h = (k_prod as f64).sqrt() as usize;
-        let k_w = if k_h > 0 { k_prod / k_h } else { 0 };
+        let k_w = k_prod.checked_div(k_h).unwrap_or(0);
         if k_h == 0 || k_w == 0 || k_h * k_w != k_prod {
             continue;
         }
         let h = (spatial as f64).sqrt() as usize;
-        let w = if h > 0 { spatial / h } else { 0 };
+        let w = spatial.checked_div(h).unwrap_or(0);
         if h * w != spatial {
             continue;
         }
@@ -406,7 +406,7 @@ pub fn run_with_plan(
                     }
                     let hw = in_len / c;
                     let h = (hw as f64).sqrt() as usize;
-                    let w = if h > 0 { hw / h } else { 0 };
+                    let w = hw.checked_div(h).unwrap_or(0);
                     clf_simd_global_avg_pool(out_ptr, in_ptr, n, c, h, w);
                 }
                 35 => {
@@ -426,7 +426,7 @@ pub fn run_with_plan(
                         let n = 1usize;
                         let hw = nhw;
                         let h = (hw as f64).sqrt() as usize;
-                        let w = if h > 0 { hw / h } else { 0 };
+                        let w = hw.checked_div(h).unwrap_or(0);
                         let scale = w_ptr;
                         let bias = w_ptr.add(c);
                         let mean = w_ptr.add(2 * c);
@@ -488,7 +488,7 @@ pub fn run_with_plan(
                         (w_len, in_len / w_len)
                     } else {
                         let r = (in_len as f64).sqrt() as usize;
-                        let c = if r > 0 { in_len / r } else { 0 };
+                        let c = in_len.checked_div(r).unwrap_or(0);
                         (r, c)
                     };
                     if rows == 0 || cols == 0 || rows * cols != in_len {
@@ -566,7 +566,7 @@ pub fn run_with_plan(
                     let c = 1usize;
                     let hw = in_len;
                     let h = (hw as f64).sqrt() as usize;
-                    let w = if h > 0 { hw / h } else { 0 };
+                    let w = hw.checked_div(h).unwrap_or(0);
                     if h < 2 || w < 2 {
                         return Err(CoelanoxError::Runtime(
                             "MaxPool/AvgPool: spatial dims must be >= 2".to_string(),
@@ -588,7 +588,7 @@ pub fn run_with_plan(
                     }
                     let hw = in_len / c;
                     let h = (hw as f64).sqrt() as usize;
-                    let w = if h > 0 { hw / h } else { 0 };
+                    let w = hw.checked_div(h).unwrap_or(0);
                     clf_simd_global_max_pool(out_ptr, in_ptr, n, c, h, w);
                 }
                 37 => clf_simd_dropout(out_ptr, in_ptr, in_len),
@@ -945,7 +945,7 @@ where
                     }
                     let hw = in_len / c;
                     let h = (hw as f64).sqrt() as usize;
-                    let w = if h > 0 { hw / h } else { 0 };
+                    let w = hw.checked_div(h).unwrap_or(0);
                     clf_simd_global_avg_pool(out_ptr, in_ptr, n, c, h, w);
                 }
                 35 => {
@@ -964,7 +964,7 @@ where
                         let n = 1usize;
                         let hw = nhw;
                         let h = (hw as f64).sqrt() as usize;
-                        let w = if h > 0 { hw / h } else { 0 };
+                        let w = hw.checked_div(h).unwrap_or(0);
                         let scale = w_ptr;
                         let bias = w_ptr.add(c);
                         let mean = w_ptr.add(2 * c);
@@ -1021,7 +1021,7 @@ where
                         (w_len, in_len / w_len)
                     } else {
                         let r = (in_len as f64).sqrt() as usize;
-                        (r, if r > 0 { in_len / r } else { 0 })
+                        (r, in_len.checked_div(r).unwrap_or(0))
                     };
                     if rows == 0 || cols == 0 || rows * cols != in_len {
                         return Err(CoelanoxError::Runtime(
@@ -1091,7 +1091,7 @@ where
                     let c = 1usize;
                     let hw = in_len;
                     let h = (hw as f64).sqrt() as usize;
-                    let w = if h > 0 { hw / h } else { 0 };
+                    let w = hw.checked_div(h).unwrap_or(0);
                     if h < 2 || w < 2 {
                         return Err(CoelanoxError::Runtime(
                             "MaxPool/AvgPool: spatial dims must be >= 2".to_string(),
@@ -1113,7 +1113,7 @@ where
                     }
                     let hw = in_len / c;
                     let h = (hw as f64).sqrt() as usize;
-                    let w = if h > 0 { hw / h } else { 0 };
+                    let w = hw.checked_div(h).unwrap_or(0);
                     clf_simd_global_max_pool(out_ptr, in_ptr, n, c, h, w);
                 }
                 37 => clf_simd_dropout(out_ptr, in_ptr, in_len),
@@ -1247,7 +1247,7 @@ unsafe fn dispatch_conv(
             }
             let k_prod = w_len / weight_elements; // k_h * k_w
             let k_h_cand = (k_prod as f64).sqrt() as usize;
-            let k_w_cand = if k_h_cand > 0 { k_prod / k_h_cand } else { 0 };
+            let k_w_cand = k_prod.checked_div(k_h_cand).unwrap_or(0);
             if k_h_cand == 0 || k_w_cand == 0 {
                 continue;
             }
@@ -1255,7 +1255,7 @@ unsafe fn dispatch_conv(
                 continue;
             }
             let h_cand = (spatial as f64).sqrt() as usize;
-            let w_cand = if h_cand > 0 { spatial / h_cand } else { 0 };
+            let w_cand = spatial.checked_div(h_cand).unwrap_or(0);
             if h_cand * w_cand != spatial {
                 continue;
             }
