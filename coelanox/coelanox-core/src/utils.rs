@@ -161,8 +161,9 @@ impl SystemEnvironment {
     fn detect_cpu_vendor() -> CoelanoxResult<String> {
         #[cfg(target_arch = "x86_64")]
         {
-            // Only the CPUID intrinsic is unsafe; keep the block minimal for `unused_unsafe`
-            // under `-D warnings` (Rust 1.95+ clippy).
+            // `__cpuid` is `unsafe` on older Rust; on 1.95+ the intrinsic is safe and an `unsafe`
+            // block triggers `unused_unsafe` under `-D warnings`. Allow keeps CI and MSRV builds aligned.
+            #[allow(unused_unsafe)]
             let cp = unsafe { std::arch::x86_64::__cpuid(0) };
             let mut buf = [0u8; 12];
             buf[0..4].copy_from_slice(&cp.ebx.to_le_bytes());
