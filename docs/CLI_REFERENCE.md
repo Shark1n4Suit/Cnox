@@ -2,7 +2,7 @@
 
 Complete reference for all commands and options.
 
-- **CLI version:** Run `coelanox --version` for current version
+- **CLI version:** Run `coelanox --version` for the build’s version (release **0.7.5** matches workspace crates in `coelanox/*/Cargo.toml` for that tag).
 - **Invocation:** `coelanox [COMMAND] [OPTIONS]`
 
 ---
@@ -229,7 +229,7 @@ Containers built with **`package --audit-required`** enforce audit the same way 
 |--------|--------|-------------|
 | `--help` | `-h` | Print help |
 
-No required arguments. Prints OS, architecture, CPU, memory, GPU (if any), SIMD capabilities, optional toolchain hints, and heuristic packaging suggestions.
+No required arguments. Prints the **CLI version** (same as `coelanox -V`), then OS, architecture, CPU, memory, GPU (if any), SIMD capabilities, optional toolchain hints, and heuristic packaging suggestions.
 
 ---
 

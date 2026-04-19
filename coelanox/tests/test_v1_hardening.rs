@@ -77,7 +77,7 @@ fn packaging_fingerprint_roundtrips_in_manifest() {
         fallback_only: true,
         target_str: "cpu".into(),
         optimization: "Advanced".into(),
-        packager_crate_version: "0.7.1".into(),
+        packager_crate_version: "0.7.5".into(),
     });
     let json = serde_json::to_vec(&m).expect("serialize");
     let back: CoelanoxManifest = serde_json::from_slice(&json).expect("deserialize");

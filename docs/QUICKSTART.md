@@ -67,6 +67,8 @@ coelanox run -f model.cnox -o output.json
 Output written to output.json
 ```
 
+`output.json` is a **JSON array of `f32` floats** (flattened outputs). For **serve** (binary IPC), **benchmark** text vs JSON, and how to turn floats into **human-readable text** in your app, see **[INTEGRATION_OUTPUT.md](INTEGRATION_OUTPUT.md)**.
+
 ---
 
 ## 4. Inspect the container

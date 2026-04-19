@@ -1,6 +1,6 @@
 [package]
 name = "coelanox-core"
-version = "0.7.1"
+version = "0.7.5"
 edition = "2021"
 authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
 description = "COELANOX Core Library - Shared data structures and utilities"

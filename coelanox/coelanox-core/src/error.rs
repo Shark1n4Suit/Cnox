@@ -35,6 +35,10 @@ pub enum CoelanoxError {
     #[error("Security validation error: {0}")]
     SecurityValidation(String),
 
+    /// Hash or signature verification failed while loading a container (distinct from generic runtime errors).
+    #[error("Container integrity verification failed for {path}: {detail}")]
+    ContainerIntegrity { path: String, detail: String },
+
     /// Path traversal error
     #[error("Path traversal error: {0}")]
     PathTraversal(String),
@@ -171,6 +175,19 @@ impl CoelanoxError {
         Self::Configuration(msg.into())
     }
 
+    /// Create a container integrity (hash/signature) verification error at load time.
+    pub fn container_integrity(path: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self::ContainerIntegrity {
+            path: path.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// True when the failure is specifically hash/signature verification (CLI may print extra user hints).
+    pub fn is_container_integrity_failure(&self) -> bool {
+        matches!(self, CoelanoxError::ContainerIntegrity { .. })
+    }
+
     /// Create an internal error
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::Internal(msg.into())
@@ -180,5 +197,17 @@ impl CoelanoxError {
 impl From<prost::DecodeError> for CoelanoxError {
     fn from(err: prost::DecodeError) -> Self {
         CoelanoxError::Serialization(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CoelanoxError;
+
+    #[test]
+    fn container_integrity_kind_detected_for_hints() {
+        let e = CoelanoxError::container_integrity("m.cnox", "hash mismatch");
+        assert!(e.is_container_integrity_failure());
+        assert!(!CoelanoxError::format("other").is_container_integrity_failure());
     }
 }

@@ -335,6 +335,45 @@ impl RuntimeConfig {
         }
         Ok(c)
     }
+
+    /// Load config from `COELANOX_CONFIG_FILE` when set, otherwise [`from_env`](Self::from_env).
+    ///
+    /// If the file is set but missing or invalid: when `COELANOX_CONFIG_STRICT` is `1`/`true`, returns an error;
+    /// otherwise logs a warning and falls back to environment variables and defaults.
+    /// Used by the main CLI, `coelanox-run`, and the standalone embed API.
+    pub fn from_env_with_optional_config_file() -> CoelanoxResult<Self> {
+        if let Ok(path_str) = std::env::var("COELANOX_CONFIG_FILE") {
+            let path = std::path::Path::new(&path_str);
+            match Self::from_file(path) {
+                Ok(c) => {
+                    tracing::info!("Runtime configuration loaded from {}", path_str);
+                    return Ok(c);
+                }
+                Err(e) => {
+                    let strict = std::env::var("COELANOX_CONFIG_STRICT")
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+                    if strict {
+                        return Err(CoelanoxError::configuration(format!(
+                            "COELANOX_CONFIG_FILE is set but config could not be loaded from {}: {}",
+                            path_str, e
+                        )));
+                    }
+                    tracing::warn!(
+                        "Could not load config from {} ({}); using environment variables and defaults",
+                        path_str,
+                        e
+                    );
+                    eprintln!(
+                        "COELANOX WARNING: config file not loaded ({}); using COELANOX_* env and defaults. \
+                         Fix the file or set COELANOX_CONFIG_STRICT=1 to fail instead of falling back.",
+                        path_str
+                    );
+                }
+            }
+        }
+        Ok(Self::from_env())
+    }
 }
 
 impl Default for RuntimeConfig {
@@ -1145,10 +1184,14 @@ impl CoelanoxRuntime {
     }
 
     /// Set trusted Ed25519 public key (32 bytes) for signature verification on signed containers.
-    pub fn set_trusted_public_key(&self, key: [u8; 32]) {
-        if let Ok(mut guard) = self.trusted_public_key.lock() {
-            *guard = Some(key);
-        }
+    pub fn set_trusted_public_key(&self, key: [u8; 32]) -> CoelanoxResult<()> {
+        let mut guard = self.trusted_public_key.lock().map_err(|_| {
+            CoelanoxError::Runtime(
+                "trusted public key mutex poisoned; cannot set verification key".to_string(),
+            )
+        })?;
+        *guard = Some(key);
+        Ok(())
     }
 
     /// Set max workspace in MB (0 = no cap). Used when executing via CLF plan; if model needs more, execution fails with a clear error.
@@ -1263,18 +1306,22 @@ impl CoelanoxRuntime {
             let _ = mmap.advise(Advice::WillNeed);
             verify_security_hash_from_slice(&mmap).map_err(|e| {
                 error!(path = %path, err = %e, "security: container integrity verification failed (hash mismatch or tampering)");
-                CoelanoxError::Runtime(format!("Container verification failed for {}: {}", path, e))
+                CoelanoxError::container_integrity(path.to_string(), e.to_string())
             })?;
             if mmap.len() >= 12 {
                 let flags = u32::from_le_bytes(mmap[8..12].try_into().unwrap_or([0; 4]));
                 if header_signed(flags) {
-                    if let Ok(guard) = self.trusted_public_key.lock() {
-                        if let Some(ref key) = *guard {
-                            verify_signature_from_slice(&mmap, key).map_err(|e| {
-                                error!(path = %path, err = %e, "security: signature verification failed");
-                                CoelanoxError::Runtime(format!("Container signature verification failed for {}: {}", path, e))
-                            })?;
-                        }
+                    let guard = self.trusted_public_key.lock().map_err(|_| {
+                        CoelanoxError::Runtime(format!(
+                            "trusted public key mutex poisoned; cannot verify signature for {}",
+                            path
+                        ))
+                    })?;
+                    if let Some(ref key) = *guard {
+                        verify_signature_from_slice(&mmap, key).map_err(|e| {
+                            error!(path = %path, err = %e, "security: signature verification failed");
+                            CoelanoxError::container_integrity(path.to_string(), e.to_string())
+                        })?;
                     }
                 }
             }

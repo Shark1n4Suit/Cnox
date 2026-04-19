@@ -19,6 +19,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.5] — 2026-04-19
+
+### Changed
+
+- Workspace crates and CLI **`coelanox -V` / `--version`** aligned to **0.7.5**. `validate` / `info` text lines that report CLI/format version use the same crate version; **`coelanox env`** prints that CLI version first. Documentation examples, issue templates, mock CLI spec, and release workflow hints use **v0.7.5** / **0.7.5** where a concrete version is shown.
+
+---
+
+## [0.7.4] — 2026-04-13
+
+### Changed
+
+- Workspace crates and CLI **`coelanox -V` / `--version`** aligned to **0.7.4**. Documentation examples, issue templates, mock CLI spec, and release workflow hints now use **v0.7.4** / **0.7.4** where a concrete version is shown.
+
+---
+
 ## [0.7.0] — 2026-03-28
 
 ### Added

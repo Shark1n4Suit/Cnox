@@ -1,6 +1,6 @@
 [package]
 name = "coelanox-orchestrator"
-version = "0.7.1"
+version = "0.7.5"
 edition = "2021"
 description = "Coelanox orchestrator - routes input to containers, manages lifecycle"
 authors = ["Benjamin Morin <benjamin.morin@example.com>"]

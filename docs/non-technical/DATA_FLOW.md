@@ -65,6 +65,8 @@
         └── Writes output (e.g. JSON) to disk
 ```
 
+For **what each surface looks like** (JSON vs binary IPC vs debug prints) and how to turn **float vectors** into **application-level text**, see **[INTEGRATION_OUTPUT.md](../INTEGRATION_OUTPUT.md)**.
+
 **What touches inference data:**
 
 | Data | Typical location | Persistence |

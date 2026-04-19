@@ -62,7 +62,9 @@ fn test_sign_verify_run_flow() {
     // 5. Load with trusted key (runtime verifies hash + signature before load)
     let config = RuntimeConfig::default();
     let runtime = CoelanoxRuntime::with_config(config);
-    runtime.set_trusted_public_key(public);
+    runtime
+        .set_trusted_public_key(public)
+        .expect("set trusted key");
     runtime
         .load_container(path.to_str().unwrap())
         .expect("load container");

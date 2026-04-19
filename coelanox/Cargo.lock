@@ -239,14 +239,14 @@ dependencies = [
 
 [[package]]
 name = "coelanox-clf"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "coelanox-cli"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "coelanox-core"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "bincode",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "coelanox-executor"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "clf-kernels-simd",
  "coelanox-core",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "coelanox-ipc"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "coelanox-core",
  "coelanox-orchestrator",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "coelanox-orchestrator"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "bincode",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "coelanox-packager"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "bincode",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "coelanox-standalone"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "clap",
  "coelanox-core",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "coelanox-tests"
-version = "0.7.1"
+version = "0.7.5"
 dependencies = [
  "bincode",
  "coelanox-core",

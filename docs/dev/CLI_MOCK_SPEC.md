@@ -2,7 +2,7 @@
 
 Use this to **mock the entire CLI** in the browser: parsing rules, all commands, and realistic stdout/stderr so the in-site terminal behaves like the real `coelanox` binary.
 
-**Version:** `0.7.0`  
+**Version:** `0.7.5`  
 **Binary name:** `coelanox`
 
 ---
@@ -45,7 +45,7 @@ Use this to **mock the entire CLI** in the browser: parsing rules, all commands,
 | Command | Success output |
 |---------|----------------|
 | (none), `-h`, `help` | Top-level usage: "Usage: coelanox \<COMMAND\>" + command list |
-| `-V` | `coelanox 0.7.0` |
+| `-V` | `coelanox 0.7.5` |
 | `validate -f X.cnox` | `✅ Container is valid` |
 | `verify -f X.cnox` | `✅ Container integrity verified` |
 | `run -f X.cnox -o out.json` | `Execution time: N μs` |

@@ -20,28 +20,34 @@ use coelanox_orchestrator::{
 use coelanox_packager::CoelanoxPackager;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use tracing::{error, info, warn};
 
-/// Load runtime config: from COELANOX_CONFIG_FILE if set, else from environment (COELANOX_* vars).
-fn load_runtime_config() -> RuntimeConfig {
-    if let Ok(path) = std::env::var("COELANOX_CONFIG_FILE") {
-        let p = Path::new(&path);
-        match RuntimeConfig::from_file(p) {
-            Ok(c) => {
-                info!("Runtime configuration loaded from {}", path);
-                return c;
-            }
-            Err(e) => {
-                warn!(
-                    "Could not load config from {} ({}); using environment variables and defaults",
-                    path, e
-                );
-            }
-        }
+/// True if `path` already targets `models/output/...` as the first logical directory pair.
+///
+/// Handles leading `./`, `../`, and `..` segments so we do not prepend `models/output/` twice
+/// (e.g. `./models/output/foo` or `../models/output/foo`).
+fn path_already_under_models_output(path: &Path) -> bool {
+    let mut it = path.components().peekable();
+    while matches!(it.peek(), Some(Component::CurDir)) {
+        it.next();
     }
-    RuntimeConfig::from_env()
+    while matches!(it.peek(), Some(Component::ParentDir)) {
+        it.next();
+    }
+    match (it.next(), it.next()) {
+        (Some(Component::Normal(a)), Some(Component::Normal(b))) => {
+            a.to_string_lossy().eq_ignore_ascii_case("models")
+                && b.to_string_lossy().eq_ignore_ascii_case("output")
+        }
+        _ => false,
+    }
+}
+
+/// True when a load failure is due to container hash / signature verification (extra user hints).
+fn should_hint_container_integrity_failure(err: &CoelanoxError) -> bool {
+    err.is_container_integrity_failure()
 }
 
 /// Resolve output path: create parent dirs, default to models/output/ for relative paths, add .cnox if no extension.
@@ -50,14 +56,7 @@ fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<Pat
     let output_path = Path::new(output_path);
 
     // Relative paths (unless already under models/output) go under models/output/
-    let normalized_output = output_path
-        .iter()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .collect::<Vec<_>>();
-
-    // Check if output already starts with "models/output" or "models\\output" (Windows)
-    let already_in_output_dir = normalized_output.len() >= 2
-        && (normalized_output[0] == "models" && normalized_output[1] == "output");
+    let already_in_output_dir = path_already_under_models_output(output_path);
 
     // If output path is relative and doesn't already start with models/output, make it relative to models/output/
     let final_output_path = if output_path.is_relative() && !already_in_output_dir {
@@ -89,7 +88,7 @@ fn ensure_output_path(input_path: &str, output_path: &str) -> CoelanoxResult<Pat
 #[derive(Parser)]
 #[command(name = "coelanox")]
 #[command(about = "COELANOX — package, verify, and run secure AI inference containers (.cnox)")]
-#[command(version = "0.7.1")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -397,6 +396,18 @@ enum Commands {
         /// Reserved for future trace depth limits
         #[arg(short, long, default_value = "10")]
         trace_limit: usize,
+
+        /// Trusted Ed25519 public key file (32 bytes). Alternative: COELANOX_TRUSTED_PUBLIC_KEY
+        #[arg(long)]
+        trusted_key: Option<String>,
+
+        /// Fail if the container is signed but no trusted key is provided
+        #[arg(long)]
+        require_signature: bool,
+
+        /// Skip integrity verification at load (same as `coelanox run --no-verify`)
+        #[arg(long)]
+        no_verify: bool,
     },
 
     /// Copy a deployable runtime binary (same architecture as this CLI)
@@ -582,6 +593,9 @@ fn main() -> CoelanoxResult<()> {
             gdb,
             dump_registers,
             trace_limit,
+            trusted_key,
+            require_signature,
+            no_verify,
         } => debug_command(
             &file,
             input.as_deref(),
@@ -589,6 +603,9 @@ fn main() -> CoelanoxResult<()> {
             gdb,
             dump_registers,
             trace_limit,
+            trusted_key.as_deref(),
+            require_signature,
+            no_verify,
         ),
         Commands::Extract {
             output,
@@ -795,7 +812,7 @@ fn validate_command(file: &str) -> CoelanoxResult<()> {
         coelanox_core::format::CoelanoxContainer::read_binary_file(std::path::Path::new(file))?;
 
     println!("Validation succeeded.");
-    println!("CLI version: 0.7.0");
+    println!("CLI version: {}", env!("CARGO_PKG_VERSION"));
     println!("Model name: {}", container.manifest.name);
     println!("Format: {:?}", container.manifest.format);
     println!("Size: {} bytes", container.total_size());
@@ -967,7 +984,7 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
 
     println!("--- COELANOX container ---");
     println!("File: {}", file);
-    println!("Format version: 0.7.0");
+    println!("Format version: {}", env!("CARGO_PKG_VERSION"));
     println!("Status: valid");
     println!();
     println!("--- Model ---");
@@ -1140,13 +1157,13 @@ fn run_command(
     }
 
     // Load runtime (config from COELANOX_CONFIG_FILE or COELANOX_* env vars)
-    let config = load_runtime_config();
+    let config = RuntimeConfig::from_env_with_optional_config_file()?;
     let runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
     }
     if let Some(key) = resolve_trusted_key(trusted_key)? {
-        runtime.set_trusted_public_key(key);
+        runtime.set_trusted_public_key(key)?;
     }
     if no_verify {
         info!("Loading container (integrity verification skipped per --no-verify)");
@@ -1155,7 +1172,7 @@ fn run_command(
     } else {
         info!("Loading container with integrity verification");
         runtime.load_container(file).inspect_err(|e| {
-            if e.to_string().contains("verification") || e.to_string().contains("hash") {
+            if should_hint_container_integrity_failure(e) {
                 eprintln!("Load aborted: integrity verification failed.");
                 eprintln!("The file may be corrupted, truncated, or modified.");
             }
@@ -1305,13 +1322,13 @@ fn serve_command(
         }
     }
 
-    let config = load_runtime_config();
+    let config = RuntimeConfig::from_env_with_optional_config_file()?;
     let runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
     }
     if let Some(key) = resolve_trusted_key(trusted_key)? {
-        runtime.set_trusted_public_key(key);
+        runtime.set_trusted_public_key(key)?;
     }
     if no_verify {
         info!("Loading container (integrity verification skipped per --no-verify)");
@@ -1320,7 +1337,7 @@ fn serve_command(
     } else {
         info!("Loading container with integrity verification");
         runtime.load_container(file).inspect_err(|e| {
-            if e.to_string().contains("verification") || e.to_string().contains("hash") {
+            if should_hint_container_integrity_failure(e) {
                 eprintln!("Load aborted: integrity verification failed.");
                 eprintln!("The file may be corrupted, truncated, or modified.");
             }
@@ -1419,13 +1436,13 @@ fn benchmark_command(
         }
     );
 
-    let config = load_runtime_config();
+    let config = RuntimeConfig::from_env_with_optional_config_file()?;
     let mut runtime = CoelanoxRuntime::with_config(config);
     if let Some(mb) = resolved_workspace_mb {
         runtime.set_max_workspace_mb(mb);
     }
     if let Some(key) = resolve_trusted_key(trusted_key)? {
-        runtime.set_trusted_public_key(key);
+        runtime.set_trusted_public_key(key)?;
     }
     if require_signature {
         let signed = is_container_signed(std::path::Path::new(file))?;
@@ -1537,6 +1554,10 @@ fn env_command() -> CoelanoxResult<()> {
     info!("Collecting host environment");
 
     let env = coelanox_core::utils::SystemEnvironment::detect()?;
+
+    println!("--- COELANOX CLI ---");
+    println!("CLI version: {}", env!("CARGO_PKG_VERSION"));
+    println!();
 
     println!("--- Host ---");
     println!("OS: {}", env.os);
@@ -1719,19 +1740,52 @@ fn debug_command(
     use_gdb: bool,
     dump_registers: bool,
     _trace_limit: usize,
+    trusted_key: Option<&str>,
+    require_signature: bool,
+    no_verify: bool,
 ) -> CoelanoxResult<()> {
     info!("Debug session: {}", file);
 
     if use_gdb {
-        return debug_with_gdb(file, input, output);
+        return debug_with_gdb(
+            file,
+            input,
+            output,
+            trusted_key,
+            require_signature,
+            no_verify,
+        );
     }
 
-    let config = load_runtime_config();
+    if require_signature {
+        let signed = is_container_signed(std::path::Path::new(file))?;
+        let has_key = trusted_key.is_some() || std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").is_ok();
+        if signed && !has_key {
+            return Err(CoelanoxError::format(
+                "This container is signed; provide a trusted public key (--trusted-key or COELANOX_TRUSTED_PUBLIC_KEY). Required when --require-signature is set.",
+            ));
+        }
+    }
+
+    let config = RuntimeConfig::from_env_with_optional_config_file()?;
     let runtime = CoelanoxRuntime::with_config(config);
 
-    // Load container
+    // Load container (same trust/verify semantics as `coelanox run`)
     info!("Loading container: {}", file);
-    runtime.load_container(file)?;
+    if let Some(key) = resolve_trusted_key(trusted_key)? {
+        runtime.set_trusted_public_key(key)?;
+    }
+    if no_verify {
+        info!("Loading container (integrity verification skipped per --no-verify)");
+        runtime.load_container_no_verify(file)?;
+    } else {
+        runtime.load_container(file).inspect_err(|e| {
+            if should_hint_container_integrity_failure(e) {
+                eprintln!("Load aborted: integrity verification failed.");
+                eprintln!("The file may be corrupted, truncated, or modified.");
+            }
+        })?;
+    }
 
     let container_info = runtime.get_container_info(file)?;
     println!("--- Container ---");
@@ -1873,12 +1927,30 @@ fn debug_command(
 }
 
 /// Debug using GDB (external debugger)
-fn debug_with_gdb(file: &str, input: Option<&str>, output: &str) -> CoelanoxResult<()> {
+fn debug_with_gdb(
+    file: &str,
+    input: Option<&str>,
+    output: &str,
+    trusted_key: Option<&str>,
+    require_signature: bool,
+    no_verify: bool,
+) -> CoelanoxResult<()> {
     info!("Starting GDB session");
 
     // Get path to current binary
     let binary_path = std::env::current_exe()
         .map_err(|e| CoelanoxError::format(format!("Could not resolve executable path: {}", e)))?;
+
+    let mut run_flags = String::new();
+    if no_verify {
+        run_flags.push_str(" --no-verify");
+    }
+    if let Some(k) = trusted_key {
+        run_flags.push_str(&format!(" --trusted-key {}", k));
+    }
+    if require_signature {
+        run_flags.push_str(" --require-signature");
+    }
 
     // Create GDB script
     let gdb_script = format!(
@@ -1902,7 +1974,7 @@ commands
     x/16gx $rsp
     continue
 end
-run run --file {} {}
+run run{} --file {} {}
 continue
 bt
 info registers
@@ -1910,6 +1982,7 @@ x/16gx $rsp
 quit
 "#,
         binary_path.display(),
+        run_flags,
         file,
         input.map(|s| format!("--input {}", s)).unwrap_or_default()
     );
@@ -2021,4 +2094,33 @@ fn is_valid_shape_format(shapes_str: &str) -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod output_path_tests {
+    use super::path_already_under_models_output;
+    use std::path::Path;
+
+    #[test]
+    fn detects_models_output_prefix_plain() {
+        assert!(path_already_under_models_output(Path::new("models/output/foo.cnox")));
+        assert!(path_already_under_models_output(Path::new("models/output")));
+    }
+
+    #[test]
+    fn detects_models_output_after_dot_slash() {
+        assert!(path_already_under_models_output(Path::new("./models/output/bar.cnox")));
+    }
+
+    #[test]
+    fn detects_models_output_after_parent_dirs() {
+        assert!(path_already_under_models_output(Path::new("../models/output/x.cnox")));
+        assert!(path_already_under_models_output(Path::new("../../models/output/y.cnox")));
+    }
+
+    #[test]
+    fn other_relative_paths_not_flagged_as_models_output() {
+        assert!(!path_already_under_models_output(Path::new("out/model.cnox")));
+        assert!(!path_already_under_models_output(Path::new("foo/models/output/z.cnox")));
+    }
 }

@@ -122,7 +122,7 @@ A: `~/.coelanox/clf/clfc/` by default. Override with `COELANOX_CLF_PATH`. See Ba
 A: If no CLF/SIMD code was packaged (or CLF path is wrong), the runtime uses scalar fallback. Run `coelanox env` to check; ensure `.clfc` files are in the discovery path if you expect SIMD.
 
 **Q: How do I get the version?**  
-A: `coelanox --version` for CLI; crate versions are in `coelanox/*/Cargo.toml`.
+A: `coelanox --version` for CLI (current release line **0.7.x**); crate versions are in `coelanox/*/Cargo.toml` (aligned with the CLI for each tagged release).
 
 ---
 

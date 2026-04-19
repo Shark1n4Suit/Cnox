@@ -24,6 +24,35 @@ mod impl_ {
     /// ONNX translator plugin (opset 13 semantics).
     pub struct OnnxTranslator;
 
+    /// Decode a little-endian scalar from raw initializer bytes (hostile ONNX must not panic the packager).
+    fn le_f32_chunk(chunk: &[u8]) -> CoelanoxResult<f32> {
+        let a: [u8; 4] = chunk.try_into().map_err(|_| {
+            CoelanoxError::format("ONNX tensor raw_data: expected 4-byte chunks for float32")
+        })?;
+        Ok(f32::from_le_bytes(a))
+    }
+
+    fn le_i32_chunk(chunk: &[u8]) -> CoelanoxResult<i32> {
+        let a: [u8; 4] = chunk.try_into().map_err(|_| {
+            CoelanoxError::format("ONNX initializer raw_data: expected 4-byte chunks for int32")
+        })?;
+        Ok(i32::from_le_bytes(a))
+    }
+
+    fn le_i64_chunk(chunk: &[u8]) -> CoelanoxResult<i64> {
+        let a: [u8; 8] = chunk.try_into().map_err(|_| {
+            CoelanoxError::format("ONNX initializer raw_data: expected 8-byte chunks for int64")
+        })?;
+        Ok(i64::from_le_bytes(a))
+    }
+
+    fn le_u16_chunk(chunk: &[u8]) -> CoelanoxResult<u16> {
+        let a: [u8; 2] = chunk.try_into().map_err(|_| {
+            CoelanoxError::format("ONNX tensor raw_data: expected 2-byte chunks for float16")
+        })?;
+        Ok(u16::from_le_bytes(a))
+    }
+
     impl OnnxTranslator {
         pub fn new() -> Self {
             Self
@@ -227,7 +256,7 @@ mod impl_ {
                 let n = data.len() / 4;
                 let mut out = Vec::with_capacity(n);
                 for chunk in data.chunks_exact(4) {
-                    out.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+                    out.push(le_f32_chunk(chunk)?);
                 }
                 return Ok(out);
             }
@@ -255,14 +284,14 @@ mod impl_ {
                     let n = data.len() / 4;
                     let mut out = Vec::with_capacity(n);
                     for chunk in data.chunks_exact(4) {
-                        out.push(i32::from_le_bytes(chunk.try_into().unwrap()) as i64);
+                        out.push(le_i32_chunk(chunk)? as i64);
                     }
                     return Ok(out);
                 }
                 let n = data.len() / 8;
                 let mut out = Vec::with_capacity(n);
                 for chunk in data.chunks_exact(8) {
-                    out.push(i64::from_le_bytes(chunk.try_into().unwrap()));
+                    out.push(le_i64_chunk(chunk)?);
                 }
                 return Ok(out);
             }
@@ -292,7 +321,7 @@ mod impl_ {
                     let n = data.len() / 2;
                     let mut out = Vec::with_capacity(n);
                     for chunk in data.chunks_exact(2) {
-                        let u = u16::from_le_bytes(chunk.try_into().unwrap());
+                        let u = le_u16_chunk(chunk)?;
                         out.push(Self::f16_to_f32(u));
                     }
                     return Ok(out);
@@ -300,7 +329,7 @@ mod impl_ {
                 let n = data.len() / 4;
                 let mut out = Vec::with_capacity(n);
                 for chunk in data.chunks_exact(4) {
-                    out.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+                    out.push(le_f32_chunk(chunk)?);
                 }
                 return Ok(out);
             }
@@ -334,14 +363,14 @@ mod impl_ {
             let out = if dtype == OnnxDataType::FLOAT16 {
                 let mut v = Vec::with_capacity(num_elements);
                 for chunk in slice.chunks_exact(2) {
-                    let u = u16::from_le_bytes(chunk.try_into().unwrap());
+                    let u = le_u16_chunk(chunk)?;
                     v.push(Self::f16_to_f32(u));
                 }
                 v
             } else {
                 let mut v = Vec::with_capacity(num_elements);
                 for chunk in slice.chunks_exact(4) {
-                    v.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+                    v.push(le_f32_chunk(chunk)?);
                 }
                 v
             };
@@ -2098,7 +2127,11 @@ mod impl_ {
 
                         let c_t_name = format!("{}_ct", prefix);
                         let c_out_id = if use_y_c {
-                            y_c_id.unwrap()
+                            y_c_id.ok_or_else(|| {
+                                CoelanoxError::format(
+                                    "LSTM decomposer: missing cell state output (y_c) when required",
+                                )
+                            })?
                         } else {
                             let cid = ir.add_intermediate_tensor(
                                 c_t_name.clone(),
@@ -2128,9 +2161,17 @@ mod impl_ {
                         ir.add_node_output(tanh_ct, tanh_ct_id)?;
 
                         let h_out_id = if use_y {
-                            y_id.unwrap()
+                            y_id.ok_or_else(|| {
+                                CoelanoxError::format(
+                                    "LSTM decomposer: missing Y output when required (seq_len == 1)",
+                                )
+                            })?
                         } else if use_y_h {
-                            y_h_id.unwrap()
+                            y_h_id.ok_or_else(|| {
+                                CoelanoxError::format(
+                                    "LSTM decomposer: missing Y_h output when required",
+                                )
+                            })?
                         } else {
                             let h_t_name = format!("{}_ht", prefix);
                             let hid = ir.add_intermediate_tensor(
@@ -2156,30 +2197,28 @@ mod impl_ {
                     if let Some(yid) = y_id {
                         if seq_len > 1 {
                             // Unsqueeze each h_t to [1, batch, hidden], then Concat along axis 0 -> [seq_len, batch, hidden]
-                            let unsqueezed: Vec<TensorId> = h_outputs
-                                .iter()
-                                .enumerate()
-                                .map(|(i, &hid)| {
-                                    let u_name = format!("{}_lstm_y_u{}", node_name, i);
-                                    let u_shape = Shape::new(vec![1, batch, hidden_size]);
-                                    let u_id = ir.add_intermediate_tensor(
-                                        u_name.clone(),
-                                        u_shape,
-                                        DataType::Float32,
+                            let mut unsqueezed: Vec<TensorId> =
+                                Vec::with_capacity(h_outputs.len());
+                            for (i, &hid) in h_outputs.iter().enumerate() {
+                                let u_name = format!("{}_lstm_y_u{}", node_name, i);
+                                let u_shape = Shape::new(vec![1, batch, hidden_size]);
+                                let u_id = ir.add_intermediate_tensor(
+                                    u_name.clone(),
+                                    u_shape,
+                                    DataType::Float32,
+                                );
+                                name_to_id.insert(u_name, u_id);
+                                let n = ir.add_node(OpType::Reshape);
+                                ir.add_node_input(n, hid)?;
+                                ir.add_node_output(n, u_id)?;
+                                if let Some(nd) = ir.get_node_mut(n) {
+                                    nd.add_attribute(
+                                        "unsqueeze_axes".to_string(),
+                                        Attribute::IntArray(vec![0]),
                                     );
-                                    name_to_id.insert(u_name, u_id);
-                                    let n = ir.add_node(OpType::Reshape);
-                                    ir.add_node_input(n, hid).unwrap();
-                                    ir.add_node_output(n, u_id).unwrap();
-                                    if let Some(nd) = ir.get_node_mut(n) {
-                                        nd.add_attribute(
-                                            "unsqueeze_axes".to_string(),
-                                            Attribute::IntArray(vec![0]),
-                                        );
-                                    }
-                                    u_id
-                                })
-                                .collect();
+                                }
+                                unsqueezed.push(u_id);
+                            }
                             let concat_n = ir.add_node(OpType::Concatenate);
                             for &uid in &unsqueezed {
                                 ir.add_node_input(concat_n, uid)?;

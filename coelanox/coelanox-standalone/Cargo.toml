@@ -1,6 +1,6 @@
 [package]
 name = "coelanox-standalone"
-version = "0.7.1"
+version = "0.7.5"
 edition = "2021"
 description = "Minimal entry point to load and run a single COELANOX container (no CLI, no multi-container)"
 authors = ["Benjamin Morin <benjamin.morin@example.com>"]
@@ -20,6 +20,6 @@ coelanox-core = { path = "../coelanox-core" }
 coelanox-orchestrator = { path = "../coelanox-orchestrator" }
 coelanox-ipc = { path = "../coelanox-ipc" }
 clap = { workspace = true }
-tracing = "0.1"
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = "1.0"

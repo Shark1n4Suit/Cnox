@@ -108,6 +108,12 @@ pub mod performance {
         let mut times = Vec::with_capacity(iterations);
         let mut last_result = None;
 
+        assert!(
+            iterations > 0,
+            "benchmark_multiple: iterations must be positive (got {})",
+            iterations
+        );
+
         for _ in 0..iterations {
             let timer = Timer::start();
             let result = func();
@@ -120,7 +126,11 @@ pub mod performance {
         let total_time: Duration = times.iter().sum();
         let avg_time = total_time / iterations as u32;
 
-        (last_result.unwrap(), total_time, avg_time)
+        (
+            last_result.expect("benchmark_multiple: last_result set when iterations > 0"),
+            total_time,
+            avg_time,
+        )
     }
 }
 
