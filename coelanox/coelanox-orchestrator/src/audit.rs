@@ -433,7 +433,10 @@ fn format_plain_batch(batch: &AuditBatchV2) -> String {
     if let Some(ref run) = batch.run {
         out.push_str("[run]\n");
         out.push_str(&format!("  run_id: {}\n", run.run_id));
-        out.push_str(&format!("  started_at_unix_ms: {}\n", run.started_at_unix_ms));
+        out.push_str(&format!(
+            "  started_at_unix_ms: {}\n",
+            run.started_at_unix_ms
+        ));
         out.push_str(&format!("  container_path: {}\n", run.container_path));
         out.push_str(&format!("  backend: {}\n", run.backend));
         out.push_str(&format!(
@@ -482,7 +485,11 @@ fn format_plain_batch(batch: &AuditBatchV2) -> String {
 
 /// Append one batch: for `.json` paths, one JSON object per flush (compact JSONL by default).
 /// With `pretty_json`, writes indented JSON (multi-line per batch; not strict single-line JSONL).
-fn append_entries_batch(path: &Path, batch: &AuditBatchV2, pretty_json: bool) -> std::io::Result<()> {
+fn append_entries_batch(
+    path: &Path,
+    batch: &AuditBatchV2,
+    pretty_json: bool,
+) -> std::io::Result<()> {
     use std::io::Write;
 
     if let Some(parent) = path.parent() {
@@ -641,12 +648,7 @@ pub fn output_node_indices_from_ir_data(
 }
 
 /// Log one op: node index, op type string, output size, and **full** output buffer (or representative slice).
-pub fn log_after_op(
-    node_index: usize,
-    op_type: &str,
-    output_len: usize,
-    output_data: &[f32],
-) {
+pub fn log_after_op(node_index: usize, op_type: &str, output_len: usize, output_data: &[f32]) {
     let mut state = lock_audit_state();
     if !state.enabled {
         return;
@@ -654,13 +656,7 @@ pub fn log_after_op(
     if !should_log_node(&state, node_index) {
         return;
     }
-    let entry = build_op_entry(
-        &state.session,
-        node_index,
-        op_type,
-        output_len,
-        output_data,
-    );
+    let entry = build_op_entry(&state.session, node_index, op_type, output_len, output_data);
     tracing::info!(
         "audit op {} {} out_len={} head={:?}",
         entry.op_index,

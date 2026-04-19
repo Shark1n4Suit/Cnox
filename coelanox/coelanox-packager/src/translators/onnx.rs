@@ -2197,8 +2197,7 @@ mod impl_ {
                     if let Some(yid) = y_id {
                         if seq_len > 1 {
                             // Unsqueeze each h_t to [1, batch, hidden], then Concat along axis 0 -> [seq_len, batch, hidden]
-                            let mut unsqueezed: Vec<TensorId> =
-                                Vec::with_capacity(h_outputs.len());
+                            let mut unsqueezed: Vec<TensorId> = Vec::with_capacity(h_outputs.len());
                             for (i, &hid) in h_outputs.iter().enumerate() {
                                 let u_name = format!("{}_lstm_y_u{}", node_name, i);
                                 let u_shape = Shape::new(vec![1, batch, hidden_size]);

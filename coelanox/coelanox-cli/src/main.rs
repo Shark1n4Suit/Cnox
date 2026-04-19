@@ -2103,24 +2103,36 @@ mod output_path_tests {
 
     #[test]
     fn detects_models_output_prefix_plain() {
-        assert!(path_already_under_models_output(Path::new("models/output/foo.cnox")));
+        assert!(path_already_under_models_output(Path::new(
+            "models/output/foo.cnox"
+        )));
         assert!(path_already_under_models_output(Path::new("models/output")));
     }
 
     #[test]
     fn detects_models_output_after_dot_slash() {
-        assert!(path_already_under_models_output(Path::new("./models/output/bar.cnox")));
+        assert!(path_already_under_models_output(Path::new(
+            "./models/output/bar.cnox"
+        )));
     }
 
     #[test]
     fn detects_models_output_after_parent_dirs() {
-        assert!(path_already_under_models_output(Path::new("../models/output/x.cnox")));
-        assert!(path_already_under_models_output(Path::new("../../models/output/y.cnox")));
+        assert!(path_already_under_models_output(Path::new(
+            "../models/output/x.cnox"
+        )));
+        assert!(path_already_under_models_output(Path::new(
+            "../../models/output/y.cnox"
+        )));
     }
 
     #[test]
     fn other_relative_paths_not_flagged_as_models_output() {
-        assert!(!path_already_under_models_output(Path::new("out/model.cnox")));
-        assert!(!path_already_under_models_output(Path::new("foo/models/output/z.cnox")));
+        assert!(!path_already_under_models_output(Path::new(
+            "out/model.cnox"
+        )));
+        assert!(!path_already_under_models_output(Path::new(
+            "foo/models/output/z.cnox"
+        )));
     }
 }

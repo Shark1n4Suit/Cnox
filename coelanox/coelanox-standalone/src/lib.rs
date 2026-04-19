@@ -65,8 +65,8 @@ pub fn load_container_with_options(
 ) -> CoelanoxResult<()> {
     if opts.require_signature {
         let signed = is_container_signed(Path::new(container_path))?;
-        let has_key = opts.trusted_key_path.is_some()
-            || std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").is_ok();
+        let has_key =
+            opts.trusted_key_path.is_some() || std::env::var("COELANOX_TRUSTED_PUBLIC_KEY").is_ok();
         if signed && !has_key {
             return Err(CoelanoxError::format(
                 "This container is signed; provide a trusted public key (--trusted-key or COELANOX_TRUSTED_PUBLIC_KEY). Required when --require-signature is set.",
@@ -112,7 +112,10 @@ pub fn run_container(
 }
 
 /// Load a container from path and run inference with auto-generated dummy input (for testing).
-pub fn run_container_dummy_input(path: impl AsRef<Path>, opts: &ContainerRunOptions) -> CoelanoxResult<Vec<f32>> {
+pub fn run_container_dummy_input(
+    path: impl AsRef<Path>,
+    opts: &ContainerRunOptions,
+) -> CoelanoxResult<Vec<f32>> {
     let name = path.as_ref().to_string_lossy().into_owned();
     let config = RuntimeConfig::from_env_with_optional_config_file()?;
     let runtime = CoelanoxRuntime::with_config(config);

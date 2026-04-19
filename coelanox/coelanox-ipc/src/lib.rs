@@ -6,6 +6,4 @@
 
 pub mod serve;
 
-pub use serve::{
-    run_serve_stdio, ServeOptions, IPC_PROTOCOL_VERSION, MAX_IPC_PAYLOAD_BYTES,
-};
+pub use serve::{run_serve_stdio, ServeOptions, IPC_PROTOCOL_VERSION, MAX_IPC_PAYLOAD_BYTES};
