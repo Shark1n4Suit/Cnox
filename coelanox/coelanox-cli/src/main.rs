@@ -930,7 +930,7 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
             ir.optimized_nodes.len()
         );
         let mut types: Vec<_> = all_types.into_iter().collect();
-        types.sort_by(|a, b| b.1.cmp(&a.1));
+        types.sort_by_key(|t| std::cmp::Reverse(t.1));
         for (op, count) in &types {
             println!("  {}: {}", op, count);
         }
@@ -938,7 +938,7 @@ fn info_command(file: &str, dump_plan: bool, list_ops: bool) -> CoelanoxResult<(
             println!();
             println!("--- Custom operations (not supported on scalar backend) ---");
             let mut customs: Vec<_> = custom_ops.into_iter().collect();
-            customs.sort_by(|a, b| b.1.cmp(&a.1));
+            customs.sort_by_key(|t| std::cmp::Reverse(t.1));
             for (name, count) in &customs {
                 println!("  {}: {} occurrence(s)", name, count);
             }
@@ -1590,7 +1590,7 @@ fn env_command() -> CoelanoxResult<()> {
 
     println!("--- Optional toolchains (environment) ---");
     let mut caps: Vec<_> = env.capabilities.iter().collect();
-    caps.sort_by(|a, b| a.0.cmp(b.0));
+    caps.sort_by_key(|t| t.0.as_str());
     for (capability, available) in caps {
         println!(
             "  {}: {}",
@@ -1858,7 +1858,10 @@ fn debug_command(
     #[cfg(unix)]
     if dump_registers {
         unsafe {
-            libc::signal(libc::SIGSEGV, crash_handler as libc::sighandler_t);
+            libc::signal(
+                libc::SIGSEGV,
+                crash_handler as *const () as libc::sighandler_t,
+            );
         }
     }
 

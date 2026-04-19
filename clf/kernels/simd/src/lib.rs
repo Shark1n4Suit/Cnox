@@ -2012,7 +2012,7 @@ pub unsafe extern "C" fn clf_abi6_batchnorm(
     let n = 1usize;
     let hw = in_len / c;
     let h = (hw as f64).sqrt() as usize;
-    let w = if h > 0 { hw / h } else { 0 };
+    let w = hw.checked_div(h).unwrap_or(0);
     let scale = weights_ptr;
     let bias = weights_ptr.add(c);
     let mean = weights_ptr.add(2 * c);
@@ -2041,7 +2041,7 @@ pub unsafe extern "C" fn clf_abi6_global_avg_pool(
     let c = out_len;
     let hw = in_len / c;
     let h = (hw as f64).sqrt() as usize;
-    let w = if h > 0 { hw / h } else { 0 };
+    let w = hw.checked_div(h).unwrap_or(0);
     #[cfg(all(target_arch = "x86_64", feature = "avx2"))]
     global_avg_pool_avx2(output_ptr, input_ptr, n, c, h, w);
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))]
@@ -2128,12 +2128,12 @@ fn derive_conv_shapes(
         }
         let k_prod = w_len / weight_elements;
         let k_h_cand = (k_prod as f64).sqrt() as usize;
-        let k_w_cand = if k_h_cand > 0 { k_prod / k_h_cand } else { 0 };
+        let k_w_cand = k_prod.checked_div(k_h_cand).unwrap_or(0);
         if k_h_cand == 0 || k_w_cand == 0 || k_h_cand * k_w_cand != k_prod {
             continue;
         }
         let h_cand = (spatial as f64).sqrt() as usize;
-        let w_cand = if h_cand > 0 { spatial / h_cand } else { 0 };
+        let w_cand = spatial.checked_div(h_cand).unwrap_or(0);
         if h_cand * w_cand != spatial {
             continue;
         }
