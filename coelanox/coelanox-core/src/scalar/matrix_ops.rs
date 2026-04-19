@@ -336,7 +336,7 @@ fn infer_conv2d_shapes(
         }
         let hw_in = in_len / c_in;
         let h_out = (hw_out as f64).sqrt() as usize;
-        let w_out = if h_out > 0 { hw_out / h_out } else { 0 };
+        let w_out = hw_out.checked_div(h_out).unwrap_or(0);
         if h_out * w_out != hw_out {
             continue;
         }

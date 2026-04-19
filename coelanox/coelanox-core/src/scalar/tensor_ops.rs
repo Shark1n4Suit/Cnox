@@ -194,8 +194,7 @@ pub fn slice(
             let s = st[i].min(shape[i]);
             let e = en[i].min(shape[i]);
             if s >= e {
-                let len = output.len().min(0);
-                output[..len].copy_from_slice(&input[..len]);
+                // Invalid slice range: nothing to copy (same as len == 0).
                 return Ok(());
             }
             offset += s * stride[i];

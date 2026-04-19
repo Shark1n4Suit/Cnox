@@ -161,14 +161,14 @@ impl SystemEnvironment {
     fn detect_cpu_vendor() -> CoelanoxResult<String> {
         #[cfg(target_arch = "x86_64")]
         {
-            let vendor = unsafe {
-                let cp = std::arch::x86_64::__cpuid(0);
-                let mut buf = [0u8; 12];
-                buf[0..4].copy_from_slice(&cp.ebx.to_le_bytes());
-                buf[4..8].copy_from_slice(&cp.edx.to_le_bytes());
-                buf[8..12].copy_from_slice(&cp.ecx.to_le_bytes());
-                String::from_utf8_lossy(&buf).trim().to_string()
-            };
+            // Only the CPUID intrinsic is unsafe; keep the block minimal for `unused_unsafe`
+            // under `-D warnings` (Rust 1.95+ clippy).
+            let cp = unsafe { std::arch::x86_64::__cpuid(0) };
+            let mut buf = [0u8; 12];
+            buf[0..4].copy_from_slice(&cp.ebx.to_le_bytes());
+            buf[4..8].copy_from_slice(&cp.edx.to_le_bytes());
+            buf[8..12].copy_from_slice(&cp.ecx.to_le_bytes());
+            let vendor = String::from_utf8_lossy(&buf).trim().to_string();
             Ok(vendor)
         }
 
