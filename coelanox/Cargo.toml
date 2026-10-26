@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "coelanox-core",
+    "coelanox-clf",
+    "coelanox-executor",
+    "coelanox-packager",
+    "coelanox-orchestrator",
+    "coelanox-ipc",
+    "coelanox-cli",
+    "coelanox-standalone",
+    "tests",
+    # "translators/onnx-translator"  # Commented out - not available
+]
+
+[profile.release]
+# Maximum performance for production (not dev) builds
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.11.1"
+libc = "0.2"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+clap = { version = "4.4", features = ["derive"] }
+thiserror = "1.0"
+anyhow = "1.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+memmap2 = "0.9"
+walkdir = "2.4"
+glob = "0.3"
+tempfile = "3.8"
+config = "0.14"
+toml = "0.8"
+flate2 = "1.0"
+zstd = "0.12"
+lz4 = "1.24"
+windows-sys = { version = "0.48", features = ["Win32_System_Memory"] }
+aes = "0.8"
+hmac = "0.12"
+prost = "0.12"
+prost-types = "0.12"
+num_cpus = "1.16"
+rayon = "1.8"
+crossbeam = "0.8"
+tokio = { version = "1.35", features = ["full"] }
+zerocopy = "0.7"

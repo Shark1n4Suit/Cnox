@@ -1,0 +1,150 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.7.5). Required when running manually.'
+        required: true
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cd coelanox
+          cargo build --release -p coelanox-cli -p coelanox-standalone
+
+      - name: Create Linux package
+        run: |
+          mkdir -p release/linux-x86_64
+          cp coelanox/target/release/coelanox release/linux-x86_64/
+          cp coelanox/target/release/coelanox-run release/linux-x86_64/
+          cat > release/linux-x86_64/install.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          INSTALL_DIR="${1:-/usr/local/bin}"
+          mkdir -p "$INSTALL_DIR"
+          cp -f "$SCRIPT_DIR/coelanox" "$INSTALL_DIR/coelanox"
+          chmod +x "$INSTALL_DIR/coelanox"
+          if [ -f "$SCRIPT_DIR/coelanox-run" ]; then
+            cp -f "$SCRIPT_DIR/coelanox-run" "$INSTALL_DIR/coelanox-run"
+            chmod +x "$INSTALL_DIR/coelanox-run"
+          fi
+          echo "Installed coelanox (and coelanox-run if present) to $INSTALL_DIR"
+          EOF
+          chmod +x release/linux-x86_64/install.sh
+          cd release
+          tar -czvf coelanox-linux-x86_64.tar.gz -C linux-x86_64 .
+          mv coelanox-linux-x86_64.tar.gz ..
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coelanox-linux-x86_64
+          path: coelanox-linux-x86_64.tar.gz
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cd coelanox
+          cargo build --release -p coelanox-cli -p coelanox-standalone
+
+      - name: Create Windows package
+        run: |
+          New-Item -ItemType Directory -Force -Path release\windows-x86_64
+          Copy-Item coelanox\target\release\coelanox.exe release\windows-x86_64\
+          Copy-Item coelanox\target\release\coelanox-run.exe release\windows-x86_64\
+          Copy-Item scripts\install.ps1 release\windows-x86_64\
+          cd release
+          Compress-Archive -Path windows-x86_64\* -DestinationPath coelanox-windows-x86_64.zip
+          Move-Item coelanox-windows-x86_64.zip ..
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coelanox-windows-x86_64
+          path: coelanox-windows-x86_64.zip
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: release-artifacts
+
+      - name: Flatten release artifacts
+        run: |
+          mkdir -p dist
+          find release-artifacts -name "*.tar.gz" -exec cp {} dist/ \;
+          find release-artifacts -name "*.zip" -exec cp {} dist/ \;
+          ls -la dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          target: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.ref_name }}
+          files: |
+            dist/coelanox-linux-x86_64.tar.gz
+            dist/coelanox-windows-x86_64.zip
+          generate_release_notes: true
+          body: |
+            ## COELANOX ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+            Secure AI container runtime. Package, verify, and run inference.
+
+            ### Installation
+
+            **Linux:**
+            ```bash
+            tar -xzf coelanox-linux-x86_64.tar.gz -C /tmp/coelanox
+            cd /tmp/coelanox && ./install.sh
+            coelanox --help
+            ```
+
+            **Windows:**
+            1. Extract `coelanox-windows-x86_64.zip`
+            2. In the extracted folder run `.\install.ps1` (copies to `%LOCALAPPDATA%\coelanox\bin` and adds to PATH)
+            3. Restart your terminal, then run `coelanox --help`
+
+            ### Quick Start
+
+            ```bash
+            coelanox package -i model.onnx -o model.cnox
+            coelanox verify -f model.cnox
+            coelanox run -f model.cnox -o out.json
+            ```
+
+            See [docs/QUICKSTART](https://github.com/${{ github.repository }}/blob/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}/docs/QUICKSTART.md) for details.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

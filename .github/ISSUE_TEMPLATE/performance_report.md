@@ -18,7 +18,7 @@ assignees: ''
 
 **Environment**
 - OS: [e.g. Ubuntu 20.04, macOS 12.0, Windows 11]
-- SAIC Version: [e.g. v0.5.0-beta]
+- CNOX Version: [e.g. v0.7.5]
 - Rust Version: [e.g. 1.70.0]
 - Backend: [e.g. CPU (OpenVINO), GPU (TensorRT)]
 - Hardware: [e.g. Intel i7-10700K, NVIDIA RTX 3080, 32GB RAM]
@@ -33,7 +33,7 @@ assignees: ''
 ### Current Performance
 ```
 # Load time measurement
-time saic-runner run model.saic
+time cnox-runner run model.cnox
 # Result: [actual time]
 
 # Parse throughput calculation
@@ -63,14 +63,14 @@ time saic-runner run model.saic
 
 **Configuration**
 ```yaml
-# saic.yaml configuration
+# cnox.yaml configuration
 audit_mode: false
 log_level: "info"
 default_backend: "auto"
 performance_mode: true
 max_model_size: 0
 enable_caching: true
-cache_dir: "/tmp/saic-cache"
+cache_dir: "/tmp/cnox-cache"
 ```
 
 **Additional Context**
@@ -80,8 +80,8 @@ cache_dir: "/tmp/saic-cache"
 - Any error messages or warnings?
 
 **Files to Attach**
-- SAIC file (if the issue is with a specific model)
-- Configuration file (saic.yaml)
+- CNOX file (if the issue is with a specific model)
+- Configuration file (cnox.yaml)
 - Performance logs or output
 - System resource monitoring data
 
@@ -95,7 +95,7 @@ If you have ideas for improving performance, please share:
 
 **Checklist:**
 - [ ] I have measured performance with multiple runs
-- [ ] I have compared against the example mobilenetv2.saic file
+- [ ] I have compared against the example mobilenetv2.cnox file
 - [ ] I have provided detailed timing information
 - [ ] I have included system specifications
 - [ ] I have tested with different configurations 

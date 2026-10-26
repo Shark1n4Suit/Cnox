@@ -1,4 +1,4 @@
-# Coelanox SAIC - Git Attributes Configuration
+# Coelanox CNOX - Git Attributes Configuration
 # Fixes GitHub language detection to properly show this as a Rust project
 
 # Mark Rust files as the primary language
@@ -53,7 +53,7 @@ build_script_* linguist-generated
 **/*.mk linguist-generated
 
 # Test data and sample files
-*.saic linguist-generated
+*.cnox linguist-generated
 *.bin linguist-generated
 test_* linguist-generated
 

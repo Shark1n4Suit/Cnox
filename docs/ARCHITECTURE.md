@@ -1,563 +1,457 @@
-# SAIC Architecture Guide
+# COELANOX Architecture Documentation
 
-**Comprehensive system architecture and design principles for SAIC v0.5.0-beta**
+## Overview
 
-## 🏗️ **Architecture Overview**
+COELANOX is a universal binary container system for AI models that provides secure, fast, and hardware-optimized model deployment. This document describes the architecture of the COELANOX system: security hash, backend manager, and AOT selection.
 
-SAIC implements a **modular, extensible architecture** designed for enterprise deployment with a focus on performance, security, and scalability. Our architecture-first approach ensures that every component is optimized for its specific role while maintaining clean separation of concerns.
+## Three-Command Architecture
 
-### **System Architecture**
+COELANOX uses a three-command architecture for defense-in-depth security:
 
-```mermaid
-graph TB
-    subgraph "SAIC v0.5.0-beta Architecture"
-        A[SAIC File] --> B[Packager CLI]
-        A --> C[Runner CLI]
-        A --> D[Backend System]
-        
-        subgraph "Packager CLI"
-            E[Model Input]
-            F[Manifest Creation]
-            G[Binary Format]
-            H[SAIC Output]
-        end
-        
-        subgraph "Runner CLI"
-            I[File Validation]
-            J[Security Checks]
-            K[Performance Optimization]
-            L[Execution Engine]
-        end
-        
-        subgraph "Backend System"
-            M[Validation Backend]
-            N[CPU Backend]
-            O[GPU Backend]
-            P[Extensible Interface]
-        end
-        
-        subgraph "Core Components"
-            Q[File Format Layer]
-            R[Security Layer]
-            S[Performance Layer]
-            T[CLI Interface]
-        end
-    end
-    
-    E --> F
-    F --> G
-    G --> H
-    H --> A
-    
-    A --> I
-    I --> J
-    J --> K
-    K --> L
-    L --> M
-    
-    M --> Q
-    N --> Q
-    O --> Q
-    P --> Q
-    
-    Q --> R
-    R --> S
-    S --> T
-```
+### 1. Package Command (`coelanox package`)
 
-## 📦 **Component Architecture**
+**Purpose**: Create a COELANOX container from a source model.
 
-### **1. Packager CLI (`packager/`)**
+**Process**:
+1. Load source model (ONNX, BERT bundle, ResNet-tiny-MNIST; translator plugins)
+2. Translate to Universal IR
+3. Optimize IR for target hardware
+4. Generate machine code for target hardware
+5. Compress weights
+6. Calculate SHA-256 security hash
+7. Write container to `.cnox` file
 
-#### **Purpose**
-The Packager CLI is responsible for converting AI models into the SAIC format, creating self-contained, secure, and optimized containers.
+**Key Features**:
+- AOT (Ahead-of-Time) compilation
+- Hardware-specific code generation
+- Weight storage (Zstd/LZ4 at package time; runtime decompresses or passthrough for None)
+- Security hash calculation
 
-#### **Architecture**
-```mermaid
-graph LR
-    A[Model Input] --> B[Validation Layer]
-    B --> C[Manifest Creation]
-    C --> D[Binary Encoding]
-    D --> E[SAIC Output]
-    
-    subgraph "Validation Layer"
-        F[Model Format Check]
-        G[Size Validation]
-        H[Content Verification]
-    end
-    
-    subgraph "Manifest Creation"
-        I[JSON Manifest]
-        J[Metadata Extraction]
-        K[Security Tags]
-    end
-    
-    subgraph "Binary Encoding"
-        L[Header Creation]
-        M[Payload Encoding]
-        N[Checksum Generation]
-    end
-```
+**Location**: `coelanox-packager/src/lib.rs`
 
-#### **Key Features**
-- **Multi-format Support**: ONNX, PyTorch, TensorFlow
-- **Manifest Generation**: JSON-based metadata
-- **Binary Encoding**: Optimized binary format
-- **Security Integration**: Built-in security validation
+### 2. Verify Command (`coelanox verify`)
 
-#### **Performance Characteristics**
-- **Processing Speed**: 100-500ms per model
-- **Memory Usage**: Minimal overhead
-- **Output Size**: ~50 bytes overhead
-- **Security Rating**: 9.3/10
+**Purpose**: Standalone verification of container integrity.
 
-### **2. Runner CLI (`runner/`)**
+**Process**:
+1. Read container file
+2. Calculate SHA-256 hash of container content
+3. Compare with stored hash in header
+4. Report verification result
 
-#### **Purpose**
-The Runner CLI provides validation and execution capabilities for SAIC files, with a focus on performance and security.
+**Key Features**:
+- Pre-deployment verification
+- Standalone operation (no execution)
+- Fast verification (SHA-256 calculation)
 
-#### **Architecture**
-```mermaid
-graph LR
-    A[SAIC File] --> B[File System Security]
-    B --> C[Memory Mapping]
-    C --> D[Format Validation]
-    D --> E[Content Validation]
-    E --> F[Execution Engine]
-    
-    subgraph "File System Security"
-        G[Path Traversal Check]
-        H[Symlink Protection]
-        I[Permission Validation]
-        J[Size Limits]
-    end
-    
-    subgraph "Memory Mapping"
-        K[Zero-Copy Access]
-        L[Direct Memory Access]
-        M[Efficient I/O]
-    end
-    
-    subgraph "Format Validation"
-        N[Magic Number Check]
-        O[Version Validation]
-        P[Structure Verification]
-    end
-    
-    subgraph "Content Validation"
-        Q[JSON Parsing]
-        R[Schema Validation]
-        S[Security Checks]
-    end
-```
+**Location**: `coelanox-core/src/format.rs` (`verify_security_hash`)
 
-#### **Key Features**
-- **Ultra-fast Validation**: 23μs for small files
-- **Security-first Design**: Comprehensive security checks
-- **Memory Efficient**: Zero-copy operations
-- **Extensible Backends**: Plugin architecture
+### 3. Run Command (`coelanox run`)
 
-#### **Performance Characteristics**
-- **Validation Latency**: 23μs (small files)
-- **Memory Usage**: Zero-copy operations
-- **Throughput**: 43,478 files/sec
-- **Security Overhead**: +4-10μs
+**Purpose**: Verify, load, and execute a container.
 
-### **3. Backend System (`backends/`)**
+**Process**:
+1. Verify security hash (defense in depth)
+2. Load container into runtime
+3. Execute model with input data
+4. Return output
 
-#### **Purpose**
-The Backend System provides extensible execution engines for different hardware platforms and use cases.
+**Key Features**:
+- Automatic verification before execution
+- Container loading and caching
+- Execution with fallback support
 
-#### **Architecture**
-```mermaid
-graph TB
-    A[Backend Interface] --> B[Validation Backend]
-    A --> C[CPU Backend]
-    A --> D[GPU Backend]
-    A --> E[Custom Backends]
-    
-    subgraph "Validation Backend"
-        F[Format Validation]
-        G[Security Checks]
-        H[Performance Testing]
-    end
-    
-    subgraph "CPU Backend"
-        I[OpenVINO Integration]
-        J[CPU Optimization]
-        K[Memory Management]
-    end
-    
-    subgraph "GPU Backend"
-        L[TensorRT Integration]
-        M[GPU Memory Management]
-        N[CUDA Optimization]
-    end
-    
-    subgraph "Custom Backends"
-        O[Plugin Architecture]
-        P[Custom Implementations]
-        Q[Hardware Abstraction]
-    end
-```
+**Location**: `coelanox-cli/src/main.rs` (`run_command`)
 
-#### **Current Backends**
+## Security Hash System
 
-##### **Validation Backend (v0.5.0-beta)**
-- **Purpose**: File validation and security checks
-- **Performance**: 23μs validation latency
-- **Features**: Comprehensive security validation
-- **Status**: ✅ **PRODUCTION READY**
+### SHA-256 Hash Calculation
 
-##### **CPU Backend (v1.0 Planned)**
-- **Purpose**: CPU-based inference execution
-- **Integration**: OpenVINO framework
-- **Performance**: Target <100ms inference
-- **Status**: 🔄 **IN DEVELOPMENT**
+The security hash is calculated during packaging:
 
-##### **GPU Backend (v1.0 Planned)**
-- **Purpose**: GPU-accelerated inference
-- **Integration**: TensorRT framework
-- **Performance**: Target <50ms inference
-- **Status**: 🔄 **IN DEVELOPMENT**
+1. **Container Creation**: Container is built in memory with all components:
+   - Header (with `security_hash` initially set to `[0; 32]`)
+   - Manifest
+   - Machine code
+   - Compressed weights
+   - IR data
 
-## 🔧 **File Format Architecture**
+2. **Hash Calculation**: 
+   - Entire container is written to an in-memory buffer
+   - SHA-256 hash is calculated over the buffer (with hash field zeroed)
+   - Hash is stored in the header's `security_hash` field
+   - Complete container (with hash) is written to disk
 
-### **SAIC File Structure**
+3. **Hash Verification**:
+   - Container is read from disk
+   - Hash field is temporarily zeroed
+   - SHA-256 is recalculated
+   - Calculated hash is compared with stored hash
 
-```mermaid
-graph LR
-    A[SAIC File] --> B[Header: 12 bytes]
-    B --> C[Manifest: Variable]
-    C --> D[Payload: Variable]
-    
-    subgraph "Header (12 bytes)"
-        E[Magic: 4 bytes]
-        F[Version: 4 bytes]
-        G[Manifest Length: 4 bytes]
-    end
-    
-    subgraph "Manifest (JSON)"
-        H[Model Metadata]
-        I[Security Information]
-        J[Execution Parameters]
-    end
-    
-    subgraph "Payload (Binary)"
-        K[Model Weights]
-        L[Configuration Data]
-        M[Additional Resources]
-    end
-```
+**Location**: `coelanox-core/src/format.rs`
 
-### **Binary Format Specification**
+**Key Functions**:
+- `CoelanoxContainer::write_binary_file()` - Calculates and stores hash
+- `verify_security_hash()` - Verifies container integrity
 
-#### **Header Structure**
+### Security Guarantees
+
+- **Integrity**: Any modification to container content is detected
+- **Tamper Detection**: Changes to code, weights, or metadata invalidate hash
+- **Defense in Depth**: Verification happens at package time, verify command, and run command
+
+## Backend Manager Architecture
+
+### Overview
+
+The Backend Manager discovers and manages CLF (Coelanox Library File) backends. It operates at **package time** to discover .clfc files for AOT compilation.
+
+For the **CLF binary layout**, **`coelanox-clf`** reader API (`ClfReader`, `get_blob`, `build_code_section`), the canonical **`op_id`** registry, and how execution plans tie IR to blobs vs linked SIMD symbols, see **[sdk/clf.md](sdk/clf.md)** and **[sdk/pipeline.md](sdk/pipeline.md)**.
+
+### Components
+
+#### BackendManager
+
+**Location**: `coelanox-orchestrator/src/backend_manager.rs`
+
+**Responsibilities**:
+- Discover CLF backends (.clfc files) from search paths
+- Track discovered backends
+- Provide backend selection strategies
+
+**Key Methods**:
+- `new()` - Create new BackendManager
+- `discover_backends()` - Scan search paths for CLF files
+- `validate_backend()` - Check if backend exists
+- `select_backend_with_fallback()` - Select backend using fallback strategy
+
+#### BackendInfo
+
+**Structure**:
 ```rust
-struct SaicHeader {
-    magic: [u8; 4],        // "SAIC"
-    version: [u8; 4],       // Version number
-    manifest_length: u32,   // Manifest size in bytes
+pub struct BackendInfo {
+    pub name: String,                    // Backend name (e.g., "nvidia-h100")
+    pub version: String,                 // Backend version
+    pub library_path: PathBuf,          // Path to CLF file (.clfc)
+    pub supported_targets: Vec<HardwareTarget>, // Supported hardware targets
 }
 ```
 
-#### **Manifest Structure**
-```json
-{
-  "model": {
-    "name": "MobileNet-v2",
-    "version": "1.0.0",
-    "format": "onnx",
-    "size": 13900000
-  },
-  "security": {
-    "checksum": "sha256:...",
-    "signature": "rsa:...",
-    "permissions": ["read", "execute"]
-  },
-  "execution": {
-    "backend": "validation",
-    "parameters": {
-      "batch_size": 1,
-      "precision": "fp32"
-    }
-  }
-}
-```
+#### DiscoveryResult
 
-#### **Payload Structure**
-- **Model Data**: Binary model weights and parameters
-- **Configuration**: Model-specific configuration
-- **Resources**: Additional files and dependencies
-
-## 🛡️ **Security Architecture**
-
-### **Multi-Layer Security Model**
-
-```mermaid
-graph TB
-    A[Input File] --> B[File System Security]
-    B --> C[Memory Safety]
-    C --> D[Format Validation]
-    D --> E[Content Security]
-    E --> F[Output Security]
-    
-    subgraph "File System Security"
-        G[Path Traversal Protection]
-        H[Symlink Attack Prevention]
-        I[File Permission Validation]
-        J[Size Limit Enforcement]
-    end
-    
-    subgraph "Memory Safety"
-        K[Rust Ownership System]
-        L[Bounds Checking]
-        M[Zero-Copy Operations]
-        N[Safe Unsafe Blocks]
-    end
-    
-    subgraph "Format Validation"
-        O[Magic Number Check]
-        P[Version Validation]
-        Q[Structure Verification]
-        R[Manifest Parsing]
-    end
-    
-    subgraph "Content Security"
-        S[JSON Size Limits]
-        T[Character Sanitization]
-        U[Encoding Validation]
-        V[Schema Verification]
-    end
-    
-    subgraph "Output Security"
-        W[Error Message Sanitization]
-        X[Information Disclosure Prevention]
-        Y[Resource Cleanup]
-        Z[Audit Logging]
-    end
-```
-
-### **Security Rating: 9.3/10**
-
-| Security Aspect | Rating | Implementation |
-|----------------|--------|----------------|
-| **Memory Safety** | **9.8/10** | Rust ownership system |
-| **Input Validation** | **9.5/10** | Comprehensive validation |
-| **Attack Surface** | **9.5/10** | Minimal exposed functionality |
-| **Error Handling** | **9.2/10** | Graceful degradation |
-| **Overall Security** | **9.3/10** | Enterprise-grade |
-
-## ⚡ **Performance Architecture**
-
-### **Optimization Strategy**
-
-```mermaid
-graph LR
-    A[Input File] --> B[Zero-Copy Memory Mapping]
-    B --> C[SIMD-Optimized Validation]
-    C --> D[Early Return Optimization]
-    D --> E[Lazy Validation]
-    E --> F[Performance Result]
-    
-    subgraph "Memory Optimization"
-        G[Memory Mapping: 8.712μs]
-        H[Zero-Copy Operations]
-        I[Minimal Allocations]
-        J[Efficient Data Structures]
-    end
-    
-    subgraph "Validation Optimization"
-        K[Magic Validation: 11.98μs]
-        L[Structure Validation: 3.304μs]
-        M[SIMD Operations]
-        N[Bounds Checking]
-    end
-    
-    subgraph "Security Optimization"
-        O[Path Traversal: +1-2μs]
-        P[Symlink Check: +1-3μs]
-        Q[Permission Check: +2-5μs]
-        R[Size Limits: 0μs]
-    end
-```
-
-### **Performance Metrics**
-
-| Metric | Value | Status |
-|--------|-------|--------|
-| **Validation Latency** | **23μs** | ✅ **EXCEEDED** |
-| **Memory Usage** | **Zero-copy** | ✅ **OPTIMIZED** |
-| **Throughput** | **43,478 files/sec** | ✅ **ACHIEVED** |
-| **Security Overhead** | **+4-10μs** | ✅ **ACCEPTABLE** |
-
-## 🔄 **CLI Architecture**
-
-### **Command Structure**
-
-```mermaid
-graph TB
-    A[SAIC CLI] --> B[Packager Commands]
-    A --> C[Runner Commands]
-    A --> D[Utility Commands]
-    
-    subgraph "Packager Commands"
-        E[create-saic]
-        F[validate-manifest]
-        G[list-models]
-    end
-    
-    subgraph "Runner Commands"
-        H[run]
-        I[execute]
-        J[validate]
-        K[audit]
-    end
-    
-    subgraph "Utility Commands"
-        L[version]
-        M[help]
-        N[config]
-    end
-```
-
-### **Command Examples**
-
-#### **Packager Commands**
-```bash
-# Create SAIC file
-./packager/target/release/saic-packager \
-  --model MobileNet-v2.onnx \
-  --name "MobileNet-v2" \
-  --output model.saic
-
-# Validate manifest
-./packager/target/release/saic-packager \
-  --validate model.saic
-
-# List models
-./packager/target/release/saic-packager \
-  --list
-```
-
-#### **Runner Commands**
-```bash
-# Validate SAIC file
-./runner/target/release/saic-runner model.saic
-
-# Execute with backend
-./runner/target/release/saic-runner execute model.saic
-
-# Audit mode
-./runner/target/release/saic-runner model.saic --audit
-```
-
-## 🏗️ **Extensibility Architecture**
-
-### **Backend Plugin System**
-
-```mermaid
-graph TB
-    A[Backend Interface] --> B[Trait Definition]
-    B --> C[Validation Backend]
-    B --> D[CPU Backend]
-    B --> E[GPU Backend]
-    B --> F[Custom Backend]
-    
-    subgraph "Trait Definition"
-        G[Backend Trait]
-        H[Execute Method]
-        I[Validate Method]
-        J[Configure Method]
-    end
-    
-    subgraph "Backend Implementations"
-        K[ValidationBackend]
-        L[CpuBackend]
-        M[GpuBackend]
-        N[CustomBackend]
-    end
-```
-
-### **Backend Interface**
+**Structure**:
 ```rust
-pub trait Backend {
-    fn execute(&mut self, model_data: &[u8]) -> Result<Vec<f32>, BackendError>;
-    fn validate(&self, model_data: &[u8]) -> Result<(), BackendError>;
-    fn configure(&mut self, config: BackendConfig) -> Result<(), BackendError>;
+pub struct DiscoveryResult {
+    pub discovered: Vec<BackendInfo>,    // Successfully discovered backends
+    pub failures: Vec<(PathBuf, String)>, // Failed paths with error messages
+    pub total_scanned: usize,            // Total files scanned
 }
 ```
 
-### **Custom Backend Example**
+### Backend Discovery Process
+
+1. **Search Paths**: BackendManager scans default search paths:
+   - `~/.coelanox/clf/` with subdirs `clfc/`, `clfmm/`, `clfmp/`, `clfe/`
+   - `COELANOX_CLF_PATH` (override)
+   - `COELANOX_BACKEND_PATH` (extra paths, colon-separated)
+
+2. **CLF Detection**: Identifies CLF files (`.clfc`, legacy `.clf`)
+
+3. **CLF Loading**: Reads CLF header to extract backend metadata and supported targets
+
+4. **Registration**: Registers valid backends for use during packaging
+
+### Backend Selection Strategies
+
+**Location**: `coelanox-orchestrator/src/backend_manager.rs`
+
+**Strategies**:
+- `PrimaryOnly` - Use primary backend only (fail if unavailable)
+- `PrimaryWithFallback` - Use primary with fallback to scalar
+- `TryAll` - Try all backends in order until one succeeds
+
+## AOT Binary Selection
+
+### Overview
+
+AOT (Ahead-of-Time) selection allows choosing which backends to compile into the container at package time. This enables:
+- **Slim containers**: Single backend (smaller size)
+- **Fat containers**: Multiple backends (larger size, more flexibility)
+- **Auto selection**: Automatic backend detection
+
+### Selection Modes
+
+#### Slim Mode (Default)
+
+**Usage**: `coelanox package --target cpu`
+
+**Behavior**:
+- Selects single primary backend
+- Optionally adds additional backends with `--backend-add`
+- Stores primary backend and additional backends in `BackendMetadata`
+
+**Metadata Structure**:
 ```rust
-pub struct CustomBackend {
-    // Custom implementation
-}
-
-impl Backend for CustomBackend {
-    fn execute(&mut self, model_data: &[u8]) -> Result<Vec<f32>, BackendError> {
-        // Custom execution logic
-    }
-    
-    fn validate(&self, model_data: &[u8]) -> Result<(), BackendError> {
-        // Custom validation logic
-    }
-    
-    fn configure(&mut self, config: BackendConfig) -> Result<(), BackendError> {
-        // Custom configuration logic
-    }
+BackendSelectionMode::Slim {
+    primary: String,        // Primary backend name
+    additional: Vec<String>, // Additional backends
 }
 ```
 
-## 📊 **Architecture Metrics**
+#### Fat Mode
 
-### **Code Quality Metrics**
+**Usage**: `coelanox package --fat`
 
-| Metric | Value | Status |
-|--------|-------|--------|
-| **Total Lines** | **2,110** | ✅ **OPTIMIZED** |
-| **Documentation Ratio** | **2.4:1** | ✅ **EXCELLENT** |
-| **Test Coverage** | **85%** | ✅ **GOOD** |
-| **Security Rating** | **9.3/10** | ✅ **EXCELLENT** |
+**Behavior**:
+- Includes all discovered backends
+- Validates all backends exist before packaging
+- Stores all backends in `BackendMetadata`
 
-### **Performance Metrics**
+**Metadata Structure**:
+```rust
+BackendSelectionMode::Fat {
+    backends: Vec<String>,  // All available backends
+}
+```
 
-| Metric | Value | Status |
-|--------|-------|--------|
-| **Validation Latency** | **23μs** | ✅ **EXCEEDED** |
-| **Memory Efficiency** | **Zero-copy** | ✅ **OPTIMIZED** |
-| **Throughput** | **43,478 files/sec** | ✅ **ACHIEVED** |
-| **Scalability** | **Linear** | ✅ **EXCELLENT** |
+#### Auto Mode
 
-### **Architecture Strengths**
+**Usage**: `coelanox package --auto`
 
-1. **✅ Modular Design**: Clean separation of concerns
-2. **✅ Extensible Backends**: Plugin architecture for new hardware
-3. **✅ Performance Optimized**: Zero-copy operations throughout
-4. **✅ Security First**: Comprehensive security validation
-5. **✅ Memory Safe**: Rust ownership system
-6. **✅ Production Ready**: Enterprise-grade reliability
+**Behavior**:
+- Detects recommended hardware target from environment
+- Selects backend for detected hardware
+- Falls back to CPU if detected backend unavailable
 
-## 🚀 **Future Architecture Enhancements**
+**Metadata Structure**:
+```rust
+BackendSelectionMode::Auto {
+    backends: Vec<String>,  // Auto-detected backends
+}
+```
 
-### **v1.0 Architecture Features**
-- **🔄 CPU Backend**: OpenVINO integration
-- **🔄 GPU Backend**: TensorRT integration
-- **🔄 Parallel Processing**: Multi-threaded execution
-- **🔄 Batch Processing**: Efficient batch inference
+### Backend Metadata
 
-### **v1.5 Architecture Features**
-- **📋 Distributed Execution**: Multi-node processing
-- **📋 Load Balancing**: Automatic workload distribution
-- **📋 Fault Tolerance**: Automatic failover and recovery
-- **📋 Monitoring**: Comprehensive metrics and logging
+**Location**: `coelanox-core/src/format.rs`
 
-### **v2.0 Architecture Features**
-- **📋 Constellation**: Distributed orchestration system
-- **📋 DNA Key System**: Cryptographic security
-- **📋 Hardware Binding**: Model locked to specific hardware
-- **📋 Zero-Trust Architecture**: Advanced security mesh
+**Structure**:
+```rust
+pub struct BackendMetadata {
+    pub selection_mode: BackendSelectionMode,
+    pub device_id_mapping: HashMap<usize, String>, // Device ID -> Backend name
+}
+```
+
+**Device ID Mapping**:
+- Primary backend: Device ID 0
+- Additional backends: Device ID 1, 2, 3, ...
+- Used for runtime backend selection
+
+### Implementation
+
+**Location**: `coelanox-packager/src/lib.rs`
+
+**Key Function**: `determine_backend_selection()`
+- Parses CLI flags (`--fat`, `--auto`, `--backend-add`)
+- Validates backend existence
+- Creates `BackendMetadata` structure
+- Stores metadata in container manifest
+
+## Container Format Structure
+
+### Binary Layout
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    COELANOX Container                      │
+├─────────────────────────────────────────────────────────┤
+│  Header (76 bytes)                                       │
+│  ├── Magic Number: "COEL" (4 bytes)                     │
+│  ├── Version: 0.1.0.0 (4 bytes)                         │
+│  ├── Security Hash: SHA-256 (32 bytes)                  │
+│  └── Reserved (36 bytes)                                │
+├─────────────────────────────────────────────────────────┤
+│  Manifest Length (4 bytes)                               │
+├─────────────────────────────────────────────────────────┤
+│  Manifest (JSON)                                         │
+│  ├── Model metadata                                      │
+│  ├── Input/output shapes                                 │
+│  └── Backend metadata (AOT selection)                   │
+├─────────────────────────────────────────────────────────┤
+│  Machine Code Length (4 bytes)                           │
+├─────────────────────────────────────────────────────────┤
+│  Machine Code (binary)                                   │
+├─────────────────────────────────────────────────────────┤
+│  Compressed Weights Length (4 bytes)                     │
+├─────────────────────────────────────────────────────────┤
+│  Compressed Weights (binary; Zstd/LZ4 or uncompressed)   │
+├─────────────────────────────────────────────────────────┤
+│  IR Data Length (4 bytes)                                │
+├─────────────────────────────────────────────────────────┤
+│  IR Data (bincode serialized OptimizedIR)                │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Header Structure
+
+**Location**: `coelanox-core/src/format.rs`
+
+```rust
+pub struct CoelanoxHeader {
+    pub magic: [u8; 4],           // "COEL"
+    pub version: [u8; 4],         // Version bytes
+    pub security_hash: [u8; 32],  // SHA-256 hash
+    pub reserved: [u8; 36],       // Reserved for future use
+}
+```
+
+### Manifest Structure
+
+**Location**: `coelanox-core/src/format.rs`
+
+```rust
+pub struct CoelanoxManifest {
+    pub model_name: String,
+    pub model_format: ModelFormat,
+    pub input_shapes: Vec<Vec<usize>>,
+    pub output_shapes: Vec<Vec<usize>>,
+    pub machine_code_size: usize,
+    pub backend_metadata: Option<BackendMetadata>, // AOT selection metadata
+}
+```
+
+## Runtime Execution Flow
+
+### Container Loading
+
+1. **Verification**: Security hash is verified
+2. **Parsing**: Header and manifest are parsed
+3. **Caching**: Container is cached in runtime
+4. **Preparation**: Machine code and weights are prepared
+
+### Execution
+
+1. **Backend Selection**: Select backend based on `BackendMetadata`
+2. **Code Execution**: Execute machine code (if available)
+3. **Fallback**: Fall back to scalar operations if machine code fails
+4. **Result**: Return output data
+
+### Scalar Fallback
+
+**Location**: `coelanox-orchestrator/src/runtime.rs`
+
+**Current Implementation**:
+- Scalar fallback in `coelanox-orchestrator/src/fallback/` using `coelanox-core` scalar ops
+- Pure Rust implementations
+- 100% uptime guarantee
+- Supports all OpType variants
+
+## Component Dependencies
+
+```
+coelanox-core
+├── format.rs          # Container format, security hash
+├── ir.rs              # Universal IR structures
+├── error.rs           # Error types
+└── scalar/            # Scalar operations (reference implementation)
+
+coelanox-packager
+├── lib.rs             # Packaging logic, AOT selection
+├── backend_trait/     # Backend translator trait, op mappings
+├── optimizers/        # IR optimization
+├── translators/       # Model translators (ONNX, BERT, ResNet)
+└── memory/            # NVMe allocator, memory management
+
+coelanox-orchestrator
+├── runtime.rs         # Runtime execution, container loading
+├── backend_manager.rs # Backend discovery and management
+├── fallback/          # Scalar fallback (uses coelanox-core scalar)
+└── execution_backend.rs # Execution dispatch
+
+coelanox-cli
+└── main.rs            # CLI commands (package, verify, run)
+```
+
+## Error Handling
+
+### Error Types
+
+**Location**: `coelanox-core/src/error.rs`
+
+**Key Error Variants**:
+- `SecurityHashMismatch` - Hash verification failed
+- `BackendNotFound` - Requested backend not available
+- `BackendLibraryNotFound` - CLF file not found
+- `BackendDiscoveryFailed` - Backend discovery failed
+- `DeviceIdOutOfRange` - Invalid device ID
+
+### Error Propagation
+
+- Errors are propagated using `CoelanoxResult<T>` type
+- Detailed error messages for debugging
+- Graceful degradation where possible (fallback to scalar)
+
+## Performance Characteristics
+
+### Security Hash
+
+- **Calculation**: O(n) where n is container size
+- **Verification**: O(n) where n is container size
+- **Typical Time**: <1ms for typical containers
+
+### Backend Discovery
+
+- **Discovery**: O(m) where m is number of libraries scanned
+- **Loading**: O(1) per library (lazy loading)
+- **Typical Time**: <100ms for typical search paths
+
+### AOT Selection
+
+- **Validation**: O(b) where b is number of backends
+- **Metadata Creation**: O(1)
+- **Typical Time**: <1ms
+
+## Future Enhancements
+
+### Planned (Post-MVP)
+
+1. **Dynamic Backend Loading** (Future)
+   - Runtime backend loading (currently package-time only)
+   - Hot-swappable backends
+   - Backend health monitoring
+
+## Codebase map
+
+| Crate | Purpose | Key files |
+|-------|---------|-----------|
+| coelanox-core | Format, IR, scalar ops | `format.rs`, `ir.rs`, `scalar/` |
+| coelanox-packager | Translate → optimize → .cnox | `lib.rs`, `translators/`, `optimizers/` |
+| coelanox-orchestrator | Load, execute (CLF or scalar) | `runtime.rs`, `fallback/` |
+| coelanox-executor | Plan walker, kernel dispatch | `lib.rs` |
+| coelanox-clf | CLF reader, op_id registry | `reader.rs`, `op_registry.rs` |
+| coelanox-cli | Commands | `main.rs` |
+
+## Binary layout (byte-accurate)
+
+| Section | Offset | Size | Description |
+|--------|--------|------|-------------|
+| Header | 0 | 76 | Magic COEL, version, flags, sizes, SHA-256 hash |
+| Manifest | 76 | 4+L | Length (u32 LE) + JSON |
+| Code | 76+4+L | manifest.model_size | Machine code (CLF blobs or empty) |
+| Weights | next | 4+W | Length + bytes |
+| IR data | next | 4+I | Length + bincode OptimizedIR |
+| NVMe backing | next | 8+N | Optional |
+| CLFMM / CLFMP | next | 8+size | Optional HAL blobs |
+
+## HAL mapping (OpType → CLF → region kinds)
+
+OpType (IR) → CLF op_id → kernel blob. Region kinds: **Code** (executable), **Weights** (read-only), **Intermediates** (RW). Protection HAL applies code=X, weights=R, intermediates=RW. See `coelanox-core/src/hal_mapping.rs`.
 
 ---
 
-**SAIC v0.5.0-beta**: Enterprise-grade architecture with modular design, extensible backends, and world-class performance. 
+## References
+
+- [Operations](OPERATIONS.md) — Config, security, runbooks
+- [Reference](REFERENCE.md) — Product summary, features
+- [Production MVP Roadmap](../roadmaps/PRODUCTION_MVP_ROADMAP.md)
+

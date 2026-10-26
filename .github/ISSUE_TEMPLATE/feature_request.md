@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an idea for SAIC
+about: Suggest an idea for CNOX
 title: '[FEATURE] '
 labels: ['enhancement']
 assignees: ''
@@ -29,7 +29,7 @@ Describe the specific use case or scenario where this feature would be valuable:
 - [ ] Other: [describe]
 
 **Expected impact**
-How would this feature benefit SAIC users?
+How would this feature benefit CNOX users?
 - [ ] Faster performance
 - [ ] Better security
 - [ ] Easier deployment

@@ -1,0 +1,46 @@
+[package]
+name = "coelanox-packager"
+version = "0.7.5"
+edition = "2021"
+authors = ["Benjamin Morin <benjamin@coelanox.ai>"]
+description = "COELANOX Packager - Model packaging and optimization tool"
+license = "Proprietary"
+repository = "https://github.com/coelanox-ai/coelanox"
+
+[dependencies]
+coelanox-core = { path = "../coelanox-core" }
+coelanox-executor = { path = "../coelanox-executor" }
+coelanox-clf = { path = "../coelanox-clf" }
+coelanox-orchestrator = { path = "../coelanox-orchestrator" }
+bincode = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prost = "0.12"
+prost-types = "0.12"
+flate2 = "1.0"
+memmap2 = "0.9"
+walkdir = "2.4"
+tracing = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+num_cpus = "1.16"
+bytes = "1.5"
+zstd = "0.12"
+lz4 = "1.24"
+csv = "1.3"
+rten-onnx = { version = "0.24", optional = true }
+half = { version = "2.4", optional = true }
+
+[features]
+default = ["translator-onnx", "translator-bert", "translator-resnet"]
+onnx-protobuf = ["dep:rten-onnx", "dep:half"]
+translator-onnx = ["onnx-protobuf"]
+translator-bert = []
+translator-resnet = []
+packaging = []
+
+[dev-dependencies]
+tempfile = "3.8"
+libc = "0.2"
+coelanox-orchestrator = { path = "../coelanox-orchestrator" }

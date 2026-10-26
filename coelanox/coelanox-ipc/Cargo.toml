@@ -1,0 +1,11 @@
+[package]
+name = "coelanox-ipc"
+version = "0.7.5"
+edition = "2021"
+description = "Coelanox IPC: framed stdin/stdout transport for coelanox serve (runtime wrapper)"
+license = "Proprietary"
+
+[dependencies]
+coelanox-core = { path = "../coelanox-core" }
+coelanox-orchestrator = { path = "../coelanox-orchestrator" }
+tracing = "0.1"
